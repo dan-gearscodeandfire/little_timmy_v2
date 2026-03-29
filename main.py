@@ -29,6 +29,7 @@ from conversation.manager import ConversationManager
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
+from vision.supervisor import BehaviorSupervisor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,7 @@ class Orchestrator:
         self.capture = AudioCapture()
         self.speaker_id_module = SpeakerIdentifier()
         self.vision = VisionContext()
+        self.supervisor = BehaviorSupervisor()
 
     async def process_speech(self, audio: np.ndarray):
         """Process a speech segment through the full pipeline."""
@@ -85,6 +87,9 @@ class Orchestrator:
 
         # Trigger vision capture on speech detection
         asyncio.create_task(self.vision.trigger_capture("speech"))
+
+        # Notify behavioral supervisor of speech
+        asyncio.create_task(self.supervisor.on_speech_detected(speaker_name))
 
         log.info("[%s] %s (STT: %dms, SPK: %dms)",
                  speaker_name.upper(), user_text, stt_ms, spk_ms)
@@ -328,12 +333,16 @@ class Orchestrator:
                 if sentence:
                     if first_tts_time is None:
                         first_tts_time = time.time()
+                        asyncio.create_task(self.supervisor.on_tts_start())
                     await self.tts.speak(sentence)
 
         if sentence_buffer.strip():
             if first_tts_time is None:
                 first_tts_time = time.time()
             await self.tts.speak(sentence_buffer.strip())
+
+        # Notify supervisor that TTS is done
+        asyncio.create_task(self.supervisor.on_tts_end())
 
         llm_first_token_ms = int((first_token_time - t2) * 1000) if first_token_time else 0
         llm_total_ms = int((time.time() - t2) * 1000)
@@ -492,6 +501,10 @@ async def main():
     await orch.vision.start()
     log.info("Vision pipeline ready (enabled=%s)", orch.vision.enabled)
 
+    # Start behavioral supervisor
+    await orch.supervisor.start()
+    log.info("Behavioral supervisor ready")
+
     # Wire TTS suppression to audio capture
     orch.tts._capture = orch.capture
 
@@ -553,6 +566,31 @@ async def main():
 
     web_task = asyncio.create_task(server.serve())
 
+    # Bridge: watch vision records for people changes → supervisor
+    async def vision_people_monitor():
+        last_people = []
+        while True:
+            try:
+                await asyncio.sleep(2.0)
+                record = orch.vision.get_scene_record()
+                if record is None:
+                    if last_people:
+                        await orch.supervisor.on_vision_people_changed([], was_empty=False)
+                        last_people = []
+                    continue
+                current_people = record.people or []
+                if set(p.lower() for p in current_people) != set(p.lower() for p in last_people):
+                    was_empty = len(last_people) == 0
+                    await orch.supervisor.on_vision_people_changed(current_people, was_empty)
+                    last_people = current_people
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("Vision people monitor error")
+                await asyncio.sleep(5.0)
+
+    vision_monitor_task = asyncio.create_task(vision_people_monitor())
+
     log.info("=== Little Timmy ready on http://0.0.0.0:%d ===", config.WEB_PORT)
 
     try:
@@ -562,6 +600,7 @@ async def main():
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:
+        await orch.supervisor.stop()
         await orch.vision.stop()
         await orch.capture.stop()
         await orch.tts.stop()
