@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# Models (large binary files)
+models/*.onnx
+models/*.onnx.json
+models/tts/
+models/speaker/*.npy
+models/speaker/*.bak*
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / env
+.env
+*.secret
+
+# Temp
+persona_tuning/

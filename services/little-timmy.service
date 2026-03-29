@@ -1,0 +1,16 @@
+[Unit]
+Description=Little Timmy Voice Assistant
+After=postgresql.service llama-3b.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=gearscodeandfire
+WorkingDirectory=/home/gearscodeandfire/little_timmy
+ExecStart=/home/gearscodeandfire/little_timmy/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

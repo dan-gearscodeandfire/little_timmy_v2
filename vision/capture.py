@@ -1,0 +1,144 @@
+"""Frame capture from streamerpi with scene-change gating.
+
+Pulls JPEG frames from streamerpi's /capture endpoint at ~1fps.
+Uses scene-change detection to decide when to trigger VLM analysis,
+rather than blindly analyzing every frame.
+
+Flow:
+  1fps poll -> scene_change check -> if changed: on_frame callback (VLM)
+"""
+
+import asyncio
+import logging
+import time
+from typing import Callable, Awaitable
+
+import httpx
+import config
+from vision.scene_change import SceneChangeDetector
+
+log = logging.getLogger(__name__)
+
+
+class FrameCapture:
+    """Async frame capture with scene-change gating."""
+
+    def __init__(self):
+        self.capture_url = config.STREAMERPI_CAPTURE_URL
+        self._client: httpx.AsyncClient | None = None
+        self._last_capture_time: float = 0.0
+        self._lock = asyncio.Lock()
+        self._poll_task: asyncio.Task | None = None
+        self._running = False
+        self._on_frame: Callable[[bytes], Awaitable[None]] | None = None
+        self._detector = SceneChangeDetector()
+
+        # Cooldown: minimum seconds between VLM calls
+        self._vlm_cooldown: float = 10.0
+        self._last_vlm_time: float = 0.0
+
+        # Stats
+        self._frames_polled: int = 0
+        self._frames_analyzed: int = 0
+        self._last_change_score: float = 0.0
+
+    async def start(self, on_frame: Callable[[bytes], Awaitable[None]]):
+        """Start polling at ~1fps with scene-change gating."""
+        self._on_frame = on_frame
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            verify=False,  # streamerpi uses self-signed certs
+        )
+        self._running = True
+        self._poll_task = asyncio.create_task(self._poll_loop())
+        log.info("Frame capture started (poll=1fps, gate=scene-change, url=%s)",
+                 self.capture_url)
+
+    async def stop(self):
+        """Stop polling and close HTTP client."""
+        self._running = False
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+        log.info("Frame capture stopped (polled=%d, analyzed=%d, ratio=%.0f%%)",
+                 self._frames_polled, self._frames_analyzed,
+                 (self._frames_analyzed / max(self._frames_polled, 1)) * 100)
+
+    async def trigger(self, reason: str = "event") -> bytes | None:
+        """Force an immediate capture + VLM analysis (speech event, etc).
+
+        Bypasses scene-change gating AND cooldown.
+        """
+        self._detector.force_next()
+        self._last_vlm_time = 0.0  # bypass cooldown for forced triggers
+        return await self._fetch_frame(reason)
+
+    async def _poll_loop(self):
+        """Poll at ~1fps, only trigger VLM callback on scene change."""
+        while self._running:
+            try:
+                await asyncio.sleep(1.0)
+                if not self._running:
+                    break
+
+                jpeg = await self._fetch_frame("poll")
+                if jpeg is None:
+                    continue
+
+                self._frames_polled += 1
+
+                # Scene-change gate
+                should_analyze, score = self._detector.check(jpeg)
+                self._last_change_score = score
+
+                if should_analyze and self._on_frame:
+                    now = time.monotonic()
+                    elapsed = now - self._last_vlm_time
+                    if elapsed < self._vlm_cooldown:
+                        log.debug("[CAPTURE] VLM cooldown (%.0fs remaining)",
+                                  self._vlm_cooldown - elapsed)
+                        continue
+                    self._frames_analyzed += 1
+                    self._last_vlm_time = now
+                    log.info("[CAPTURE] Triggering VLM (score=%.1f, analyzed %d/%d frames)",
+                             score, self._frames_analyzed, self._frames_polled)
+                    await self._on_frame(jpeg)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("Error in poll loop")
+                await asyncio.sleep(5.0)
+
+    async def _fetch_frame(self, reason: str) -> bytes | None:
+        """Fetch a single JPEG frame from streamerpi."""
+        if not self._client:
+            return None
+
+        try:
+            resp = await self._client.get(self.capture_url)
+            resp.raise_for_status()
+            jpeg_bytes = resp.content
+
+            content_type = resp.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                log.warning("Unexpected content-type from /capture: %s", content_type)
+                return None
+
+            return jpeg_bytes
+
+        except httpx.ConnectError:
+            log.debug("streamerpi not reachable (%s)", reason)
+            return None
+        except httpx.HTTPStatusError as e:
+            log.warning("Capture HTTP error: %s", e)
+            return None
+        except Exception:
+            log.exception("Capture failed (%s)", reason)
+            return None

@@ -1,0 +1,15 @@
+[Unit]
+Description=Llama 3.2 3B Instruct (Little Timmy Conversation LLM)
+After=network.target
+
+[Service]
+Type=simple
+User=gearscodeandfire
+ExecStart=/home/gearscodeandfire/llama.cpp/build-vulkan/bin/llama-server \
+  -m /home/gearscodeandfire/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  --host 0.0.0.0 --port 8081 -ngl 99 -c 8192 -np 1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
