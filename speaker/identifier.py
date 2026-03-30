@@ -19,8 +19,8 @@ log = logging.getLogger(__name__)
 VOICEPRINT_DIR = Path(os.path.expanduser("~/little_timmy/models/speaker"))
 
 # Thresholds (cosine distance: 0 = identical, 2 = opposite)
-KNOWN_SPEAKER_THRESHOLD = 0.38    # below this = confident match to known speaker
-SAME_UNKNOWN_THRESHOLD = 0.20     # below this = same unknown speaker as before
+KNOWN_SPEAKER_THRESHOLD = 0.30    # below this = confident match to known speaker
+SAME_UNKNOWN_THRESHOLD = 0.30     # below this = same unknown speaker as before
 STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 
 

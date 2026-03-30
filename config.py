@@ -32,8 +32,8 @@ VAD_THRESHOLD = 0.4
 PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
 
 # --- Hybrid Endpointing ---
-SILENCE_CHUNKS_COMPLETE = 3    # ~0.3s — finalize quickly if sentence looks complete
-SILENCE_CHUNKS_INCOMPLETE = 15  # ~1.5s — wait longer if mid-sentence
+SILENCE_CHUNKS_COMPLETE = 5    # ~0.3s — finalize quickly if sentence looks complete
+SILENCE_CHUNKS_INCOMPLETE = 25  # ~1.5s — wait longer if mid-sentence
 
 # --- Conversation ---
 HOT_WINDOW_SECONDS = 300       # 5 min — raw turns kept verbatim

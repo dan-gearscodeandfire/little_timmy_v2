@@ -65,11 +65,13 @@ class BehaviorSupervisor:
             verify=False,  # streamerpi uses self-signed certs
         )
         self._running = True
+        # Wake Pi from any prior sleep state
+        await self._send_command("idle", priority="critical")
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         log.info("[SUPERVISOR] Started — monitoring conversation + vision")
 
     async def stop(self):
-        """Stop the supervisor."""
+        """Stop the supervisor. Sends sleep to Pi so it doesn't scan aimlessly."""
         self._running = False
         if self._monitor_task:
             self._monitor_task.cancel()
@@ -77,10 +79,12 @@ class BehaviorSupervisor:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        # Tell Pi to sleep on shutdown
+        await self._send_command("sleep", priority="critical")
         if self._client:
             await self._client.aclose()
             self._client = None
-        log.info("[SUPERVISOR] Stopped")
+        log.info("[SUPERVISOR] Stopped (Pi set to sleep)")
 
     # --- Event hooks (called by orchestrator) ---
 
@@ -114,13 +118,17 @@ class BehaviorSupervisor:
         self._current_speaker = None
 
         if self._people_visible:
-            # Someone is still there, just not talking
-            await self._send_command("track", priority="normal", timeout_ms=30000)
+            # Someone is still there, just not talking — scan to find them
+            await self._send_command("scan", priority="normal",
+                                     timeout_ms=30000,
+                                     params={"pattern": "room_sweep", "loops": 2})
         else:
-            await self._send_command("idle", priority="low")
+            # Nobody visible — scan then idle
+            await self._send_command("scan", priority="normal",
+                                     timeout_ms=20000,
+                                     params={"pattern": "room_sweep"})
 
-        log.info("[SUPERVISOR] Conversation idle → %s",
-                 "track" if self._people_visible else "idle")
+        log.info("[SUPERVISOR] Conversation idle → scan")
 
     async def on_vision_people_changed(self, people: list[str], was_empty: bool):
         """Vision pipeline detected a change in people present."""

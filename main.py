@@ -32,6 +32,10 @@ from vision.context import VisionContext
 from vision.supervisor import BehaviorSupervisor
 
 logging.basicConfig(
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/tmp/little_timmy.log"),
+    ],
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%H:%M:%S",

@@ -195,8 +195,8 @@ class AudioCapture:
                     raw_audio = data.flatten()
                 # Downsample to 16kHz for VAD and STT
                 audio = self._downsample(raw_audio, native_sr, target_sr)
-                # High-pass filter disabled — no ground loop with TRRS splitter on onboard codec
-                # audio = self._highpass(audio, target_sr)
+                # 80Hz high-pass: removes DC offset (0.014) and 60Hz mains hum (12% of noise)
+                audio = self._highpass(audio, target_sr)
 
                 # Run VAD on 512-sample windows
                 vad_prob = 0.0
