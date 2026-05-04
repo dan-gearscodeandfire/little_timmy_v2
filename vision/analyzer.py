@@ -1,7 +1,11 @@
-"""Scene analysis via Qwen2.5-VL through llama-server.
+"""Scene analysis via Qwen3.6 multimodal through llama-server.
 
-Sends captured JPEG frames to Qwen2.5-VL running on llama-server
-(port 8082) using the /v1/chat/completions endpoint with image_url.
+Sends captured JPEG frames to the brain LLM at config.LLM_VISION_URL
+(Qwen3.6-35B-A3B with mmproj-BF16 attached, default :8083) using the
+/v1/chat/completions endpoint with image_url. Always sends
+chat_template_kwargs:{enable_thinking:false} — thinking-on adds 4-13×
+latency on warm images and is unnecessary for structured scene
+captioning (see qwen36-vision-on-okdemerzel-2026-04-27 in Obsidian).
 
 Returns structured JSON scene records, not free-form captions.
 """
@@ -53,6 +57,10 @@ class SceneRecord:
 
 
 # --- VLM prompt for structured output ---
+# This is the SINGLE source of truth for the visual prompt. Any future change
+# to what the model is asked to do with an image (different fields, different
+# instructions, different style) goes here — every caller in vision/ delegates
+# to analyze_frame() which uses this constant by default.
 
 STRUCTURED_PROMPT = (
     "Analyze this camera frame and return ONLY a JSON object with these fields:\n"
@@ -107,9 +115,11 @@ def _parse_scene_json(text: str) -> dict | None:
 
 
 async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRecord | None:
-    """Send a JPEG frame to Qwen2.5-VL and get a structured scene record.
+    """Send a JPEG frame to the brain VLM and get a structured scene record.
 
-    Uses /v1/chat/completions with image_url (data URI).
+    Uses /v1/chat/completions with image_url (data URI). Sends
+    chat_template_kwargs:{enable_thinking:false} so Qwen3.6 emits the
+    JSON answer directly without a thinking trace.
 
     Args:
         jpeg_bytes: Raw JPEG image data.
@@ -122,7 +132,7 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
     b64_image = base64.b64encode(jpeg_bytes).decode("ascii")
 
     payload = {
-        "model": "qwen2.5-vl",
+        "model": config.LLM_BRAIN_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -143,6 +153,7 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
         "max_tokens": 300,
         "temperature": 0.2,
         "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
     try:
@@ -204,7 +215,7 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
 
 
 async def check_model_available() -> bool:
-    """Check if the Qwen2.5-VL vision server is responding."""
+    """Check if the brain VLM server is responding."""
     client = await _get_client()
     try:
         resp = await client.get(config.LLM_VISION_URL + "/health")
@@ -214,10 +225,7 @@ async def check_model_available() -> bool:
         return False
     except httpx.ConnectError:
         log.warning(
-            "Vision server not reachable at %s. "
-            "Start with: llama-server -m ~/models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf "
-            "--mmproj ~/models/Qwen2.5-VL-7B-Instruct-mmproj-f16.gguf "
-            "--host 0.0.0.0 --port 8082 -ngl 99 -c 4096 -np 1",
+            "Vision server not reachable at %s — qwen36-server.service should be active.",
             config.LLM_VISION_URL,
         )
         return False

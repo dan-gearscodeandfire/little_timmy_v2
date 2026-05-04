@@ -1,4 +1,4 @@
-"""Async memory formation via GPT-OSS-120B (fire-and-forget)."""
+"""Async memory formation via the brain LLM at config.LLM_MEMORY_URL (fire-and-forget)."""
 
 import asyncio
 import json
@@ -20,8 +20,9 @@ async def extract_and_store(
 ):
     """Extract memories and facts from a conversation exchange.
 
-    Runs on GPT-OSS-120B (port 8080). Fire-and-forget — non-critical.
-    Uses semaphore to prevent GPU contention with conversation LLM.
+    Runs on the brain LLM at config.LLM_MEMORY_URL (Qwen3.6 :8083 with
+    thinking=True). Fire-and-forget — non-critical. Uses semaphore to
+    prevent GPU contention with conversation LLM.
     """
     # Skip extraction for very short/empty user messages (likely STT hallucinations)
     stripped = user_text.strip()
@@ -66,7 +67,7 @@ async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | 
                 "Most exchanges have NOTHING worth storing. When in doubt, output empty arrays."
             )
 
-            result = await generate_memory(prompt)
+            result = await generate_memory(prompt, thinking=True)
             if not result:
                 return
 

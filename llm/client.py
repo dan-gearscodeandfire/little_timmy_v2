@@ -52,15 +52,22 @@ async def stream_conversation(
                 continue
 
 
-async def generate_memory(prompt: str) -> str:
-    """Send a prompt to GPT-OSS-120B on port 8080 for memory extraction. Non-streaming."""
+async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
+    """Send a prompt to the brain LLM (LLM_MEMORY_URL) for memory extraction. Non-streaming.
+
+    `thinking`: when True/False, sends `chat_template_kwargs:{enable_thinking:bool}`
+    so a Qwen3.6-style server gates the thinking trace per-request. None preserves
+    legacy behavior (no kwarg, server default applies).
+    """
     client = await _get_client()
-    payload = {
+    payload: dict = {
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": config.MEMORY_MAX_TOKENS,
         "temperature": config.MEMORY_TEMPERATURE,
         "stream": False,
     }
+    if thinking is not None:
+        payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
     resp = await client.post(
         f"{config.LLM_MEMORY_URL}/v1/chat/completions",
         json=payload,
@@ -68,7 +75,9 @@ async def generate_memory(prompt: str) -> str:
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"].get("content", "")
-    # GPT-OSS-120B may put actual content in reasoning_content if content is empty
+    # Defensive fallback: legacy GPT-OSS-120B blended thinking into reasoning_content
+    # when content was empty. With Qwen3.6 + --reasoning-format deepseek this should
+    # rarely fire, but keep the fallback for any edge-case server config.
     if not content:
         content = data["choices"][0]["message"].get("reasoning_content", "")
     return content

@@ -29,6 +29,7 @@ from conversation.manager import ConversationManager
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
+from vision.visual_question import is_visual_question
 from vision.supervisor import BehaviorSupervisor
 
 logging.basicConfig(
@@ -305,14 +306,27 @@ class Orchestrator:
 
         # --- Build Prompt ---
         history = self.conversation.build_history_messages()
-        # Trigger a vision capture on speech (non-blocking best-effort)
-        vision_desc = self.vision.get_description()
+
+        # On-demand vision: if the user is asking a visual question,
+        # force a fresh VLM capture and WAIT for the result
+        visual_q = is_visual_question(user_text)
+        if visual_q and self.vision.enabled:
+            log.info("[VISION] Visual question detected, triggering fresh capture")
+            fresh_record = await self.vision.trigger_capture("visual_question")
+            if fresh_record:
+                vision_desc = fresh_record.summary()
+                log.info("[VISION] Fresh capture: %s", vision_desc[:100])
+            else:
+                vision_desc = self.vision.get_description()
+        else:
+            vision_desc = self.vision.get_description()
 
         ephemeral = build_ephemeral_block(
             memories=retrieved_memories,
             facts=resolved_facts,
             speaker_name=speaker_name,
             vision_description=vision_desc,
+            visual_question=visual_q,
         )
         messages = build_messages(history, ephemeral, user_text)
 

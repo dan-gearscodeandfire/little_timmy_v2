@@ -5,7 +5,8 @@ import os
 # --- Network ---
 WHISPER_URL = os.getenv("TIMMY_WHISPER_URL", "http://localhost:8891")
 LLM_CONVERSATION_URL = os.getenv("TIMMY_LLM_URL", "http://localhost:8081")
-LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8080")
+LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8083")
+LLM_BRAIN_MODEL = os.getenv("TIMMY_BRAIN_MODEL", "qwen3.6")
 OLLAMA_URL = os.getenv("TIMMY_OLLAMA_URL", "http://localhost:11434")
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8893
@@ -49,7 +50,7 @@ RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
 CONVERSATION_TEMPERATURE = 0.7
-MEMORY_MAX_TOKENS = 1024
+MEMORY_MAX_TOKENS = 3072  # bumped from 1024 for Qwen3.6 thinking=True (probed: 1436 tokens for a typical extraction; 3072 gives ~2x headroom)
 MEMORY_TEMPERATURE = 0.3
 
 # --- Persona ---
@@ -80,7 +81,7 @@ VISION_ENABLED = os.getenv("TIMMY_VISION_ENABLED", "true").lower() == "true"
 STREAMERPI_CAPTURE_URL = os.getenv(
     "TIMMY_CAPTURE_URL", "https://192.168.1.110:8080/capture"
 )
-LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8082")
+LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8083")
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
 VISION_MIN_CAPTURE_GAP = 3.0     # minimum seconds between any captures
 VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this

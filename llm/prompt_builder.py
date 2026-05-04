@@ -45,6 +45,7 @@ def build_ephemeral_block(
     speaker_name: str | None = None,
     now: datetime | None = None,
     vision_description: str | None = None,
+    visual_question: bool = False,
 ) -> str:
     """Build the ephemeral system context block."""
     if now is None:
@@ -78,13 +79,24 @@ def build_ephemeral_block(
             parts.append(f"- ({time_str}) {content}")
 
     if vision_description:
-        parts.append(
-            "\n[WHAT YOU SEE]\n" + vision_description
-            + "\nVISION RULES: This is background awareness only. "
-            + "Do NOT describe what you see unless directly asked. "
-            + "Do NOT narrate the scene. Do NOT volunteer visual details. "
-            + "Use vision context silently to inform your responses."
-        )
+        if visual_question:
+            # User asked a visual question — encourage answering with visual details
+            parts.append(
+                "\n[WHAT YOU SEE]\n" + vision_description
+                + "\nThe user is asking about what you can see. "
+                + "Answer their question using the visual information above. "
+                + "Be specific and descriptive about what you observe."
+            )
+        else:
+            # Background awareness — don't volunteer visual details
+            parts.append(
+                "\n[WHAT YOU SEE]\n" + vision_description
+                + "\nVISION RULES: This is background awareness. "
+                + "Do NOT describe what you see unless directly asked. "
+                + "Do NOT narrate the scene. Do NOT volunteer visual details. "
+                + "If someone asks what you see or about visual details, "
+                + "you CAN and SHOULD answer using this information."
+            )
 
     return "\n".join(parts)
 

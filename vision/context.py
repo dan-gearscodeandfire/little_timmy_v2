@@ -16,6 +16,7 @@ import config
 from vision.capture import FrameCapture
 from vision.analyzer import analyze_frame, check_model_available, SceneRecord
 from vision.relevance import classify, RelevanceResult, INJECT_THRESHOLD
+from vision.face_id import FaceID
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ class VisionContext:
         self._last_update: float = 0.0
         self._lock = asyncio.Lock()
         self._enabled = False
+        self._face_id = FaceID()
+        self._face_id_ready = False
         # Rolling buffer of recent scene records (for temporal context)
         self._history: deque[SceneRecord] = deque(maxlen=10)
         # Last analyzed JPEG (for debug/dashboard display)
@@ -48,8 +51,17 @@ class VisionContext:
             return
 
         self._enabled = True
+
+        # Initialize face identification
+        if self._face_id.init_models():
+            n = self._face_id.load_db()
+            self._face_id_ready = True
+            log.info("Face ID ready (%d enrolled identities)", n)
+        else:
+            log.warning("Face ID not available (models not found)")
+
         await self._capture.start(self._on_frame)
-        log.info("Vision context started (Qwen2.5-VL structured pipeline)")
+        log.info("Vision context started (Qwen2.5-VL structured pipeline + face ID)")
 
     async def stop(self):
         """Stop the vision pipeline."""
@@ -66,6 +78,10 @@ class VisionContext:
         """Callback from FrameCapture -- analyze the frame and update record."""
         record = await analyze_frame(jpeg_bytes)
         if record:
+            # Enrich with face identification
+            if self._face_id_ready:
+                self._enrich_with_face_id(record, jpeg_bytes)
+
             async with self._lock:
                 # Run relevance classifier against history
                 history_list = list(self._history)
@@ -85,6 +101,10 @@ class VisionContext:
         if jpeg:
             record = await analyze_frame(jpeg)
             if record:
+                # Enrich with face identification
+                if self._face_id_ready:
+                    self._enrich_with_face_id(record, jpeg)
+
                 async with self._lock:
                     history_list = list(self._history)
                     relevance = classify(record, history_list)
@@ -95,6 +115,35 @@ class VisionContext:
                     self._last_relevance = relevance
                 return record
         return self._current if self._current else None
+
+    def _enrich_with_face_id(self, record, jpeg_bytes: bytes):
+        """Run face identification and update record.people with real names."""
+        try:
+            results = self._face_id.identify_from_jpeg(jpeg_bytes)
+            if not results:
+                return
+
+            identified = []
+            for r in results:
+                name = r["name"]
+                conf = r["confidence"]
+                if conf in ("high", "medium"):
+                    identified.append(name)
+                    log.info("[FACE_ID] %s (distance=%.3f, %s)",
+                             name, r["distance"], conf)
+                else:
+                    identified.append("unidentified person")
+                    log.debug("[FACE_ID] Unknown face (distance=%.3f)", r["distance"])
+
+            if identified:
+                vlm_people = [p for p in record.people
+                              if not any(p.lower().startswith(w)
+                                         for w in ("person", "man", "woman", "someone"))]
+                record.people = identified + vlm_people
+                log.info("[FACE_ID] People updated: %s", record.people)
+
+        except Exception:
+            log.exception("[FACE_ID] Enrichment failed")
 
     def get_scene_record(self) -> SceneRecord | None:
         """Get the current scene record, or None if stale/unavailable."""
@@ -159,6 +208,13 @@ class VisionContext:
         }
         if self._last_jpeg:
             result["frame_b64"] = base64.b64encode(self._last_jpeg).decode("ascii")
+        # Face ID status
+        if self._face_id_ready:
+            result["face_id"] = {
+                "enrolled": self._face_id.get_enrolled_names(),
+                "ready": True,
+            }
+
         if self._current:
             result["record"] = {
                 "people": self._current.people,

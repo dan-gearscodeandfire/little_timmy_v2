@@ -30,3 +30,6 @@ Thumbs.db
 
 # Temp
 persona_tuning/
+
+# Backup files
+*.bak.*
