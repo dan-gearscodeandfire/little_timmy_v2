@@ -53,9 +53,21 @@ async def store_memory(
 
 
 async def touch_memory(memory_id: int):
-    """Update access timestamp and count."""
+    """Update access timestamp and count for a single memory."""
     pool = await get_pool()
     await pool.execute(
         "UPDATE memories SET accessed_at = NOW(), access_count = access_count + 1 WHERE id = $1",
         memory_id,
+    )
+
+
+async def touch_memories(memory_ids: list[int]):
+    """Batched access-stat update for multiple memories in one query."""
+    if not memory_ids:
+        return
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE memories SET accessed_at = NOW(), access_count = access_count + 1 "
+        "WHERE id = ANY($1::int[])",
+        memory_ids,
     )

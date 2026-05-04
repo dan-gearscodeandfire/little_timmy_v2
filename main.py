@@ -395,8 +395,10 @@ class Orchestrator:
 
         await self.conversation.add_assistant_turn(full_response)
 
-        # --- Compliment detection for persona tuning ---
-        self._check_compliment(user_text, full_response, ephemeral, messages)
+        # --- Compliment detection for persona tuning (fire-and-forget) ---
+        asyncio.create_task(
+            self._check_compliment(user_text, full_response, ephemeral, messages)
+        )
 
         # --- Async Memory Formation (fire-and-forget) ---
         await extract_and_store(user_text, full_response,
@@ -410,16 +412,17 @@ class Orchestrator:
         "proud of you", "keep it up",
     }
 
-    def _check_compliment(self, user_text: str, response: str,
-                          ephemeral: str, messages: list[dict]):
-        """Log compliment examples for future LoRA fine-tuning."""
+    async def _check_compliment(self, user_text: str, response: str,
+                                ephemeral: str, messages: list[dict]):
+        """Log compliment examples for future LoRA fine-tuning. File I/O
+        runs in a worker thread so the response path's event loop never
+        stalls on disk."""
         lower = user_text.lower().strip().rstrip(".!?,")
         is_compliment = any(p in lower for p in self._COMPLIMENT_PATTERNS)
         if not is_compliment:
             return
 
         log_dir = Path(os.path.expanduser("~/little_timmy/persona_tuning"))
-        log_dir.mkdir(exist_ok=True)
 
         # Find penultimate user message from history
         prev_user = ""
@@ -437,11 +440,16 @@ class Orchestrator:
 
         filename = log_dir / f"example_{int(time.time())}.json"
         try:
-            with open(filename, "w") as f:
-                _json.dump(entry, f, indent=2)
+            await asyncio.to_thread(self._write_compliment_log, log_dir, filename, entry)
             log.info("[PERSONA] Logged compliment example: %s", filename.name)
         except Exception as e:
             log.warning("Failed to log compliment example: %s", e)
+
+    @staticmethod
+    def _write_compliment_log(log_dir: Path, filename: Path, entry: dict):
+        log_dir.mkdir(exist_ok=True)
+        with open(filename, "w") as f:
+            _json.dump(entry, f, indent=2)
 
     @staticmethod
     def _extract_name_from_response(text: str) -> str | None:

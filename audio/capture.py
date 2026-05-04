@@ -11,6 +11,7 @@ Always-listening audio capture that:
 import asyncio
 import collections
 import logging
+import queue
 import threading
 import time
 import numpy as np
@@ -37,6 +38,10 @@ class AudioCapture:
         self._loop: asyncio.AbstractEventLoop | None = None
         # VAD model loaded lazily
         self._vad_model = None
+        # Live-transcription worker (offloads HTTP off the capture thread)
+        self._live_audio_queue: queue.Queue | None = None
+        self._latest_live_text: str = ""
+        self._live_worker_thread: threading.Thread | None = None
         # Diagnostics
         self.diag_chunks_processed = 0
         self.diag_last_peak = 0.0
@@ -272,27 +277,64 @@ class AudioCapture:
                         silence_count = 0
                         last_transcription = ""
 
-                    # Periodic live transcription for endpointing decisions
+                    # Periodic live transcription for endpointing decisions.
+                    # Submit is non-blocking; we read whatever the worker has
+                    # most recently transcribed (may lag by one network round-trip,
+                    # which is acceptable for endpointing heuristics).
                     live_check_counter += 1
                     if recording and silence_count >= 1 and live_check_counter % 3 == 0:
-                        # Quick transcription check for endpointing
-                        # This will be filled in by the orchestrator via set_live_callback
-                        if self._live_transcribe_fn:
-                            try:
-                                segment_so_far = np.concatenate(audio_buffer)
-                                last_transcription = self._live_transcribe_fn(segment_so_far)
-                            except Exception:
-                                pass
+                        if self._live_transcribe_fn and self._live_audio_queue is not None:
+                            segment_so_far = np.concatenate(audio_buffer)
+                            self._submit_live_audio(segment_so_far)
+                            last_transcription = self._latest_live_text
 
     _live_transcribe_fn = None
 
     def set_live_transcribe(self, fn):
         """Set a callback for live transcription during recording.
 
-        fn(audio_np) -> str, called from capture thread.
-        Must be thread-safe (typically uses requests, not async).
+        fn(audio_np) -> str, called from a dedicated worker thread (NOT the
+        capture thread) so its HTTP round-trip never blocks capture/VAD.
+        Must be thread-safe (typically uses requests/urllib, not async).
         """
         self._live_transcribe_fn = fn
+        if self._live_worker_thread is None:
+            # Capacity 1: we only ever care about the newest audio segment.
+            self._live_audio_queue = queue.Queue(maxsize=1)
+            self._live_worker_thread = threading.Thread(
+                target=self._live_worker_loop, daemon=True
+            )
+            self._live_worker_thread.start()
+            log.info("Live transcription worker thread started")
+
+    def _submit_live_audio(self, audio: np.ndarray):
+        """Non-blocking submit. Drops oldest pending audio so worker always
+        operates on the freshest segment."""
+        try:
+            self._live_audio_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._live_audio_queue.put_nowait(audio)
+        except queue.Full:
+            pass
+
+    def _live_worker_loop(self):
+        """Worker loop: pull audio, run transcription, publish latest text."""
+        while self._running or self._live_worker_thread is not None:
+            try:
+                audio = self._live_audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                if not self._running:
+                    return
+                continue
+            if not self._live_transcribe_fn:
+                continue
+            try:
+                text = self._live_transcribe_fn(audio)
+                self._latest_live_text = text or ""
+            except Exception as e:
+                log.warning("live_transcribe failed: %s", e)
 
     async def start(self, loop: asyncio.AbstractEventLoop):
         """Start the capture thread."""

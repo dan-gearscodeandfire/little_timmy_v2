@@ -150,7 +150,7 @@ async def health_check():
         for name, url in [
             ("whisper_cpp", f"{config.WHISPER_URL}/health"),
             ("llm_3b", f"{config.LLM_CONVERSATION_URL}/health"),
-            ("llm_120b", f"{config.LLM_MEMORY_URL}/health"),
+            ("llm_brain", f"{config.LLM_MEMORY_URL}/health"),
             ("ollama", f"{config.OLLAMA_URL}/api/tags"),
         ]:
             try:

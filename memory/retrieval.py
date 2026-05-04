@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from db.connection import get_pool
-from memory.manager import embed, touch_memory
+from memory.manager import embed, touch_memories
 import config
 
 log = logging.getLogger(__name__)
@@ -104,8 +104,10 @@ async def retrieve(query: str, top_k: int | None = None) -> list[RetrievedMemory
                 score=1.0 / (rank + 1),
                 created_at=r["created_at"],
             ))
-            # Update access stats in background
-            asyncio.create_task(touch_memory(mid))
+
+    # Batch access-stat update in background (one query for all hits)
+    if results:
+        asyncio.create_task(touch_memories([r.id for r in results]))
 
     log.info("Retrieved %d memories (semantic=%d, fts=%d, trigram=%d)",
              len(results), len(semantic), len(fts), len(trigram))
