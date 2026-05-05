@@ -1,0 +1,22 @@
+[Unit]
+Description=Little Timmy OS (service manager + dashboard, port 8894)
+After=network-online.target
+Wants=network-online.target
+# Loose ordering with services it monitors
+After=whisper-server.service llama-3b-server.service llama-server.service
+
+[Service]
+Type=simple
+User=gearscodeandfire
+Group=gearscodeandfire
+WorkingDirectory=/home/gearscodeandfire/little_timmy/little_timmy_os
+ExecStart=/home/gearscodeandfire/little_timmy/little_timmy_os/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/gearscodeandfire/demerzel/logs/little-timmy-os.log
+StandardError=append:/home/gearscodeandfire/demerzel/logs/little-timmy-os.log
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
