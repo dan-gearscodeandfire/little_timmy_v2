@@ -5,19 +5,13 @@ import os
 import time
 from pathlib import Path
 
-PERSONA_TUNING_DIR = Path(os.path.expanduser("~/little_timmy/persona_tuning"))
-
 INBOX_PATH = Path(os.path.expanduser("~/little_timmy/feedback_inbox.jsonl"))
+PERSONA_TUNING_DIR = Path(os.path.expanduser("~/little_timmy/persona_tuning"))
+FLAGGED_PATH = PERSONA_TUNING_DIR / "flagged.jsonl"
 
 
 def append_event(entry: dict) -> str:
-    """Append one feedback event to the JSONL inbox. Returns the event id.
-
-    Uses fsync + rename-style atomicity is overkill for an append-only log;
-    a single write() with O_APPEND is atomic on POSIX for buffers under
-    PIPE_BUF and our entries are well under 4 KiB. We open in 'a' which
-    sets O_APPEND and the kernel serializes concurrent appends.
-    """
+    """Append one feedback event to the JSONL inbox. Returns the event id."""
     INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
     if "id" not in entry:
         entry["id"] = f"{int(entry.get('ts', time.time()) * 1000)}"
@@ -50,11 +44,7 @@ def read_events(since_ts: float | None = None, limit: int = 500) -> list[dict]:
 
 
 def write_persona_tuning_negative(entry: dict) -> Path:
-    """Mirror of _check_compliment's positive-example shape but for the
-    LoRA negative bin: {timestamp, penultimate_user, system_prompt,
-    flag_reason, response, source}. Filename: example_neg_<ts>.json so
-    sort order interleaves with positive examples (example_<ts>.json).
-    """
+    """LoRA negative example. Mirror of _check_compliment positive shape."""
     PERSONA_TUNING_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(entry.get("timestamp", time.time()))
     path = PERSONA_TUNING_DIR / f"example_neg_{ts}.json"
@@ -63,3 +53,40 @@ def write_persona_tuning_negative(entry: dict) -> Path:
         f.flush()
         os.fsync(f.fileno())
     return path
+
+
+def write_persona_tuning_positive(entry: dict) -> Path:
+    """LoRA positive example. Same shape as _check_compliment writes,
+    used by the UI thumbs-up path so verbal-praise and click-praise files
+    interleave by timestamp."""
+    PERSONA_TUNING_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(entry.get("timestamp", time.time()))
+    path = PERSONA_TUNING_DIR / f"example_{ts}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entry, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    return path
+
+
+def append_flagged(kind: str, entry: dict) -> None:
+    """Append one line to the consolidated good+bad running log at
+    ~/little_timmy/persona_tuning/flagged.jsonl. Independent of Obsidian;
+    meant for grep/jq/tail consumption.
+
+    `kind`: "good" | "bad".
+    `entry`: dict with at minimum (ts, source, speaker, user_prompt,
+              response, comment, system_prompt). Extra keys preserved.
+    """
+    PERSONA_TUNING_DIR.mkdir(parents=True, exist_ok=True)
+    ts = float(entry.get("ts", time.time()))
+    line = {
+        "ts": ts,
+        "iso_ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
+        "kind": kind,
+    }
+    line.update(entry)
+    with open(FLAGGED_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())

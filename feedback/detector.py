@@ -176,6 +176,19 @@ async def _run(
             event_id = await asyncio.to_thread(append_event, entry)
             log.info("[FEEDBACK] captured event id=%s score=%d feedback=%r",
                      event_id, score, user_text[:80])
+            try:
+                from feedback.storage import append_flagged
+                await asyncio.to_thread(append_flagged, "bad", {
+                    "ts": entry["ts"],
+                    "source": "verbal_meta_feedback",
+                    "speaker": speaker,
+                    "user_prompt": prev_user,
+                    "response": prev_assistant,
+                    "comment": user_text,
+                    "system_prompt": ephemeral or "",
+                })
+            except Exception as fe:
+                log.warning("append_flagged(bad) failed: %s", fe)
         except Exception as e:
             log.warning("feedback persist error: %s", e)
     finally:

@@ -151,43 +151,65 @@ async def manual_flag(payload: dict | None = None):
     verbal_meta_feedback path.
     """
     import time as _time
-    from feedback.storage import append_event, write_persona_tuning_negative
+    from feedback.storage import (append_event, write_persona_tuning_negative, write_persona_tuning_positive, append_flagged)
     if not _orchestrator or not getattr(_orchestrator, "_last_finalized_turn", None):
         return {"ok": False, "error": "no recent finalized turn to flag"}
     snap = _orchestrator._last_finalized_turn
-    reason = (payload or {}).get("reason") or ""
+    body = payload or {}
+    reason = body.get("reason") or ""
+    kind = body.get("kind", "bad")
+    if kind not in ("good", "bad"):
+        return {"ok": False, "error": f"invalid kind: {kind!r} (use good or bad)"}
     ts = _time.time()
     inbox_entry = {
         "ts": ts,
         "speaker": snap.get("speaker_name"),
-        "feedback_text": reason or "(ui_button click; no reason text)",
+        "feedback_text": reason or f"(ui_button {kind}; no reason text)",
         "current_assistant": "",
         "prev_user": snap.get("user_text", ""),
         "prev_assistant": snap.get("assistant_response", ""),
         "keyword_score": -1,
         "llm_confirmed": False,
         "source": "ui_button",
+        "kind": kind,
         "system_prompt": snap.get("ephemeral", ""),
     }
     persona_entry = {
         "timestamp": ts,
         "penultimate_user": snap.get("user_text", ""),
         "system_prompt": snap.get("ephemeral", ""),
-        "flag_reason": reason,
         "response": snap.get("assistant_response", ""),
         "source": "ui_button",
+        "kind": kind,
     }
+    if kind == "good":
+        persona_entry["compliment"] = reason
+    else:
+        persona_entry["flag_reason"] = reason
     try:
         event_id = append_event(inbox_entry)
-        persona_path = write_persona_tuning_negative(persona_entry)
-        log.info("[FEEDBACK] manual_flag id=%s persona=%s reason=%r",
-                 event_id, persona_path.name, reason[:80])
-        return {"ok": True, "event_id": event_id,
+        if kind == "good":
+            persona_path = write_persona_tuning_positive(persona_entry)
+        else:
+            persona_path = write_persona_tuning_negative(persona_entry)
+        append_flagged(kind, {
+            "ts": ts,
+            "source": "ui_button",
+            "speaker": snap.get("speaker_name"),
+            "user_prompt": snap.get("user_text", ""),
+            "response": snap.get("assistant_response", ""),
+            "comment": reason,
+            "system_prompt": snap.get("ephemeral", ""),
+            "persona_tuning_file": persona_path.name,
+        })
+        log.info("[FEEDBACK] manual %s id=%s persona=%s reason=%r",
+                 kind, event_id, persona_path.name, reason[:80])
+        return {"ok": True, "kind": kind, "event_id": event_id,
                 "persona_tuning_file": persona_path.name,
                 "flagged_user": snap.get("user_text", ""),
                 "flagged_assistant": snap.get("assistant_response", "")}
     except Exception as e:
-        log.warning("manual_flag persist error: %s", e)
+        log.warning("manual %s persist error: %s", kind, e)
         return {"ok": False, "error": str(e)}
 
 

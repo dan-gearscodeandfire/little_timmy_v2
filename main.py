@@ -461,6 +461,20 @@ class Orchestrator:
         try:
             await asyncio.to_thread(self._write_compliment_log, log_dir, filename, entry)
             log.info("[PERSONA] Logged compliment example: %s", filename.name)
+            try:
+                from feedback.storage import append_flagged
+                await asyncio.to_thread(append_flagged, "good", {
+                    "ts": entry["timestamp"],
+                    "source": "compliment",
+                    "speaker": None,
+                    "user_prompt": prev_user,
+                    "response": response,
+                    "comment": user_text,
+                    "system_prompt": ephemeral,
+                    "persona_tuning_file": filename.name,
+                })
+            except Exception as fe:
+                log.warning("append_flagged(good) failed: %s", fe)
         except Exception as e:
             log.warning("Failed to log compliment example: %s", e)
 
