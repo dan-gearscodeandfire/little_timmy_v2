@@ -1,0 +1,29 @@
+[Unit]
+Description=llama.cpp Server (Qwen3.6-35B-A3B-Q4_K_M + mmproj-BF16, port 8084, vision-dedicated, thinking via per-request kwargs)
+Documentation=https://github.com/ggerganov/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gearscodeandfire
+Group=gearscodeandfire
+ExecStart=/usr/bin/stdbuf -oL /home/gearscodeandfire/llama.cpp/build-vulkan-head/bin/llama-server \
+    -m /home/gearscodeandfire/models/Qwen3.6-35B-A3B-Q4_K_M.gguf \
+    --host 0.0.0.0 \
+    --port 8084 \
+    -ngl 99 \
+    -c 8192 \
+    -fa on -ctk q8_0 -ctv q8_0 \
+    -cb -np 1 \
+    --mmproj /home/gearscodeandfire/models/Qwen3.6-35B-A3B-mmproj-BF16.gguf \
+    --reasoning-format deepseek --jinja
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/gearscodeandfire/demerzel/logs/qwen36-vision-server.log
+StandardError=append:/home/gearscodeandfire/demerzel/logs/qwen36-vision-server.log
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
