@@ -123,7 +123,21 @@ async def get_chatlog():
     return PlainTextResponse(chr(10).join(lines))
 
 
+@app.get("/api/feedback")
+async def get_feedback(since: float | None = None, limit: int = 200):
+    """Return meta-feedback events captured by feedback.detector.
 
+    Query params:
+      since: float unix-ts; only events with ts > since returned.
+      limit: max events (default 200, newest last).
+    """
+    from feedback.storage import read_events
+    try:
+        events = read_events(since_ts=since, limit=limit)
+    except Exception as e:
+        log.warning('feedback read error: %s', e)
+        events = []
+    return {'count': len(events), 'events': events}
 
 
 @app.get("/api/audio/diag")

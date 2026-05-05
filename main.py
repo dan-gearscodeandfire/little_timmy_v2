@@ -25,6 +25,7 @@ from llm.prompt_builder import build_ephemeral_block, build_messages
 from memory.retrieval import retrieve
 from memory.facts import get_all_facts_for_prompt, resolve_entity
 from memory.extraction import extract_and_store
+from feedback.detector import maybe_capture_feedback
 from conversation.manager import ConversationManager
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
@@ -398,6 +399,12 @@ class Orchestrator:
         # --- Compliment detection for persona tuning (fire-and-forget) ---
         asyncio.create_task(
             self._check_compliment(user_text, full_response, ephemeral, messages)
+        )
+
+        # --- Meta-feedback capture for Claude-Code-side review (fire-and-forget) ---
+        # speaker_name is the string identifier set earlier in this method.
+        asyncio.create_task(
+            maybe_capture_feedback(user_text, full_response, messages, speaker_name)
         )
 
         # --- Async Memory Formation (fire-and-forget) ---

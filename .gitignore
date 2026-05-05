@@ -33,3 +33,6 @@ persona_tuning/
 
 # Backup files
 *.bak.*
+
+# Runtime feedback inbox (mirrors persona_tuning convention)
+feedback_inbox.jsonl
