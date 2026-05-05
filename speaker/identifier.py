@@ -123,27 +123,68 @@ class SpeakerIdentifier:
             log.info("Resemblyzer encoder loaded")
         return self._encoder
 
+    _ID_MAP_FILENAME = "_id_map.json"
+
+    def _read_id_map(self) -> dict:
+        """Read the persisted name -> speaker_id map, or {} if missing/corrupt."""
+        path = VOICEPRINT_DIR / self._ID_MAP_FILENAME
+        if not path.exists():
+            return {}
+        try:
+            import json as _json
+            return {k.lower(): int(v) for k, v in _json.load(open(path)).items()}
+        except Exception as e:
+            log.warning("Failed to read %s: %s; treating as empty", path.name, e)
+            return {}
+
+    def _write_id_map(self, mapping: dict) -> None:
+        """Persist the name -> speaker_id map atomically."""
+        import json as _json
+        path = VOICEPRINT_DIR / self._ID_MAP_FILENAME
+        tmp = path.with_suffix(".json.tmp")
+        VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w") as f:
+            _json.dump(mapping, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(path)
+
     def load_voiceprints(self):
         """Load every ``*_resemblyzer.npy`` in VOICEPRINT_DIR.
 
         File ``<name>_resemblyzer.npy`` becomes a KnownSpeaker named
-        ``<name>``. Names in _RESERVED_IDS keep their fixed speaker_id;
-        every other name is assigned the next free id starting at _NEXT_ID.
+        ``<name>``. Speaker ids are pulled from a persisted name -> id
+        map at ``VOICEPRINT_DIR/_id_map.json`` so they survive both
+        restarts and the addition of new voiceprints. Reserved names
+        (dan=1, timmy=2) keep their fixed ids regardless of the map;
+        the map's ``_next_id`` field tracks the next free id.
 
         Backup files (``*.bak``, ``*.disabled``, ``*.pre_*``) are skipped
         because the glob requires the path to end in ``.npy`` exactly.
         """
         self._load_encoder()
 
-        next_id = self._NEXT_ID
+        id_map = self._read_id_map()
+        next_id = max(int(id_map.get("_next_id", self._NEXT_ID)), self._NEXT_ID)
+        # Seed reserved entries so the map stays consistent even if the file
+        # is wiped/recreated.
+        for name, sid in self._RESERVED_IDS.items():
+            id_map[name] = sid
+        dirty = False
+
         paths = sorted(VOICEPRINT_DIR.glob("*_resemblyzer.npy"))
         for path in paths:
             name = path.stem.replace("_resemblyzer", "").lower()
             if name in self._RESERVED_IDS:
                 speaker_id = self._RESERVED_IDS[name]
+            elif name in id_map and isinstance(id_map[name], int):
+                speaker_id = id_map[name]
             else:
                 speaker_id = next_id
                 next_id += 1
+                id_map[name] = speaker_id
+                dirty = True
+                log.info("Allocated new speaker_id=%d for %s", speaker_id, name)
             try:
                 emb = np.load(path)
             except Exception as e:
@@ -156,6 +197,16 @@ class SpeakerIdentifier:
             ))
             log.info("Loaded voiceprint: %s (speaker_id=%d) from %s",
                      name, speaker_id, path.name)
+
+        if id_map.get("_next_id") != next_id:
+            id_map["_next_id"] = next_id
+            dirty = True
+        if dirty:
+            try:
+                self._write_id_map(id_map)
+                log.info("Updated id-map: %s", {k: v for k, v in id_map.items() if k != "_next_id"})
+            except Exception as e:
+                log.warning("Failed to persist id-map: %s", e)
 
         loaded = {ks.name for ks in self._known_speakers}
         for reserved in self._RESERVED_IDS:
