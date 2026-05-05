@@ -174,6 +174,10 @@ class Orchestrator:
 
     _pending_name_capture: str | None = None
     _pending_name_confirm: dict | None = None  # {"temp_id": str, "name": str}
+    # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
+    # can capture the same (user, assistant, full system prompt) tuple the
+    # verbal-feedback path captures.
+    _last_finalized_turn: dict | None = None
 
     async def process_text_input(self, text: str):
         """Process typed text input (from web UI)."""
@@ -402,9 +406,17 @@ class Orchestrator:
         )
 
         # --- Meta-feedback capture for Claude-Code-side review (fire-and-forget) ---
-        # speaker_name is the string identifier set earlier in this method.
+        # Snapshot the just-finalized turn so the manual-flag endpoint can
+        # read the exact (user, assistant, ephemeral) tuple the LLM saw.
+        self._last_finalized_turn = {
+            "ts": time.time(),
+            "user_text": user_text,
+            "assistant_response": full_response,
+            "ephemeral": ephemeral,
+            "speaker_name": speaker_name,
+        }
         asyncio.create_task(
-            maybe_capture_feedback(user_text, full_response, messages, speaker_name)
+            maybe_capture_feedback(user_text, full_response, messages, speaker_name, ephemeral)
         )
 
         # --- Async Memory Formation (fire-and-forget) ---

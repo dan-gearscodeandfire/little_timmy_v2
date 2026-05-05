@@ -140,6 +140,57 @@ async def get_feedback(since: float | None = None, limit: int = 200):
     return {'count': len(events), 'events': events}
 
 
+@app.post("/api/feedback/manual_flag")
+async def manual_flag(payload: dict | None = None):
+    """User clicked the "Flag last response" button (or curl-equivalent).
+    Reads the orchestrator's snapshot of the most recent finalized turn
+    and dual-writes:
+      - persona_tuning/example_neg_<ts>.json   (LoRA negative example)
+      - feedback_inbox.jsonl                   (vault-poller inbox)
+    Both carry source="ui_button" so consumers can distinguish from the
+    verbal_meta_feedback path.
+    """
+    import time as _time
+    from feedback.storage import append_event, write_persona_tuning_negative
+    if not _orchestrator or not getattr(_orchestrator, "_last_finalized_turn", None):
+        return {"ok": False, "error": "no recent finalized turn to flag"}
+    snap = _orchestrator._last_finalized_turn
+    reason = (payload or {}).get("reason") or ""
+    ts = _time.time()
+    inbox_entry = {
+        "ts": ts,
+        "speaker": snap.get("speaker_name"),
+        "feedback_text": reason or "(ui_button click; no reason text)",
+        "current_assistant": "",
+        "prev_user": snap.get("user_text", ""),
+        "prev_assistant": snap.get("assistant_response", ""),
+        "keyword_score": -1,
+        "llm_confirmed": False,
+        "source": "ui_button",
+        "system_prompt": snap.get("ephemeral", ""),
+    }
+    persona_entry = {
+        "timestamp": ts,
+        "penultimate_user": snap.get("user_text", ""),
+        "system_prompt": snap.get("ephemeral", ""),
+        "flag_reason": reason,
+        "response": snap.get("assistant_response", ""),
+        "source": "ui_button",
+    }
+    try:
+        event_id = append_event(inbox_entry)
+        persona_path = write_persona_tuning_negative(persona_entry)
+        log.info("[FEEDBACK] manual_flag id=%s persona=%s reason=%r",
+                 event_id, persona_path.name, reason[:80])
+        return {"ok": True, "event_id": event_id,
+                "persona_tuning_file": persona_path.name,
+                "flagged_user": snap.get("user_text", ""),
+                "flagged_assistant": snap.get("assistant_response", "")}
+    except Exception as e:
+        log.warning("manual_flag persist error: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/audio/diag")
 async def audio_diagnostics():
     """Audio capture diagnostics."""

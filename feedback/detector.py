@@ -102,6 +102,7 @@ async def maybe_capture_feedback(
     current_assistant: str,
     messages: list[dict],
     speaker: str | None = None,
+    ephemeral: str | None = None,
 ):
     """Fire-and-forget entry point called from main.py response-finalize.
 
@@ -119,7 +120,7 @@ async def maybe_capture_feedback(
         return
     _detector_running = True
     asyncio.create_task(
-        _run(user_text, current_assistant, messages, speaker, score)
+        _run(user_text, current_assistant, messages, speaker, score, ephemeral)
     )
 
 
@@ -129,6 +130,7 @@ async def _run(
     messages: list[dict],
     speaker: str | None,
     score: int,
+    ephemeral: str | None = None,
 ):
     global _detector_running
     try:
@@ -167,6 +169,8 @@ async def _run(
             "prev_assistant": prev_assistant,
             "keyword_score": score,
             "llm_confirmed": (score < 2),
+            "source": "verbal_meta_feedback",
+            "system_prompt": ephemeral or "",
         }
         try:
             event_id = await asyncio.to_thread(append_event, entry)

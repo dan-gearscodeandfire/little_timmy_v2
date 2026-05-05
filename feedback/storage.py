@@ -5,6 +5,8 @@ import os
 import time
 from pathlib import Path
 
+PERSONA_TUNING_DIR = Path(os.path.expanduser("~/little_timmy/persona_tuning"))
+
 INBOX_PATH = Path(os.path.expanduser("~/little_timmy/feedback_inbox.jsonl"))
 
 
@@ -45,3 +47,19 @@ def read_events(since_ts: float | None = None, limit: int = 500) -> list[dict]:
                 continue
             out.append(entry)
     return out[-limit:]
+
+
+def write_persona_tuning_negative(entry: dict) -> Path:
+    """Mirror of _check_compliment's positive-example shape but for the
+    LoRA negative bin: {timestamp, penultimate_user, system_prompt,
+    flag_reason, response, source}. Filename: example_neg_<ts>.json so
+    sort order interleaves with positive examples (example_<ts>.json).
+    """
+    PERSONA_TUNING_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(entry.get("timestamp", time.time()))
+    path = PERSONA_TUNING_DIR / f"example_neg_{ts}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entry, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    return path
