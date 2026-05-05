@@ -21,6 +21,7 @@ Environment=PYTHONUNBUFFERED=1
 # device which only accepts 44100/48000 -> PaErrorCode -9997.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=TIMMY_VISION_URL=http://localhost:8084
 
 [Install]
 WantedBy=multi-user.target
