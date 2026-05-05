@@ -213,6 +213,28 @@ async def manual_flag(payload: dict | None = None):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/speaker/status")
+async def speaker_status():
+    """Speaker-ID state: known speakers + active re-enrollment + drift buffers."""
+    if not _orchestrator or not getattr(_orchestrator, "speaker_id_module", None):
+        return {"ok": False, "error": "orchestrator/speaker module not ready"}
+    sm = _orchestrator.speaker_id_module
+    return {
+        "ok": True,
+        "known": [
+            {"name": ks.name, "speaker_id": ks.speaker_id}
+            for ks in sm._known_speakers
+        ],
+        "unknown": [
+            {"temp_id": us.temp_id, "name": us.name,
+             "utterance_count": us.utterance_count}
+            for us in sm._unknown_speakers
+        ],
+        "active_reenrollment": sm.get_active_reenrollment(),
+        "drift_buffers": {n: len(buf) for n, buf in sm._drift_buffers.items()},
+    }
+
+
 @app.get("/api/audio/diag")
 async def audio_diagnostics():
     """Audio capture diagnostics."""

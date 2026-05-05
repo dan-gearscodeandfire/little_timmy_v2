@@ -26,6 +26,7 @@ from memory.retrieval import retrieve
 from memory.facts import get_all_facts_for_prompt, resolve_entity
 from memory.extraction import extract_and_store
 from feedback.detector import maybe_capture_feedback
+from speaker.voice_commands import detect_reenroll_intent
 from conversation.manager import ConversationManager
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
@@ -418,6 +419,21 @@ class Orchestrator:
         asyncio.create_task(
             maybe_capture_feedback(user_text, full_response, messages, speaker_name, ephemeral)
         )
+
+        # --- Voice-command re-enrollment (Trigger 2) -----------------------
+        # Detect mid-conversation requests like "re-enroll my voice" and open
+        # a 60s collection window on the speaker_id_module. Confident matches
+        # during that window blend into the persisted voiceprint at finalize.
+        try:
+            target = detect_reenroll_intent(user_text, default_speaker=speaker_name)
+            if target:
+                ok = self.speaker_id_module.start_reenrollment(target, duration_s=60.0)
+                if ok:
+                    log.info("[T2] re-enrollment opened from voice command for %s (60s)", target)
+                else:
+                    log.info("[T2] re-enrollment intent detected for %r but refused", target)
+        except Exception as _e:
+            log.warning("[T2] voice-command detection failed: %s", _e)
 
         # --- Async Memory Formation (fire-and-forget) ---
         await extract_and_store(user_text, full_response,

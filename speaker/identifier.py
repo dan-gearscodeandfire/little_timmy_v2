@@ -1,12 +1,32 @@
 """Speaker identification using Resemblyzer embeddings.
 
-Identifies known speakers (Dan, Timmy) and tracks unknown voices.
-When an unknown voice becomes stable (enough utterances), signals
-the orchestrator to ask for their name.
+Identifies known speakers (Dan, Timmy, plus any other ``*_resemblyzer.npy``
+in VOICEPRINT_DIR) and tracks unknown voices. When an unknown voice
+becomes stable (enough utterances), signals the orchestrator to ask for
+their name. Three live-enrollment triggers persist voiceprints during
+conversation:
+
+  Trigger 1 (auto-persist on naming): when ``assign_name(temp_id, name)``
+    fires from the existing in-conversation flow, the unknown speaker's
+    avg embedding is written to ``models/speaker/<name>_resemblyzer.npy``
+    and the speaker is promoted to a KnownSpeaker for the rest of the
+    session. Survives restart.
+
+  Trigger 2 (voice-command re-enrollment): start_reenrollment(name, dur)
+    opens a collection window. Every confident match for that speaker
+    during the window contributes its embedding. On expiry, the new
+    samples are blended 50/50 with the existing voiceprint and persisted.
+
+  Trigger 3 (continuous drift correction): off by default. Enabled via
+    ``config.SPEAKER_DRIFT_LEARNING = True``. Tight matches (dist <
+    TIGHT_DRIFT_THRESHOLD) feed a per-speaker rolling buffer. Every
+    DRIFT_BATCH_SIZE samples, the buffer is folded into the voiceprint
+    via EMA and persisted.
 """
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,15 +43,24 @@ KNOWN_SPEAKER_THRESHOLD = 0.30    # below this = confident match to known speake
 SAME_UNKNOWN_THRESHOLD = 0.30     # below this = same unknown speaker as before
 STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 
-# Short-audio continuity: Resemblyzer embeddings are noisy on short clips
-# (< ~5s) so the same speaker can drift past KNOWN_SPEAKER_THRESHOLD on a
-# 2-3 second utterance. If the closest known speaker matches the most-recent
-# confidently-identified speaker, the audio is short, and we are within the
-# continuity window, accept the match anyway up to a relaxed dist cap.
+# Short-audio continuity (see top-of-file docstring on identify()).
 SHORT_AUDIO_SAMPLES = 80000        # ~5s @ 16kHz; below this is "short"
 SHORT_AUDIO_DIST_CAP = 0.55        # max dist tolerated for short-audio continuity
 CONTINUITY_WINDOW_SEC = 60.0       # last confident match must be this recent
 
+# Trigger 3 (drift learning) constants.
+TIGHT_DRIFT_THRESHOLD = 0.20       # only matches under this contribute to drift
+DRIFT_BATCH_SIZE = 30              # samples per drift update
+DRIFT_NEW_WEIGHT = 0.30            # EMA weight for new samples vs existing voiceprint
+
+# Names we refuse to persist as voiceprints (reserved or easy footguns).
+RESERVED_NAMES = {
+    "timmy", "system", "unknown", "the", "a", "an",
+    "you", "me", "i", "user", "assistant",
+}
+
+# Valid name pattern for live enrollment: alpha + underscore/hyphen, 2-32 chars.
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
 
 @dataclass
@@ -67,17 +96,27 @@ class SpeakerResult:
 
 
 class SpeakerIdentifier:
+    # Reserved DB ids used by the orchestrator/router by name. Any other
+    # *_resemblyzer.npy in VOICEPRINT_DIR is auto-loaded with an id from
+    # _NEXT_ID onward.
+    _RESERVED_IDS = {"dan": 1, "timmy": 2}
+    _NEXT_ID = 3
+
     def __init__(self):
         self._encoder = None
         self._known_speakers: list[KnownSpeaker] = []
         self._unknown_speakers: list[UnknownSpeaker] = []
         self._unknown_counter = 0
-        # Short-audio continuity state (see SHORT_AUDIO_* constants).
+        # Short-audio continuity state.
         self._last_known_speaker: KnownSpeaker | None = None
         self._last_known_seen_ts: float = 0.0
+        # Trigger 2 — at most one active re-enrollment at a time.
+        # {"name": str, "started_ts": float, "expiry_ts": float, "embeddings": [np.ndarray]}.
+        self._active_reenrollment: dict | None = None
+        # Trigger 3 — per-speaker rolling buffers.
+        self._drift_buffers: dict[str, list[np.ndarray]] = {}
 
     def _load_encoder(self):
-        """Lazy-load Resemblyzer encoder."""
         if self._encoder is None:
             from resemblyzer import VoiceEncoder
             self._encoder = VoiceEncoder("cpu")
@@ -85,46 +124,98 @@ class SpeakerIdentifier:
         return self._encoder
 
     def load_voiceprints(self):
-        """Load known speaker voiceprints from disk."""
+        """Load every ``*_resemblyzer.npy`` in VOICEPRINT_DIR.
+
+        File ``<name>_resemblyzer.npy`` becomes a KnownSpeaker named
+        ``<name>``. Names in _RESERVED_IDS keep their fixed speaker_id;
+        every other name is assigned the next free id starting at _NEXT_ID.
+
+        Backup files (``*.bak``, ``*.disabled``, ``*.pre_*``) are skipped
+        because the glob requires the path to end in ``.npy`` exactly.
+        """
         self._load_encoder()
 
-        voiceprints = {
-            "dan": (1, VOICEPRINT_DIR / "dan_resemblyzer.npy"),
-            "timmy": (2, VOICEPRINT_DIR / "timmy_resemblyzer.npy"),
-        }
-
-        for name, (speaker_id, path) in voiceprints.items():
-            if path.exists():
-                emb = np.load(path)
-                self._known_speakers.append(KnownSpeaker(
-                    speaker_id=speaker_id,
-                    name=name,
-                    embedding=emb,
-                ))
-                log.info("Loaded voiceprint: %s (speaker_id=%d)", name, speaker_id)
+        next_id = self._NEXT_ID
+        paths = sorted(VOICEPRINT_DIR.glob("*_resemblyzer.npy"))
+        for path in paths:
+            name = path.stem.replace("_resemblyzer", "").lower()
+            if name in self._RESERVED_IDS:
+                speaker_id = self._RESERVED_IDS[name]
             else:
-                log.warning("Voiceprint not found: %s", path)
+                speaker_id = next_id
+                next_id += 1
+            try:
+                emb = np.load(path)
+            except Exception as e:
+                log.warning("Failed to load voiceprint %s: %s", path.name, e)
+                continue
+            self._known_speakers.append(KnownSpeaker(
+                speaker_id=speaker_id,
+                name=name,
+                embedding=emb,
+            ))
+            log.info("Loaded voiceprint: %s (speaker_id=%d) from %s",
+                     name, speaker_id, path.name)
+
+        loaded = {ks.name for ks in self._known_speakers}
+        for reserved in self._RESERVED_IDS:
+            if reserved not in loaded:
+                log.warning("Reserved voiceprint not found: %s_resemblyzer.npy",
+                            reserved)
+        log.info("Voiceprint load complete: %d enrolled (%s)",
+                 len(self._known_speakers),
+                 ", ".join(ks.name for ks in self._known_speakers) or "none")
 
     def extract_embedding(self, audio_16k: np.ndarray) -> np.ndarray:
-        """Extract speaker embedding from 16kHz float32 audio."""
         from resemblyzer import preprocess_wav
         encoder = self._load_encoder()
         processed = preprocess_wav(audio_16k, source_sr=16000)
         if len(processed) < 8000:  # <0.5s of speech after trimming
-            processed = audio_16k  # fall back to raw if too short
+            processed = audio_16k
         emb = encoder.embed_utterance(processed)
         return emb
 
-    def identify(self, audio_16k: np.ndarray, transcribed_text: str = "") -> SpeakerResult:
-        """Identify who is speaking from an audio segment.
+    # ---------- Persistence primitive (shared by all three triggers) ----------
 
-        Returns SpeakerResult with identification info.
+    def persist_voiceprint(self, name: str, embedding: np.ndarray,
+                           *, backup: bool = True) -> Path:
+        """Atomic write to ``VOICEPRINT_DIR/<name>_resemblyzer.npy``.
+
+        Refuses reserved/empty/malformed names. Backs up any existing file
+        as ``.bak.<unix_ts>`` if backup=True.
         """
+        clean = (name or "").strip().lower()
+        if clean in RESERVED_NAMES or not _NAME_RE.match(clean):
+            raise ValueError(f"refusing to persist voiceprint as {clean!r}")
+        if not isinstance(embedding, np.ndarray) or embedding.ndim != 1:
+            raise ValueError("embedding must be a 1-D ndarray")
+        VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
+        out = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy"
+        if backup and out.exists():
+            bak = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy.bak.{int(time.time())}"
+            out.rename(bak)
+            log.info("Backed up existing voiceprint: %s -> %s", out.name, bak.name)
+        np.save(out, embedding.astype(np.float32))
+        log.info("Persisted voiceprint: %s (%d-dim)", out, embedding.shape[0])
+        return out
+
+    def _next_known_id(self) -> int:
+        used = {ks.speaker_id for ks in self._known_speakers}
+        candidate = self._NEXT_ID
+        while candidate in used:
+            candidate += 1
+        return candidate
+
+    # ---------- identify() ----------
+
+    def identify(self, audio_16k: np.ndarray, transcribed_text: str = "") -> SpeakerResult:
+        # First, finalize any expired re-enrollment window from a prior turn.
+        self._maybe_finalize_reenrollment()
+
         t0 = time.time()
         emb = self.extract_embedding(audio_16k)
         extract_ms = (time.time() - t0) * 1000
 
-        # Compare against known speakers
         best_known = None
         best_known_dist = float("inf")
         for ks in self._known_speakers:
@@ -133,16 +224,19 @@ class SpeakerIdentifier:
                 best_known_dist = dist
                 best_known = ks
 
-        # Always log distances for debugging
         log.info("Speaker distances: best=%s dist=%.4f threshold=%.2f audio_len=%d (%dms)",
                  best_known.name if best_known else "none", best_known_dist,
                  KNOWN_SPEAKER_THRESHOLD, len(audio_16k), extract_ms)
 
-        # Is it a known speaker?
         if best_known and best_known_dist < KNOWN_SPEAKER_THRESHOLD:
-            # Confident match — refresh the continuity anchor.
+            # Confident match — refresh continuity anchor + feed both
+            # collection mechanisms (Trigger 2 if active for this speaker;
+            # Trigger 3 only on tight match).
             self._last_known_speaker = best_known
             self._last_known_seen_ts = time.time()
+            self._record_for_reenrollment(best_known.name, emb)
+            if best_known_dist < TIGHT_DRIFT_THRESHOLD:
+                self._record_for_drift(best_known.name, emb)
             log.info("Speaker identified: %s (dist=%.3f, %dms)",
                      best_known.name, best_known_dist, extract_ms)
             return SpeakerResult(
@@ -154,9 +248,7 @@ class SpeakerIdentifier:
                 confidence=1 - best_known_dist,
             )
 
-        # Short-audio continuity fallback: dist crossed the strict threshold
-        # but audio is short and the closest known speaker is the same one we
-        # just confidently identified. Accept up to a relaxed cap.
+        # Short-audio continuity fallback.
         audio_len = len(audio_16k)
         if (audio_len < SHORT_AUDIO_SAMPLES
                 and best_known is not None
@@ -166,11 +258,13 @@ class SpeakerIdentifier:
                 and best_known_dist < SHORT_AUDIO_DIST_CAP
                 and (time.time() - self._last_known_seen_ts) < CONTINUITY_WINDOW_SEC):
             elapsed = time.time() - self._last_known_seen_ts
-            # Refresh the anchor so a string of short utterances stays sticky.
             self._last_known_seen_ts = time.time()
             log.info("Speaker continuity applied: %s (dist=%.3f cap=%.2f, audio_len=%d short, last_seen %.0fs ago)",
                      best_known.name, best_known_dist, SHORT_AUDIO_DIST_CAP,
                      audio_len, elapsed)
+            # Continuity-applied matches are explicitly excluded from drift
+            # learning (T3) and re-enrollment (T2): they're borderline and
+            # could pollute the voiceprint.
             return SpeakerResult(
                 speaker_id=best_known.speaker_id,
                 name=best_known.name,
@@ -180,7 +274,7 @@ class SpeakerIdentifier:
                 confidence=1 - best_known_dist,
             )
 
-        # Not a known speaker — check against tracked unknowns
+        # Compare against tracked unknowns.
         best_unknown = None
         best_unknown_dist = float("inf")
         for us in self._unknown_speakers:
@@ -191,7 +285,6 @@ class SpeakerIdentifier:
                     best_unknown = us
 
         if best_unknown and best_unknown_dist < SAME_UNKNOWN_THRESHOLD:
-            # Same unknown speaker as before — accumulate
             best_unknown.embeddings.append(emb)
             best_unknown.utterance_count += 1
             best_unknown.avg_embedding = np.mean(best_unknown.embeddings, axis=0)
@@ -217,7 +310,6 @@ class SpeakerIdentifier:
                 confidence=1 - best_unknown_dist,
             )
 
-        # Brand new unknown speaker
         self._unknown_counter += 1
         temp_id = f"unknown_{self._unknown_counter}"
         new_unknown = UnknownSpeaker(
@@ -241,32 +333,184 @@ class SpeakerIdentifier:
             confidence=0.0,
         )
 
+    # ---------- Trigger 1 — auto-persist on name assignment ----------
+
     def assign_name(self, temp_id: str, name: str) -> bool:
-        """Assign a name to an unknown speaker after they tell us."""
+        """Attach a name to an unknown speaker, persist voiceprint to disk,
+        and promote them to a KnownSpeaker for the rest of the session.
+
+        Returns True on success, False if the unknown is missing or the
+        proposed name is invalid/reserved/already-taken.
+        """
+        clean = (name or "").strip().lower()
+        if clean in RESERVED_NAMES or not _NAME_RE.match(clean):
+            log.warning("Refusing to assign invalid name %r", clean)
+            return False
+        if any(ks.name == clean for ks in self._known_speakers):
+            log.warning("Refusing to assign name %r: already a known speaker", clean)
+            return False
+
         for us in self._unknown_speakers:
             if us.temp_id == temp_id or us.name == temp_id:
-                us.name = name.strip().lower()
+                us.name = clean
                 us.name_asked = True
                 log.info("Assigned name '%s' to %s", us.name, us.temp_id)
+
+                # Trigger 1: persist + promote.
+                if us.avg_embedding is not None and len(us.embeddings) >= 1:
+                    try:
+                        self.persist_voiceprint(clean, us.avg_embedding)
+                        new_id = self._next_known_id()
+                        self._known_speakers.append(KnownSpeaker(
+                            speaker_id=new_id,
+                            name=clean,
+                            embedding=us.avg_embedding.copy(),
+                        ))
+                        self._unknown_speakers.remove(us)
+                        log.info("[T1] Promoted %s (was %s) to known speaker_id=%d "
+                                 "with %d-sample voiceprint",
+                                 clean, us.temp_id, new_id, len(us.embeddings))
+                    except Exception as e:
+                        log.warning("[T1] persist/promote failed for %s: %s", clean, e)
+                else:
+                    log.warning("[T1] cannot persist %s: no avg_embedding yet", clean)
                 return True
         return False
 
+    # ---------- Trigger 2 — voice-command re-enrollment ----------
+
+    def start_reenrollment(self, name: str, duration_s: float = 60.0) -> bool:
+        """Open a collection window for an already-known speaker. Every
+        confident match for that speaker during the window contributes its
+        embedding. On expiry, samples are blended 50/50 with the existing
+        voiceprint and persisted.
+
+        Returns True if the window opened, False if the name isn't a known
+        speaker or another re-enrollment is already in progress.
+        """
+        clean = (name or "").strip().lower()
+        if not any(ks.name == clean for ks in self._known_speakers):
+            log.warning("[T2] cannot re-enroll %r: not a known speaker", clean)
+            return False
+        if self._active_reenrollment is not None:
+            log.warning("[T2] re-enrollment already active for %r",
+                        self._active_reenrollment["name"])
+            return False
+        now = time.time()
+        self._active_reenrollment = {
+            "name": clean,
+            "started_ts": now,
+            "expiry_ts": now + duration_s,
+            "embeddings": [],
+        }
+        log.info("[T2] re-enrollment opened for %s (window=%.0fs)", clean, duration_s)
+        return True
+
+    def get_active_reenrollment(self) -> dict | None:
+        """Snapshot of the active re-enrollment, or None. Safe to expose via API."""
+        if not self._active_reenrollment:
+            return None
+        a = self._active_reenrollment
+        now = time.time()
+        return {
+            "name": a["name"],
+            "started_ts": a["started_ts"],
+            "expiry_ts": a["expiry_ts"],
+            "remaining_s": max(0.0, a["expiry_ts"] - now),
+            "samples_collected": len(a["embeddings"]),
+        }
+
+    def _record_for_reenrollment(self, name: str, emb: np.ndarray) -> None:
+        a = self._active_reenrollment
+        if not a:
+            return
+        if a["name"] != name:
+            return
+        if time.time() >= a["expiry_ts"]:
+            return  # finalize on next identify() call
+        a["embeddings"].append(emb)
+
+    def _maybe_finalize_reenrollment(self) -> None:
+        a = self._active_reenrollment
+        if not a:
+            return
+        if time.time() < a["expiry_ts"]:
+            return
+        name = a["name"]
+        new_embs = a["embeddings"]
+        self._active_reenrollment = None
+        if not new_embs:
+            log.warning("[T2] re-enrollment for %s expired with 0 samples", name)
+            return
+        target = next((ks for ks in self._known_speakers if ks.name == name), None)
+        if target is None:
+            log.warning("[T2] target %s no longer known at finalize", name)
+            return
+        new_avg = np.mean(new_embs, axis=0)
+        new_avg /= np.linalg.norm(new_avg)
+        blended = 0.5 * target.embedding + 0.5 * new_avg
+        blended /= np.linalg.norm(blended)
+        drift_dist = float(cosine(target.embedding, blended))
+        try:
+            self.persist_voiceprint(name, blended)
+            target.embedding = blended
+            log.info("[T2] re-enrollment finalized for %s: %d new samples blended, "
+                     "drift_dist=%.4f", name, len(new_embs), drift_dist)
+        except Exception as e:
+            log.warning("[T2] finalize/persist failed for %s: %s", name, e)
+
+    # ---------- Trigger 3 — continuous drift correction ----------
+
+    def _is_drift_learning_enabled(self) -> bool:
+        try:
+            import config as _cfg
+            return bool(getattr(_cfg, "SPEAKER_DRIFT_LEARNING", False))
+        except Exception:
+            return False
+
+    def _record_for_drift(self, name: str, emb: np.ndarray) -> None:
+        if not self._is_drift_learning_enabled():
+            return
+        buf = self._drift_buffers.setdefault(name, [])
+        buf.append(emb)
+        if len(buf) >= DRIFT_BATCH_SIZE:
+            self._apply_drift(name)
+
+    def _apply_drift(self, name: str) -> None:
+        embs = self._drift_buffers.pop(name, [])
+        if not embs:
+            return
+        target = next((ks for ks in self._known_speakers if ks.name == name), None)
+        if target is None:
+            return
+        new_avg = np.mean(embs, axis=0)
+        new_avg /= np.linalg.norm(new_avg)
+        blended = (1 - DRIFT_NEW_WEIGHT) * target.embedding + DRIFT_NEW_WEIGHT * new_avg
+        blended /= np.linalg.norm(blended)
+        drift_dist = float(cosine(target.embedding, blended))
+        try:
+            self.persist_voiceprint(name, blended)
+            target.embedding = blended
+            log.info("[T3] drift learning applied for %s: %d samples folded, "
+                     "drift_dist=%.4f", name, len(embs), drift_dist)
+        except Exception as e:
+            log.warning("[T3] persist failed for %s: %s", name, e)
+
+    # ---------- Existing helpers (unchanged) ----------
+
     def mark_name_asked(self, temp_id: str):
-        """Mark that we've asked this unknown for their name (avoid re-asking)."""
         for us in self._unknown_speakers:
             if us.temp_id == temp_id:
                 us.name_asked = True
                 return
 
     def get_unknown_for_name_ask(self, temp_id: str) -> UnknownSpeaker | None:
-        """Get unknown speaker info for name solicitation prompt."""
         for us in self._unknown_speakers:
             if us.temp_id == temp_id:
                 return us
         return None
 
     def get_all_session_speakers(self) -> list[str]:
-        """Get names of all identified speakers this session."""
         names = [ks.name for ks in self._known_speakers]
         for us in self._unknown_speakers:
             if us.name:
@@ -275,15 +519,13 @@ class SpeakerIdentifier:
                 names.append(us.temp_id)
         return names
 
-
     def set_last_text(self, name: str, text: str):
-        """Set the last transcribed text for an unknown speaker (for name solicitation)."""
         for us in self._unknown_speakers:
             if us.temp_id == name or us.name == name:
                 us.last_text = text
                 return
+
     def undo_last_observation(self, name: str):
-        """Roll back the last observation for an unknown speaker (e.g., noise/empty STT)."""
         for us in self._unknown_speakers:
             if us.temp_id == name or us.name == name:
                 if us.utterance_count <= 1:

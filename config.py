@@ -85,3 +85,10 @@ LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8083")
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
 VISION_MIN_CAPTURE_GAP = 3.0     # minimum seconds between any captures
 VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this
+
+# Trigger 3 - continuous self-improvement of voiceprints. When True, every
+# tight (dist < TIGHT_DRIFT_THRESHOLD = 0.20) confident speaker match
+# contributes to a per-speaker rolling buffer; every DRIFT_BATCH_SIZE = 30
+# samples the buffer is folded into the on-disk voiceprint via a 70/30
+# EMA blend. Off by default; opt in here.
+SPEAKER_DRIFT_LEARNING = False
