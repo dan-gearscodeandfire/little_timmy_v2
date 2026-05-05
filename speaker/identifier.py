@@ -23,6 +23,16 @@ KNOWN_SPEAKER_THRESHOLD = 0.30    # below this = confident match to known speake
 SAME_UNKNOWN_THRESHOLD = 0.30     # below this = same unknown speaker as before
 STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 
+# Short-audio continuity: Resemblyzer embeddings are noisy on short clips
+# (< ~5s) so the same speaker can drift past KNOWN_SPEAKER_THRESHOLD on a
+# 2-3 second utterance. If the closest known speaker matches the most-recent
+# confidently-identified speaker, the audio is short, and we are within the
+# continuity window, accept the match anyway up to a relaxed dist cap.
+SHORT_AUDIO_SAMPLES = 80000        # ~5s @ 16kHz; below this is "short"
+SHORT_AUDIO_DIST_CAP = 0.55        # max dist tolerated for short-audio continuity
+CONTINUITY_WINDOW_SEC = 60.0       # last confident match must be this recent
+
+
 
 @dataclass
 class KnownSpeaker:
@@ -62,6 +72,9 @@ class SpeakerIdentifier:
         self._known_speakers: list[KnownSpeaker] = []
         self._unknown_speakers: list[UnknownSpeaker] = []
         self._unknown_counter = 0
+        # Short-audio continuity state (see SHORT_AUDIO_* constants).
+        self._last_known_speaker: KnownSpeaker | None = None
+        self._last_known_seen_ts: float = 0.0
 
     def _load_encoder(self):
         """Lazy-load Resemblyzer encoder."""
@@ -127,12 +140,41 @@ class SpeakerIdentifier:
 
         # Is it a known speaker?
         if best_known and best_known_dist < KNOWN_SPEAKER_THRESHOLD:
+            # Confident match — refresh the continuity anchor.
+            self._last_known_speaker = best_known
+            self._last_known_seen_ts = time.time()
             log.info("Speaker identified: %s (dist=%.3f, %dms)",
                      best_known.name, best_known_dist, extract_ms)
             return SpeakerResult(
                 speaker_id=best_known.speaker_id,
                 name=best_known.name,
                 is_timmy=(best_known.name == "timmy"),
+                is_new=False,
+                should_ask_name=False,
+                confidence=1 - best_known_dist,
+            )
+
+        # Short-audio continuity fallback: dist crossed the strict threshold
+        # but audio is short and the closest known speaker is the same one we
+        # just confidently identified. Accept up to a relaxed cap.
+        audio_len = len(audio_16k)
+        if (audio_len < SHORT_AUDIO_SAMPLES
+                and best_known is not None
+                and self._last_known_speaker is not None
+                and best_known.name == self._last_known_speaker.name
+                and best_known.name != "timmy"
+                and best_known_dist < SHORT_AUDIO_DIST_CAP
+                and (time.time() - self._last_known_seen_ts) < CONTINUITY_WINDOW_SEC):
+            elapsed = time.time() - self._last_known_seen_ts
+            # Refresh the anchor so a string of short utterances stays sticky.
+            self._last_known_seen_ts = time.time()
+            log.info("Speaker continuity applied: %s (dist=%.3f cap=%.2f, audio_len=%d short, last_seen %.0fs ago)",
+                     best_known.name, best_known_dist, SHORT_AUDIO_DIST_CAP,
+                     audio_len, elapsed)
+            return SpeakerResult(
+                speaker_id=best_known.speaker_id,
+                name=best_known.name,
+                is_timmy=False,
                 is_new=False,
                 should_ask_name=False,
                 confidence=1 - best_known_dist,
