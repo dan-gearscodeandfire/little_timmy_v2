@@ -15,6 +15,12 @@ RestartSec=5
 KillMode=process
 TimeoutStopSec=10
 Environment=PYTHONUNBUFFERED=1
+# Route audio through the user's PipeWire/Pulse session so Piper's 22050 Hz
+# output is resampled instead of failing on a raw ALSA device. UID 1000 =
+# gearscodeandfire. Without these, sd.play() opens the system default ALSA
+# device which only accepts 44100/48000 -> PaErrorCode -9997.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 
 [Install]
 WantedBy=multi-user.target
