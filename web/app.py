@@ -213,6 +213,39 @@ async def manual_flag(payload: dict | None = None):
         return {"ok": False, "error": str(e)}
 
 
+@app.post("/api/speaker/reenroll")
+async def speaker_reenroll(payload: dict | None = None):
+    """Open a re-enrollment window for a known speaker.
+
+    Body may include {"name": "<speaker>", "duration_s": 60}. If name is
+    omitted, falls back to whoever just spoke (the speaker_name field on
+    the orchestrator's _last_finalized_turn snapshot). duration_s clamped
+    to [10, 300] seconds.
+    """
+    if not _orchestrator or not getattr(_orchestrator, "speaker_id_module", None):
+        return {"ok": False, "error": "orchestrator not ready"}
+    sm = _orchestrator.speaker_id_module
+    body = payload or {}
+    name = (body.get("name") or "").strip().lower()
+    if not name:
+        snap = getattr(_orchestrator, "_last_finalized_turn", None)
+        if snap:
+            name = (snap.get("speaker_name") or "").strip().lower()
+    if not name:
+        return {"ok": False, "error": "no name and no recent speaker to fall back to"}
+    duration = float(body.get("duration_s") or 60.0)
+    duration = max(10.0, min(duration, 300.0))
+    if not any(ks.name == name for ks in sm._known_speakers):
+        return {"ok": False, "error": f"{name!r} is not a known speaker"}
+    ok = sm.start_reenrollment(name, duration_s=duration)
+    if not ok:
+        return {"ok": False, "error": "start_reenrollment refused",
+                "active_reenrollment": sm.get_active_reenrollment()}
+    log.info("[T2] re-enrollment opened from API for %s (%.0fs)", name, duration)
+    return {"ok": True, "name": name, "duration_s": duration,
+            "active_reenrollment": sm.get_active_reenrollment()}
+
+
 @app.get("/api/speaker/status")
 async def speaker_status():
     """Speaker-ID state: known speakers + active re-enrollment + drift buffers."""
