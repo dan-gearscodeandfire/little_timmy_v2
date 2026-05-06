@@ -41,6 +41,7 @@ from presence import (
     FaceHintStreak,
     LookAtPolicy,
 )
+from presence.face_client_local import fetch_face_observation_local
 
 logging.basicConfig(
     handlers=[
@@ -89,12 +90,18 @@ class Orchestrator:
         self._look_at_enabled = config.LOOK_AT_ENABLED
 
     async def _fetch_face_safe(self):
-        """Wrapper that never raises; returns None on any failure or timeout."""
+        # Wrapper that never raises; returns None on any failure or timeout.
+        # Uses in-tree FaceID via face_client_local (no HTTP to :8895).
         if not self._presence_enabled:
             return None
         try:
             return await asyncio.wait_for(
-                fetch_face_observation(self._face_http, self._face_config),
+                fetch_face_observation_local(
+                    self.vision,
+                    self._face_http,
+                    config.STREAMERPI_BEHAVIOR_URL,
+                    timeout_sec=1.5,
+                ),
                 timeout=1.5,
             )
         except Exception as e:
