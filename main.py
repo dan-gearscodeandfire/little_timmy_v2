@@ -39,6 +39,7 @@ from presence import (
     fetch_face_observation,
     fuse_identity,
     FaceHintStreak,
+    LookAtPolicy,
 )
 
 logging.basicConfig(
@@ -66,6 +67,8 @@ class Orchestrator:
             unknown_voice_ttl_sec=config.UNKNOWN_VOICE_TTL_SEC,
             camera_pan_fov_steps=config.CAMERA_PAN_FOV_STEPS,
             camera_tilt_fov_steps=config.CAMERA_TILT_FOV_STEPS,
+            on_camera_fresh_threshold_sec=config.ON_CAMERA_FRESH_SEC,
+            save_path=config.LEDGER_SAVE_PATH,
         )
         self._face_config = FaceClientConfig(
             capture_url=config.STREAMERPI_CAPTURE_URL,
@@ -78,6 +81,12 @@ class Orchestrator:
         self._face_hint_streak = FaceHintStreak(
             threshold=config.FACE_HINT_AUTO_ENROLL_TURNS,
         )
+        self._look_at_policy = LookAtPolicy(
+            cooldown_sec=config.LOOK_AT_COOLDOWN_SEC,
+            max_pose_age_sec=config.LOOK_AT_MAX_POSE_AGE_SEC,
+            fresh_face_age_sec=config.LOOK_AT_FRESH_FACE_AGE_SEC,
+        )
+        self._look_at_enabled = config.LOOK_AT_ENABLED
 
     async def _fetch_face_safe(self):
         """Wrapper that never raises; returns None on any failure or timeout."""
@@ -132,6 +141,26 @@ class Orchestrator:
             self.room_ledger.update_from_face(obs)
         except Exception:
             log.exception("[PRESENCE] passive face callback failed")
+
+    async def _fire_look_at(self, name: str, target_pan: float, target_tilt: float) -> None:
+        # Send /servo/move to streamerpi to point head at target pose. Fire-and-forget.
+        try:
+            r = await self._face_http.post(
+                config.STREAMERPI_SERVO_MOVE_URL,
+                json={
+                    "pan": float(target_pan),
+                    "tilt": float(target_tilt),
+                    "speed": float(config.LOOK_AT_SPEED),
+                },
+                timeout=2.0,
+            )
+            if r.status_code == 200:
+                log.info("[PRESENCE] look_at: %s -> pan=%.1f tilt=%.1f",
+                         name, target_pan, target_tilt)
+            else:
+                log.warning("[PRESENCE] look_at HTTP %d for %s", r.status_code, name)
+        except Exception as e:
+            log.info("[PRESENCE] look_at failed for %s: %s", name, e)
 
     async def process_speech(self, audio: np.ndarray):
         """Process a speech segment through the full pipeline."""
@@ -418,6 +447,31 @@ class Orchestrator:
                         streak_hit.voice_temp_id, streak_hit.face_hint_name,
                     )
                 self._face_hint_streak.reset()
+
+            # Look-at-speaker: voice-confident off-camera speaker w/ fresh pose -> pan head
+            if (
+                self._look_at_enabled
+                and verdict.resolution_source == "voice"
+                and not speaker_name.startswith("unknown_")
+            ):
+                _present_state = self.room_ledger.current_state()
+                _present_record = next(
+                    (p for p in _present_state["present"] if p["name"] == speaker_name),
+                    None,
+                )
+                _last_pose = self.room_ledger.find_pose_for(speaker_name)
+                _beh_mode = (
+                    face_obs.behavior.mode if face_obs and face_obs.behavior else None
+                )
+                _now = time.time()
+                _v = self._look_at_policy.evaluate(
+                    speaker_name, _present_record, _last_pose, _beh_mode, _now,
+                )
+                if _v.should_look:
+                    self._look_at_policy.record_look_at(speaker_name, _now)
+                    asyncio.create_task(
+                        self._fire_look_at(speaker_name, _v.target_pan, _v.target_tilt)
+                    )
             if verdict.resolution_source == "face_hint":
                 log.info(
                     "[PRESENCE] face_hint promoted: voice=%s -> %s (face_conf=%.2f)",

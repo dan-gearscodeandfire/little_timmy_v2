@@ -1,10 +1,16 @@
 """In-memory room ledger: who is present, when last seen, where last seen."""
 
+import json
+import logging
+import os
 import time
+from pathlib import Path
 from typing import Optional
 
 from .identity import canonicalize, translate_pose
 from .types import FaceObservation, PersonRecord
+
+log = logging.getLogger(__name__)
 
 
 class RoomLedger:
@@ -12,10 +18,15 @@ class RoomLedger:
 
     Presence is TTL-windowed: someone is `present` while the most recent
     voice or face sighting is within PRESENCE_TTL. `on_camera_now` is a
-    transient flag set only for people seen in the most recent face frame.
+    smoothed flag (True if face seen within `on_camera_fresh_threshold_sec`)
+    so it doesn't flicker between VLM ticks. Raw "in latest frame" remains
+    available as `on_camera_in_latest_frame`.
 
     Updates run on the orchestrator's event loop (no thread crossings),
     so no lock is needed.
+
+    If `save_path` is set, the ledger persists to that JSON file on every
+    update and reloads on init (dropping entries past TTL).
     """
 
     def __init__(
@@ -24,12 +35,18 @@ class RoomLedger:
         unknown_voice_ttl_sec: float = 120.0,
         camera_pan_fov_steps: float = 80.0,
         camera_tilt_fov_steps: float = 50.0,
+        on_camera_fresh_threshold_sec: float = 30.0,
+        save_path: Optional[str] = None,
     ):
         self._records: dict[str, PersonRecord] = {}
         self._ttl = presence_ttl_sec
         self._unknown_ttl = unknown_voice_ttl_sec
         self._pan_fov = camera_pan_fov_steps
         self._tilt_fov = camera_tilt_fov_steps
+        self._on_camera_fresh = on_camera_fresh_threshold_sec
+        self._save_path = Path(save_path) if save_path else None
+        if self._save_path and self._save_path.exists():
+            self._load_from_disk()
 
     def _key_for_face(self, prediction) -> str:
         """Canonical lookup key for a face prediction.
@@ -64,6 +81,7 @@ class RoomLedger:
             rec.on_camera_now = False
 
         if not observation.predictions:
+            self._save_to_disk()
             return
 
         beh = observation.behavior
@@ -101,6 +119,8 @@ class RoomLedger:
                     "ts": ts,
                 }
 
+        self._save_to_disk()
+
     def update_from_voice(
         self,
         name: str,
@@ -114,6 +134,7 @@ class RoomLedger:
         rec = self._ensure(canon)
         rec.last_seen_voice_ts = ts
         rec.times_heard_voice += 1
+        self._save_to_disk()
 
     def _is_present(self, rec: PersonRecord, now_ts: float) -> bool:
         """Within the presence TTL on either signal?
@@ -132,23 +153,7 @@ class RoomLedger:
         return (now_ts - latest) <= ttl
 
     def current_state(self, now_ts: Optional[float] = None) -> dict:
-        """Snapshot of who is present right now.
-
-        Returns:
-          {
-            "now": ts,
-            "present": [
-              {
-                name, on_camera_now,
-                last_seen_face_age_s, last_seen_voice_age_s,
-                source: 'face'|'voice'|'both',
-                last_pose: {pan, tilt, bbox_center_norm, ts} | None,
-                times_seen_face, times_heard_voice,
-              }, ...
-            ],
-            "unknown_voices_recent": int,
-          }
-        """
+        """Snapshot of who is present right now."""
         now = now_ts if now_ts is not None else time.time()
         present = []
         unknown_voices = 0
@@ -171,9 +176,16 @@ class RoomLedger:
             else:
                 source = "voice"
 
+            # Smoothed on_camera_now: True if face seen within fresh threshold,
+            # to avoid the dot flickering off between VLM ticks.
+            on_camera_smoothed = (
+                face_age is not None and face_age <= self._on_camera_fresh
+            )
+
             present.append({
                 "name": rec.name,
-                "on_camera_now": rec.on_camera_now,
+                "on_camera_now": on_camera_smoothed,
+                "on_camera_in_latest_frame": rec.on_camera_now,
                 "last_seen_face_age_s": round(face_age, 1) if face_age is not None else None,
                 "last_seen_voice_age_s": round(voice_age, 1) if voice_age is not None else None,
                 "source": source,
@@ -203,3 +215,73 @@ class RoomLedger:
             return None
         rec = self._records.get(canon)
         return rec.last_pose if rec else None
+
+    def _save_to_disk(self) -> None:
+        """Atomic JSON dump (.tmp + rename). Best-effort; logs on failure."""
+        if not self._save_path:
+            return
+        try:
+            self._save_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "saved_at": time.time(),
+                "records": {
+                    name: {
+                        "name": rec.name,
+                        "last_seen_face_ts": rec.last_seen_face_ts,
+                        "last_seen_voice_ts": rec.last_seen_voice_ts,
+                        "last_pose": rec.last_pose,
+                        "times_seen_face": rec.times_seen_face,
+                        "times_heard_voice": rec.times_heard_voice,
+                    }
+                    for name, rec in self._records.items()
+                },
+            }
+            tmp = self._save_path.with_suffix(self._save_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, indent=2))
+            os.replace(tmp, self._save_path)
+        except Exception as e:
+            log.warning("RoomLedger save failed: %s", e)
+
+    def _load_from_disk(self) -> None:
+        """Best-effort load; drops entries whose latest signal is older than TTL."""
+        try:
+            payload = json.loads(self._save_path.read_text())
+        except Exception as e:
+            log.warning("RoomLedger load failed: %s; starting empty", e)
+            return
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            log.warning("RoomLedger file format unknown; starting empty")
+            return
+        records = payload.get("records", {})
+        if not isinstance(records, dict):
+            return
+        now = time.time()
+        loaded = 0
+        skipped = 0
+        for key, data in records.items():
+            try:
+                latest = max(
+                    data.get("last_seen_face_ts") or 0.0,
+                    data.get("last_seen_voice_ts") or 0.0,
+                )
+                is_unknown = key.startswith("unknown")
+                ttl = self._unknown_ttl if is_unknown else self._ttl
+                if latest <= 0 or (now - latest) > ttl:
+                    skipped += 1
+                    continue
+                rec = PersonRecord(
+                    name=data.get("name", key),
+                    last_seen_face_ts=data.get("last_seen_face_ts"),
+                    last_seen_voice_ts=data.get("last_seen_voice_ts"),
+                    on_camera_now=False,
+                    last_pose=data.get("last_pose"),
+                    times_seen_face=int(data.get("times_seen_face", 0)),
+                    times_heard_voice=int(data.get("times_heard_voice", 0)),
+                )
+                self._records[key] = rec
+                loaded += 1
+            except Exception as e:
+                log.warning("RoomLedger record %s load failed: %s", key, e)
+                skipped += 1
+        log.info("RoomLedger loaded %d records (%d expired/skipped)", loaded, skipped)

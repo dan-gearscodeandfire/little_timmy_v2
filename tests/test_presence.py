@@ -214,15 +214,42 @@ class TestRoomLedger:
         state = led.current_state()
         assert any(p["name"] == "dan" and p["on_camera_now"] for p in state["present"])
 
-    def test_second_face_update_clears_first_persons_on_camera(self):
+    def test_second_face_update_clears_first_persons_on_camera_in_latest_frame(self):
+        # on_camera_now is smoothed (~30s window) so both will show as on_camera_now
+        # immediately after Thea's update. The RAW "in latest frame" signal is
+        # exposed as on_camera_in_latest_frame.
         led = RoomLedger(presence_ttl_sec=900)
         led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()))
         led.update_from_face(_face_obs([_pred("Thea", 0.90)], _good_behavior()))
         state = led.current_state()
-        names_on_camera = {p["name"] for p in state["present"] if p["on_camera_now"]}
-        assert names_on_camera == {"thea"}
+        latest_frame = {p["name"] for p in state["present"] if p["on_camera_in_latest_frame"]}
+        assert latest_frame == {"thea"}
+        dan = next(p for p in state["present"] if p["name"] == "dan")
+        assert dan["on_camera_in_latest_frame"] is False
+        # smoothed flag still True because Dan was seen <30s ago
+        assert dan["on_camera_now"] is True
+
+    def test_smoothed_on_camera_goes_false_after_threshold(self):
+        led = RoomLedger(presence_ttl_sec=900, on_camera_fresh_threshold_sec=30)
+        t0 = 1000.0
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
+        # 25s later: still smoothed-on-camera
+        s_under = led.current_state(now_ts=t0 + 25)
+        dan = next(p for p in s_under["present"] if p["name"] == "dan")
+        assert dan["on_camera_now"] is True
+        # 35s later: smoothed flag drops
+        s_over = led.current_state(now_ts=t0 + 35)
+        dan = next(p for p in s_over["present"] if p["name"] == "dan")
+        assert dan["on_camera_now"] is False
+
+    def test_smoothed_on_camera_for_voice_only_record(self):
+        # Voice-only record never had a face sighting -> on_camera_now stays False
+        led = RoomLedger(presence_ttl_sec=900)
+        led.update_from_voice("dan")
+        state = led.current_state()
         dan = next(p for p in state["present"] if p["name"] == "dan")
         assert dan["on_camera_now"] is False
+        assert dan["on_camera_in_latest_frame"] is False
 
     def test_voice_only_creates_record(self):
         led = RoomLedger(presence_ttl_sec=900)
@@ -501,3 +528,261 @@ class TestTranslatePose:
         """Custom FoV scales the offset."""
         p, _ = translate_pose(0.0, 0.0, (1.0, 0.5), pan_fov_steps=160.0)
         assert p == pytest.approx(-80.0)
+# ---------------------------------------------------------------------------
+# LookAtPolicy
+# ---------------------------------------------------------------------------
+
+
+from presence.look_at import LookAtPolicy
+
+
+def _present(name="dan", on_camera=False, face_age=None, voice_age=None):
+    return {
+        "name": name,
+        "on_camera_now": on_camera,
+        "last_seen_face_age_s": face_age,
+        "last_seen_voice_age_s": voice_age,
+        "source": "face" if face_age is not None else "voice",
+        "last_pose": None,
+    }
+
+
+def _pose(pan=15.0, tilt=-3.0, ts=1000.0):
+    return {"pan": pan, "tilt": tilt, "ts": ts, "bbox_center_norm": (0.5, 0.5)}
+
+
+class TestLookAtPolicy:
+    def test_unknown_name_blocked(self):
+        p = LookAtPolicy()
+        v = p.evaluate("unknown_3", _present("unknown_3"), _pose(), "scan", 1100.0)
+        assert v.should_look is False
+        assert "unknown" in v.reason
+
+    def test_empty_name_blocked(self):
+        p = LookAtPolicy()
+        v = p.evaluate("", None, _pose(), "scan", 1100.0)
+        assert v.should_look is False
+
+    def test_no_pose_blocked(self):
+        p = LookAtPolicy()
+        v = p.evaluate("dan", _present("dan", face_age=200), None, "scan", 1100.0)
+        assert v.should_look is False
+        assert "no recorded pose" in v.reason
+
+    def test_old_pose_blocked(self):
+        p = LookAtPolicy(max_pose_age_sec=120)
+        v = p.evaluate("dan", _present("dan"), _pose(ts=900.0), "scan", 1100.0)
+        # pose is 200s old, max is 120s
+        assert v.should_look is False
+        assert "too old" in v.reason
+
+    def test_recent_face_blocks(self):
+        """Don't pan if face was seen recently — they're effectively still on camera."""
+        p = LookAtPolicy(fresh_face_age_sec=30)
+        v = p.evaluate(
+            "dan", _present("dan", face_age=10), _pose(ts=1090.0), "track", 1100.0,
+        )
+        assert v.should_look is False
+        assert "still fresh" in v.reason
+
+    def test_engage_mode_blocks(self):
+        """Don't disrupt active engagement."""
+        p = LookAtPolicy()
+        v = p.evaluate("dan", _present("dan", face_age=120), _pose(ts=1090.0), "engage", 1100.0)
+        assert v.should_look is False
+        assert "engage" in v.reason
+
+    def test_cooldown_blocks_repeat(self):
+        p = LookAtPolicy(cooldown_sec=30)
+        # First fire ok
+        v1 = p.evaluate("dan", _present("dan", face_age=120), _pose(ts=1090.0), "scan", 1100.0)
+        assert v1.should_look is True
+        p.record_look_at("dan", 1100.0)
+        # 10s later — should be blocked by cooldown
+        v2 = p.evaluate("dan", _present("dan", face_age=130), _pose(ts=1090.0), "scan", 1110.0)
+        assert v2.should_look is False
+        assert "cooldown" in v2.reason
+
+    def test_cooldown_clears(self):
+        p = LookAtPolicy(cooldown_sec=30)
+        p.record_look_at("dan", 1000.0)
+        # 31s later — should be clear
+        v = p.evaluate("dan", _present("dan", face_age=120), _pose(ts=1020.0), "scan", 1031.0)
+        assert v.should_look is True
+
+    def test_happy_path(self):
+        p = LookAtPolicy()
+        pose = _pose(pan=22.5, tilt=-4.0, ts=1090.0)
+        v = p.evaluate("dan", _present("dan", face_age=120), pose, "scan", 1100.0)
+        assert v.should_look is True
+        assert v.target_pan == 22.5
+        assert v.target_tilt == -4.0
+
+    def test_no_present_record_still_evaluates_pose(self):
+        """If person isn't in current ledger present list (TTL expired between updates),
+        we still consider firing if pose is fresh."""
+        p = LookAtPolicy()
+        v = p.evaluate("dan", None, _pose(ts=1090.0), "scan", 1100.0)
+        assert v.should_look is True
+
+    def test_per_speaker_cooldown_independent(self):
+        p = LookAtPolicy(cooldown_sec=30)
+        p.record_look_at("dan", 1000.0)
+        # Thea has not been looked at — no cooldown for her
+        v = p.evaluate("thea", _present("thea", face_age=120), _pose(ts=1010.0), "scan", 1020.0)
+        assert v.should_look is True
+
+    def test_cooldown_remaining(self):
+        p = LookAtPolicy(cooldown_sec=30)
+        assert p.cooldown_remaining("dan", 1000.0) == 0.0
+        p.record_look_at("dan", 1000.0)
+        assert p.cooldown_remaining("dan", 1010.0) == 20.0
+        assert p.cooldown_remaining("dan", 1100.0) == 0.0
+# ---------------------------------------------------------------------------
+# RoomLedger persistence
+# ---------------------------------------------------------------------------
+
+
+import json
+import tempfile
+from pathlib import Path
+
+
+class TestRoomLedgerPersistence:
+    def test_save_creates_file(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        led.update_from_voice("dan")
+        assert save_file.exists()
+        payload = json.loads(save_file.read_text())
+        assert payload["version"] == 1
+        assert "dan" in payload["records"]
+
+    def test_save_load_roundtrip(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()))
+        led.update_from_voice("thea")
+
+        # New ledger reads the same file
+        led2 = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        state = led2.current_state()
+        names = {p["name"] for p in state["present"]}
+        assert "dan" in names
+        assert "thea" in names
+
+    def test_pose_survives_roundtrip(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        led.update_from_face(
+            _face_obs(
+                [_pred("Dan", 0.92, bbox=(100, 80, 200, 200))],
+                _good_behavior(),
+            ),
+        )
+        original_pose = led.find_pose_for("dan")
+        assert original_pose is not None
+
+        led2 = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        loaded_pose = led2.find_pose_for("dan")
+        assert loaded_pose is not None
+        assert loaded_pose["pan"] == original_pose["pan"]
+        assert loaded_pose["tilt"] == original_pose["tilt"]
+        # bbox_center_norm tuple becomes list after JSON roundtrip; both work
+        # for indexed access
+        assert list(loaded_pose["bbox_center_norm"]) == list(original_pose["bbox_center_norm"])
+
+    def test_load_drops_expired(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        # Build a payload with an entry timestamped 1 hour ago
+        old_ts = time.time() - 3600
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "records": {
+                "dan": {
+                    "name": "dan",
+                    "last_seen_face_ts": old_ts,
+                    "last_seen_voice_ts": None,
+                    "last_pose": None,
+                    "times_seen_face": 1,
+                    "times_heard_voice": 0,
+                },
+                "thea": {
+                    "name": "thea",
+                    "last_seen_face_ts": time.time() - 60,  # fresh
+                    "last_seen_voice_ts": None,
+                    "last_pose": None,
+                    "times_seen_face": 1,
+                    "times_heard_voice": 0,
+                },
+            },
+        }
+        save_file.write_text(json.dumps(payload))
+        # presence_ttl_sec=900 (15 min) — Dan at 1h is expired, Thea at 1m is fresh
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        state = led.current_state()
+        names = {p["name"] for p in state["present"]}
+        assert "thea" in names
+        assert "dan" not in names
+
+    def test_load_drops_expired_unknown_voice_with_tighter_ttl(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        old_ts = time.time() - 200  # 200s ago
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "records": {
+                "unknown_3": {
+                    "name": "unknown_3",
+                    "last_seen_face_ts": None,
+                    "last_seen_voice_ts": old_ts,
+                    "last_pose": None,
+                    "times_seen_face": 0,
+                    "times_heard_voice": 1,
+                },
+            },
+        }
+        save_file.write_text(json.dumps(payload))
+        # unknown_voice_ttl_sec=120 — 200s old should drop
+        led = RoomLedger(
+            presence_ttl_sec=900,
+            unknown_voice_ttl_sec=120,
+            save_path=str(save_file),
+        )
+        # The record is dropped at load
+        state = led.current_state()
+        assert state["unknown_voices_recent"] == 0
+
+    def test_malformed_json_gives_empty_ledger(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        save_file.write_text("{ this is not valid json")
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        state = led.current_state()
+        assert state["present"] == []
+
+    def test_wrong_version_gives_empty_ledger(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        save_file.write_text(json.dumps({"version": 99, "records": {}}))
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        state = led.current_state()
+        assert state["present"] == []
+
+    def test_no_save_path_means_no_file(self, tmp_path):
+        led = RoomLedger(presence_ttl_sec=900)  # no save_path
+        led.update_from_voice("dan")
+        # No persistence file created
+        assert not (tmp_path / "ledger.json").exists()
+
+    def test_save_is_atomic_no_partial_files(self, tmp_path):
+        save_file = tmp_path / "ledger.json"
+        led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
+        led.update_from_voice("dan")
+        led.update_from_voice("thea")
+        # Final file is valid JSON, no .tmp left behind
+        assert save_file.exists()
+        json.loads(save_file.read_text())
+        tmp_path_listing = list(tmp_path.iterdir())
+        # Only ledger.json should be there
+        names = {p.name for p in tmp_path_listing}
+        assert names == {"ledger.json"}

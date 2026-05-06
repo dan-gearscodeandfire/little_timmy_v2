@@ -11,6 +11,7 @@ from .identity import canonicalize, fuse_identity, translate_pose
 from .ledger import RoomLedger
 from .face_client import fetch_face_observation, FaceClientConfig
 from .auto_enroll import FaceHintStreak
+from .look_at import LookAtPolicy, LookAtVerdict
 
 __all__ = [
     "FacePrediction",
@@ -25,4 +26,6 @@ __all__ = [
     "fetch_face_observation",
     "FaceClientConfig",
     "FaceHintStreak",
+    "LookAtPolicy",
+    "LookAtVerdict",
 ]
