@@ -36,3 +36,6 @@ persona_tuning/
 
 # Runtime feedback inbox (mirrors persona_tuning convention)
 feedback_inbox.jsonl
+
+# Runtime state
+data/
