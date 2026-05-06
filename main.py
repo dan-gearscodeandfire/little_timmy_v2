@@ -35,8 +35,6 @@ from vision.visual_question import is_visual_question
 from vision.supervisor import BehaviorSupervisor
 from presence import (
     RoomLedger,
-    FaceClientConfig,
-    fetch_face_observation,
     fuse_identity,
     FaceHintStreak,
     LookAtPolicy,
@@ -70,12 +68,6 @@ class Orchestrator:
             camera_tilt_fov_steps=config.CAMERA_TILT_FOV_STEPS,
             on_camera_fresh_threshold_sec=config.ON_CAMERA_FRESH_SEC,
             save_path=config.LEDGER_SAVE_PATH,
-        )
-        self._face_config = FaceClientConfig(
-            capture_url=config.STREAMERPI_CAPTURE_URL,
-            face_url=config.FACE_RECOGNIZE_URL,
-            behavior_url=config.STREAMERPI_BEHAVIOR_URL,
-            min_recognize_confidence=config.FACE_MIN_RECOGNIZE_CONF,
         )
         self._face_http = httpx.AsyncClient(verify=False, timeout=1.5)
         self._presence_enabled = config.PRESENCE_ENABLED
