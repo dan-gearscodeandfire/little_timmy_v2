@@ -22,7 +22,6 @@ def canonicalize(name: Optional[str]) -> Optional[str]:
 def fuse_identity(
     *,
     voice_name: str,
-    voice_confidence: float,
     voice_is_unknown: bool,
     face: Optional[FaceObservation],
     face_conf_threshold: float = 0.85,
@@ -97,3 +96,39 @@ def fuse_identity(
         head_steady=head_steady,
         gates=gates,
     )
+
+
+
+def translate_pose(
+    camera_pan: float,
+    camera_tilt: float,
+    bbox_center_norm,
+    pan_fov_steps: float = 80.0,
+    tilt_fov_steps: float = 50.0,
+):
+    """Translate camera pose + face bbox center to the absolute pose that
+    would re-center the camera on that face.
+
+    Mirrors streamerpi camera.py face-centering math (camera.py:400-403):
+        pan_correction  = -offset_x_norm * (pan_fov_steps / 2)
+        tilt_correction = -offset_y_norm * (tilt_fov_steps / 2)
+
+    where offset_x_norm = (bbox_center_x - 0.5) * 2 (i.e. -1..+1 across image).
+
+    Args:
+        camera_pan: current commanded camera pan (UI steps, streamerpi convention)
+        camera_tilt: current commanded camera tilt
+        bbox_center_norm: (x, y) tuple in [0,1] over image, or None
+        pan_fov_steps: total horizontal FoV in UI pan steps (default 80)
+        tilt_fov_steps: total vertical FoV in UI tilt steps (default 50)
+
+    Returns:
+        (person_pan, person_tilt) tuple. If bbox_center_norm is None, returns
+        (camera_pan, camera_tilt) unchanged.
+    """
+    if bbox_center_norm is None:
+        return (camera_pan, camera_tilt)
+    bx, by = bbox_center_norm
+    person_pan = camera_pan - (bx - 0.5) * pan_fov_steps
+    person_tilt = camera_tilt - (by - 0.5) * tilt_fov_steps
+    return (person_pan, person_tilt)

@@ -3,7 +3,7 @@
 import time
 from typing import Optional
 
-from .identity import canonicalize
+from .identity import canonicalize, translate_pose
 from .types import FaceObservation, PersonRecord
 
 
@@ -22,10 +22,14 @@ class RoomLedger:
         self,
         presence_ttl_sec: float = 900.0,
         unknown_voice_ttl_sec: float = 120.0,
+        camera_pan_fov_steps: float = 80.0,
+        camera_tilt_fov_steps: float = 50.0,
     ):
         self._records: dict[str, PersonRecord] = {}
         self._ttl = presence_ttl_sec
         self._unknown_ttl = unknown_voice_ttl_sec
+        self._pan_fov = camera_pan_fov_steps
+        self._tilt_fov = camera_tilt_fov_steps
 
     def _key_for_face(self, prediction) -> str:
         """Canonical lookup key for a face prediction.
@@ -83,9 +87,16 @@ class RoomLedger:
                 bbox_center_norm = (cx, cy)
 
             if cam_pan is not None and cam_tilt is not None:
+                person_pan, person_tilt = translate_pose(
+                    cam_pan, cam_tilt, bbox_center_norm,
+                    pan_fov_steps=self._pan_fov,
+                    tilt_fov_steps=self._tilt_fov,
+                )
                 rec.last_pose = {
-                    "pan": cam_pan,
-                    "tilt": cam_tilt,
+                    "pan": person_pan,
+                    "tilt": person_tilt,
+                    "camera_pan": cam_pan,
+                    "camera_tilt": cam_tilt,
                     "bbox_center_norm": bbox_center_norm,
                     "ts": ts,
                 }

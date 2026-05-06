@@ -7,9 +7,10 @@ from .types import (
     FusionVerdict,
     PersonRecord,
 )
-from .identity import canonicalize, fuse_identity
+from .identity import canonicalize, fuse_identity, translate_pose
 from .ledger import RoomLedger
 from .face_client import fetch_face_observation, FaceClientConfig
+from .auto_enroll import FaceHintStreak
 
 __all__ = [
     "FacePrediction",
@@ -19,7 +20,9 @@ __all__ = [
     "PersonRecord",
     "canonicalize",
     "fuse_identity",
+    "translate_pose",
     "RoomLedger",
     "fetch_face_observation",
     "FaceClientConfig",
+    "FaceHintStreak",
 ]

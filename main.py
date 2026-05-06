@@ -38,6 +38,7 @@ from presence import (
     FaceClientConfig,
     fetch_face_observation,
     fuse_identity,
+    FaceHintStreak,
 )
 
 logging.basicConfig(
@@ -63,6 +64,8 @@ class Orchestrator:
         self.room_ledger = RoomLedger(
             presence_ttl_sec=config.PRESENCE_TTL_SEC,
             unknown_voice_ttl_sec=config.UNKNOWN_VOICE_TTL_SEC,
+            camera_pan_fov_steps=config.CAMERA_PAN_FOV_STEPS,
+            camera_tilt_fov_steps=config.CAMERA_TILT_FOV_STEPS,
         )
         self._face_config = FaceClientConfig(
             capture_url=config.STREAMERPI_CAPTURE_URL,
@@ -72,6 +75,9 @@ class Orchestrator:
         )
         self._face_http = httpx.AsyncClient(verify=False, timeout=1.5)
         self._presence_enabled = config.PRESENCE_ENABLED
+        self._face_hint_streak = FaceHintStreak(
+            threshold=config.FACE_HINT_AUTO_ENROLL_TURNS,
+        )
 
     async def _fetch_face_safe(self):
         """Wrapper that never raises; returns None on any failure or timeout."""
@@ -385,12 +391,33 @@ class Orchestrator:
                 self.room_ledger.update_from_face(face_obs)
             verdict = fuse_identity(
                 voice_name=speaker_name,
-                voice_confidence=0.0,
                 voice_is_unknown=speaker_name.startswith("unknown_"),
                 face=face_obs,
                 face_conf_threshold=config.FACE_CONF_THRESHOLD,
                 head_steady_min_ms=config.HEAD_STEADY_MS,
             )
+            # Track face_hint streak for auto voice-enrollment.
+            # Use pre-override speaker_name (the unknown_N temp_id).
+            streak_temp_id = speaker_name if speaker_name.startswith("unknown_") else None
+            streak_face_name = (
+                verdict.face_hint_name if verdict.resolution_source == "face_hint" else None
+            )
+            streak_hit = self._face_hint_streak.observe(streak_face_name, streak_temp_id)
+            if streak_hit is not None:
+                ok = self.speaker_id_module.assign_name(
+                    streak_hit.voice_temp_id, streak_hit.face_hint_name
+                )
+                if ok:
+                    log.info(
+                        "[PRESENCE] AUTO-ENROLL: voiceprint for %s trained from %d-turn face_hint streak (was %s)",
+                        streak_hit.face_hint_name, streak_hit.count, streak_hit.voice_temp_id,
+                    )
+                else:
+                    log.warning(
+                        "[PRESENCE] auto-enroll declined for %s -> %s (name reserved or taken)",
+                        streak_hit.voice_temp_id, streak_hit.face_hint_name,
+                    )
+                self._face_hint_streak.reset()
             if verdict.resolution_source == "face_hint":
                 log.info(
                     "[PRESENCE] face_hint promoted: voice=%s -> %s (face_conf=%.2f)",
