@@ -22,6 +22,12 @@ Environment=PYTHONUNBUFFERED=1
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=TIMMY_VISION_URL=http://localhost:8084
+Environment=TIMMY_FACE_URL=http://localhost:8895
+Environment=TIMMY_BEHAVIOR_URL=https://192.168.1.110:8080/behavior/status
+Environment=TIMMY_FACE_CONF_THRESHOLD=0.85
+Environment=TIMMY_HEAD_STEADY_MS=2000
+Environment=TIMMY_PRESENCE_TTL_SEC=900
+Environment=TIMMY_UNKNOWN_VOICE_TTL_SEC=120
 
 [Install]
 WantedBy=multi-user.target

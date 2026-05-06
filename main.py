@@ -33,6 +33,12 @@ from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question
 from vision.supervisor import BehaviorSupervisor
+from presence import (
+    RoomLedger,
+    FaceClientConfig,
+    fetch_face_observation,
+    fuse_identity,
+)
 
 logging.basicConfig(
     handlers=[
@@ -54,6 +60,72 @@ class Orchestrator:
         self.speaker_id_module = SpeakerIdentifier()
         self.vision = VisionContext()
         self.supervisor = BehaviorSupervisor()
+        self.room_ledger = RoomLedger(
+            presence_ttl_sec=config.PRESENCE_TTL_SEC,
+            unknown_voice_ttl_sec=config.UNKNOWN_VOICE_TTL_SEC,
+        )
+        self._face_config = FaceClientConfig(
+            capture_url=config.STREAMERPI_CAPTURE_URL,
+            face_url=config.FACE_RECOGNIZE_URL,
+            behavior_url=config.STREAMERPI_BEHAVIOR_URL,
+            min_recognize_confidence=config.FACE_MIN_RECOGNIZE_CONF,
+        )
+        self._face_http = httpx.AsyncClient(verify=False, timeout=1.5)
+        self._presence_enabled = config.PRESENCE_ENABLED
+
+    async def _fetch_face_safe(self):
+        """Wrapper that never raises; returns None on any failure or timeout."""
+        if not self._presence_enabled:
+            return None
+        try:
+            return await asyncio.wait_for(
+                fetch_face_observation(self._face_http, self._face_config),
+                timeout=1.5,
+            )
+        except Exception as e:
+            log.info("[PRESENCE] face fetch failed: %s", e)
+            return None
+
+    def _on_passive_face_id(self, results, image_size):
+        """Callback from VisionContext: feed periodic face-id hits into the room ledger."""
+        if not self._presence_enabled or not results:
+            return
+        try:
+            from presence.types import FacePrediction, FaceObservation
+            from presence.face_client import _embedding_hash
+            preds = []
+            for r in results:
+                name = r.get("name", "")
+                conf_label = r.get("confidence", "")
+                # Only feed enrolled high/medium-confidence matches into the ledger.
+                # Low/unknown confidence detections are too noisy to track per-frame
+                # and would accumulate as unknown_face_<hash> records.
+                if conf_label not in ("high", "medium"):
+                    continue
+                if not name or name.lower().startswith("unknown") or name == "unidentified person":
+                    continue
+                bbox_xywh = r.get("bbox", [0, 0, 0, 0])
+                x, y, w, h = bbox_xywh[0], bbox_xywh[1], bbox_xywh[2], bbox_xywh[3]
+                bbox = (int(x), int(y), int(x + w), int(y + h))
+                distance = float(r.get("distance", 1.0))
+                conf = max(0.0, 1.0 - distance)
+                preds.append(FacePrediction(
+                    user_id=name,
+                    confidence=conf,
+                    bbox=bbox,
+                    embedding_hash=None,
+                ))
+            if not preds:
+                return
+            obs = FaceObservation(
+                captured_at=time.time(),
+                predictions=tuple(preds),
+                behavior=None,
+                image_size=image_size,
+            )
+            self.room_ledger.update_from_face(obs)
+        except Exception:
+            log.exception("[PRESENCE] passive face callback failed")
 
     async def process_speech(self, audio: np.ndarray):
         """Process a speech segment through the full pipeline."""
@@ -291,10 +363,43 @@ class Orchestrator:
                 subjects.append(f"my {words[i+1]}")
         subjects.append(speaker_name if speaker_name != "timmy" else "dan")
 
-        retrieved_memories, resolved_facts = await asyncio.gather(
+        gather_args = [
             retrieve(user_text, top_k=config.RETRIEVAL_TOP_K),
             get_all_facts_for_prompt(subjects, limit=5),
-        )
+        ]
+        if self._presence_enabled:
+            gather_args.append(self._fetch_face_safe())
+
+        gathered = await asyncio.gather(*gather_args)
+        retrieved_memories = gathered[0]
+        resolved_facts = gathered[1]
+        face_obs = gathered[2] if len(gathered) > 2 else None
+
+        # --- Presence: voice + face fusion ---
+        fusion_source = None
+        face_hint_name = None
+        presence_state = None
+        if self._presence_enabled:
+            self.room_ledger.update_from_voice(speaker_name)
+            if face_obs is not None:
+                self.room_ledger.update_from_face(face_obs)
+            verdict = fuse_identity(
+                voice_name=speaker_name,
+                voice_confidence=0.0,
+                voice_is_unknown=speaker_name.startswith("unknown_"),
+                face=face_obs,
+                face_conf_threshold=config.FACE_CONF_THRESHOLD,
+                head_steady_min_ms=config.HEAD_STEADY_MS,
+            )
+            if verdict.resolution_source == "face_hint":
+                log.info(
+                    "[PRESENCE] face_hint promoted: voice=%s -> %s (face_conf=%.2f)",
+                    speaker_name, verdict.face_hint_name, verdict.face_hint_confidence or 0.0,
+                )
+                speaker_name = verdict.final_name
+            fusion_source = verdict.resolution_source
+            face_hint_name = verdict.face_hint_name
+            presence_state = self.room_ledger.current_state()
         retrieval_ms = int((time.time() - t1) * 1000)
         log.info("[MEMORY] %d memories, %d facts (%dms)",
                  len(retrieved_memories), len(resolved_facts), retrieval_ms)
@@ -333,6 +438,9 @@ class Orchestrator:
             speaker_name=speaker_name,
             vision_description=vision_desc,
             visual_question=visual_q,
+            presence_state=presence_state,
+            fusion_source=fusion_source,
+            face_hint_name=face_hint_name,
         )
         messages = build_messages(history, ephemeral, user_text)
 
@@ -574,6 +682,7 @@ async def main():
 
     # Start vision pipeline
     await orch.vision.start()
+    orch.vision.set_passive_face_callback(orch._on_passive_face_id)
     log.info("Vision pipeline ready (enabled=%s)", orch.vision.enabled)
 
     # Start behavioral supervisor

@@ -92,3 +92,16 @@ VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this
 # samples the buffer is folded into the on-disk voiceprint via a 70/30
 # EMA blend. Off by default; opt in here.
 SPEAKER_DRIFT_LEARNING = False
+
+
+# --- Presence (face + voice fusion, room ledger) ---
+PRESENCE_ENABLED = os.getenv("TIMMY_PRESENCE_ENABLED", "true").lower() == "true"
+FACE_RECOGNIZE_URL = os.getenv("TIMMY_FACE_URL", "http://localhost:8895")
+STREAMERPI_BEHAVIOR_URL = os.getenv(
+    "TIMMY_BEHAVIOR_URL", "https://192.168.1.110:8080/behavior/status"
+)
+FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
+FACE_MIN_RECOGNIZE_CONF = float(os.getenv("TIMMY_FACE_MIN_RECOGNIZE_CONF", "0.45"))
+HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
+PRESENCE_TTL_SEC = int(os.getenv("TIMMY_PRESENCE_TTL_SEC", "900"))
+UNKNOWN_VOICE_TTL_SEC = int(os.getenv("TIMMY_UNKNOWN_VOICE_TTL_SEC", "120"))

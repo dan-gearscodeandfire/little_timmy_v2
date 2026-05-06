@@ -38,6 +38,15 @@ class VisionContext:
         self._last_jpeg: bytes | None = None
         # Last relevance result
         self._last_relevance: RelevanceResult | None = None
+        self._passive_face_callback = None
+
+    def set_passive_face_callback(self, fn):
+        """Register a callback invoked after each face-id enrichment.
+
+        Signature: fn(results: list[dict], image_size: tuple | None) -> None
+        Each result dict has keys: name, distance, confidence, bbox (x,y,w,h).
+        """
+        self._passive_face_callback = fn
 
     async def start(self):
         """Initialize vision pipeline: check model, start capture."""
@@ -141,6 +150,22 @@ class VisionContext:
                                          for w in ("person", "man", "woman", "someone"))]
                 record.people = identified + vlm_people
                 log.info("[FACE_ID] People updated: %s", record.people)
+
+            if self._passive_face_callback and results:
+                try:
+                    img_size = None
+                    try:
+                        import cv2
+                        import numpy as np
+                        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+                        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if img is not None:
+                            img_size = (img.shape[1], img.shape[0])
+                    except Exception:
+                        pass
+                    self._passive_face_callback(results, img_size)
+                except Exception:
+                    log.exception("[FACE_ID] passive callback failed")
 
         except Exception:
             log.exception("[FACE_ID] Enrichment failed")

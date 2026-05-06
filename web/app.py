@@ -424,3 +424,13 @@ async def vision_state():
     if not _orchestrator or not hasattr(_orchestrator, "vision"):
         return {"enabled": False, "error": "not initialized"}
     return _orchestrator.vision.get_vision_debug()
+
+
+@app.get("/api/presence")
+async def presence_state():
+    """Room ledger: who is present (visible or recently heard)."""
+    if not _orchestrator or not hasattr(_orchestrator, "room_ledger") or _orchestrator.room_ledger is None:
+        return {"now": None, "present": [], "unknown_voices_recent": 0, "enabled": False}
+    state = _orchestrator.room_ledger.current_state()
+    state["enabled"] = True
+    return state

@@ -270,6 +270,18 @@ async def get_timmy_vision():
         return {"enabled": False, "error": "Little Timmy not reachable"}
 
 
+@app.get("/api/timmy/presence")
+async def get_timmy_presence():
+    """Proxy room-presence ledger from Little Timmy."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/presence")
+            return r.json()
+    except Exception:
+        return {"enabled": False, "present": [], "error": "Little Timmy not reachable"}
+
+
 @app.get("/api/behavior")
 async def get_behavior():
     """Proxy behavior state from streamerpi."""
@@ -635,6 +647,13 @@ header .uptime {
           <div id="behavior-stats" style="font-size:10px; color:#484f58;"></div>
         </div>
       </div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Who's in the Room</h2>
+      <div id="presence-panel" style="font-size:12px; min-height:32px;">
+        <div id="presence-empty" style="color:#8b949e; font-style:italic;">No one detected yet</div>
+      </div>
+      <div id="presence-meta" style="font-size:10px; color:#484f58; margin-top:6px;"></div>
     </div>
     <div class="panel" style="margin-top:16px; display:flex; flex-direction:column;">
       <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -1177,6 +1196,59 @@ pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
 pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
+async function pollPresence() {
+  try {
+    const r = await fetch('/api/timmy/presence');
+    const data = await r.json();
+    const panel = document.getElementById('presence-panel');
+    const meta = document.getElementById('presence-meta');
+    if (!panel) return;
+    if (!data || !data.enabled || !Array.isArray(data.present) || data.present.length === 0) {
+      panel.innerHTML = '<div id="presence-empty" style="color:#8b949e; font-style:italic;">No one detected yet</div>';
+      meta.textContent = data && data.unknown_voices_recent ? ('Unknown voices recent: ' + data.unknown_voices_recent) : '';
+      return;
+    }
+    const fmtAge = (s) => {
+      if (s == null) return '';
+      if (s < 60) return Math.round(s) + 's';
+      if (s < 3600) return Math.round(s / 60) + 'm';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      return m ? (h + 'h' + String(m).padStart(2, '0') + 'm') : (h + 'h');
+    };
+    const rows = data.present.filter(p => {
+      const n = (p.name || '').toLowerCase();
+      return n && !n.startsWith('unknown');
+    }).map(p => {
+      const name = (p.name || '').replace(/^\w/, c => c.toUpperCase());
+      const onCam = p.on_camera_now;
+      const dot = onCam ? '●' : '○';
+      const colour = onCam ? '#3fb950' : '#8b949e';
+      const opacity = onCam ? '1' : '0.65';
+      const ageBits = [];
+      if (p.last_seen_face_age_s != null) ageBits.push('seen ' + fmtAge(p.last_seen_face_age_s) + ' ago');
+      else if (p.last_seen_voice_age_s != null) ageBits.push('heard ' + fmtAge(p.last_seen_voice_age_s) + ' ago');
+      let poseStr = '';
+      if (p.last_pose && p.last_pose.pan != null) {
+        poseStr = ' · pan ' + Math.round(p.last_pose.pan) + '° / tilt ' + Math.round(p.last_pose.tilt) + '°';
+      }
+      const detail = onCam ? 'on camera' : ageBits.join(', ');
+      return '<div style="opacity:' + opacity + '; padding:3px 0;">'
+           + '<span style="color:' + colour + '; margin-right:6px;">' + dot + '</span>'
+           + '<strong>' + name + '</strong>'
+           + ' <span style="color:#8b949e;">' + detail + poseStr + '</span>'
+           + '</div>';
+    }).join('');
+    panel.innerHTML = rows;
+    meta.textContent = data.unknown_voices_recent ? ('Unknown voices recent: ' + data.unknown_voices_recent) : '';
+  } catch (e) {
+    /* network burp; leave previous state */
+  }
+}
+pollPresence();
+setInterval(pollPresence, 3000);
+
+
 </script>
 </body>
 </html>"""

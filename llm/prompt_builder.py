@@ -39,6 +39,20 @@ def _format_relative_time(dt) -> str:
         return dt.strftime("%B %d, %Y")
 
 
+
+def _fmt_age(age_s) -> str:
+    """Compact age formatter for presence annotations."""
+    if age_s is None:
+        return "?"
+    if age_s < 60:
+        return f"{int(age_s)}s"
+    if age_s < 3600:
+        return f"{int(age_s / 60)}m"
+    h = int(age_s / 3600)
+    m = int((age_s % 3600) / 60)
+    return f"{h}h{m:02d}m" if m else f"{h}h"
+
+
 def build_ephemeral_block(
     memories: list[RetrievedMemory],
     facts: list[Fact],
@@ -46,6 +60,9 @@ def build_ephemeral_block(
     now: datetime | None = None,
     vision_description: str | None = None,
     visual_question: bool = False,
+    presence_state: dict | None = None,
+    fusion_source: str | None = None,
+    face_hint_name: str | None = None,
 ) -> str:
     """Build the ephemeral system context block."""
     if now is None:
@@ -55,12 +72,48 @@ def build_ephemeral_block(
     parts.append(f"\nCurrent time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
 
     if speaker_name:
-        parts.append(
-            f"\nIMPORTANT: The person speaking to you right now is {speaker_name.title()}. "
-            f"Address them as {speaker_name.title()}. Do NOT confuse them with anyone else "
-            f"mentioned in the conversation. Even if other names come up in discussion, "
-            f"you are talking to {speaker_name.title()}."
-        )
+        if fusion_source == "face_hint" and face_hint_name:
+            parts.append(
+                f"\n[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
+                f"Face recognition strongly suggests this is {face_hint_name.title()} "
+                f"(only visible person, head centered on them). "
+                f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
+                f"unless they correct you."
+            )
+        else:
+            parts.append(
+                f"\nIMPORTANT: The person speaking to you right now is {speaker_name.title()}. "
+                f"Address them as {speaker_name.title()}. Do NOT confuse them with anyone else "
+                f"mentioned in the conversation. Even if other names come up in discussion, "
+                f"you are talking to {speaker_name.title()}."
+            )
+
+    if presence_state and presence_state.get("present"):
+        present_lines = []
+        for entry in presence_state["present"]:
+            n = (entry.get("name") or "").lower()
+            if not n or n.startswith("unknown"):
+                continue
+            n_title = n.title()
+            if entry.get("on_camera_now"):
+                present_lines.append(f"- {n_title} (visible right now)")
+            else:
+                face_age = entry.get("last_seen_face_age_s")
+                voice_age = entry.get("last_seen_voice_age_s")
+                bits = []
+                if face_age is not None:
+                    bits.append(f"last seen on camera {_fmt_age(face_age)} ago")
+                if voice_age is not None:
+                    bits.append(f"last heard {_fmt_age(voice_age)} ago")
+                detail = "; ".join(bits) if bits else "present"
+                present_lines.append(f"- {n_title} ({detail})")
+        if present_lines:
+            parts.append(
+                "\n[WHO IS PRESENT] People believed to be in the room "
+                "(based on recent face recognition + voice). Use this for context "
+                "but do not infer who is speaking from this list:"
+            )
+            parts.extend(present_lines)
 
     if facts:
         parts.append(
