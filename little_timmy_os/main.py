@@ -232,6 +232,30 @@ async def get_timmy_chatlog():
         return PlainTextResponse("Little Timmy not reachable")
 
 
+@app.get("/api/timmy/last_payload")
+async def get_timmy_last_payload():
+    """Proxy most-recent LLM payload (assembled ephemeral prompt) from Little Timmy."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/last_payload")
+            return r.json()
+    except Exception as e:
+        return {"available": False, "error": f"timmy unreachable: {e}"}
+
+
+@app.get("/api/timmy/mood")
+async def get_timmy_mood():
+    """Proxy current 2-axis mood state from Little Timmy."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/mood")
+            return r.json()
+    except Exception as e:
+        return {"error": f"timmy unreachable: {e}"}
+
+
 @app.post("/api/timmy/speaker/reenroll")
 async def proxy_speaker_reenroll(payload: dict | None = None):
     """Forward a UI re-enrollment click to Little Timmy."""
@@ -597,6 +621,64 @@ header .uptime {
 .status-entry.error { color: #f85149; }
 .status-entry.warning { color: #d29922; }
 
+/* Mood panel */
+.mood-grid {
+  display: grid;
+  grid-template-columns: 72px repeat(3, 1fr);
+  grid-template-rows: 22px repeat(3, 52px);
+  gap: 4px;
+  margin-top: 4px;
+}
+.mood-grid .corner {}
+.mood-grid .axis-label-x,
+.mood-grid .axis-label-y {
+  color: #8b949e;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mood-cell {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #484f58;
+  font-size: 18px;
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
+}
+.mood-cell.active {
+  background: #e94560;
+  color: #fff;
+  border-color: #e94560;
+  box-shadow: 0 0 8px rgba(233, 69, 96, 0.45);
+}
+.mood-rendered {
+  margin-top: 12px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 11px;
+  color: #bc8cff;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: 'Courier New', monospace;
+}
+.mood-meta {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #484f58;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* Responsive */
 @media (max-width: 1000px) {
   .main-content { grid-template-columns: 1fr; }
@@ -674,11 +756,45 @@ header .uptime {
                   style="font-size:12px; padding:4px 10px; background:#1f2a3a; color:#58a6ff; border:1px solid #58a6ff; border-radius:4px; cursor:pointer;">
             🎤 Re-enroll voice
           </button>
+          <button id="show-payload-btn" type="button"
+                  title="Show the most recent ephemeral system prompt + full payload sent to the LLM"
+                  style="font-size:12px; padding:4px 10px; background:#2a1f3a; color:#bc8cff; border:1px solid #bc8cff; border-radius:4px; cursor:pointer;">
+            🔍 Last payload
+          </button>
         </div>
       </div>
       <div id="flag-status" style="font-size:11px; color:#8b949e; margin-top:4px; min-height:14px;"></div>
       <div id="conversation" style="max-height:380px; overflow-y:auto; margin-top:8px;">
         <div id="conv-offline">Waiting for Little Timmy...</div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Mood</h2>
+      <div class="mood-grid">
+        <div class="corner"></div>
+        <div class="axis-label-x">Bored</div>
+        <div class="axis-label-x">Neutral</div>
+        <div class="axis-label-x">Interested</div>
+
+        <div class="axis-label-y">Nice</div>
+        <div class="mood-cell" data-x="-1" data-y="1" title="Bored & Begrudgingly Nice">●</div>
+        <div class="mood-cell" data-x="0"  data-y="1" title="Neutral & Begrudgingly Nice">●</div>
+        <div class="mood-cell" data-x="1"  data-y="1" title="Interested & Begrudgingly Nice">●</div>
+
+        <div class="axis-label-y">Neutral</div>
+        <div class="mood-cell" data-x="-1" data-y="0" title="Bored & Neutral">●</div>
+        <div class="mood-cell" data-x="0"  data-y="0" title="Neutral & Neutral">●</div>
+        <div class="mood-cell" data-x="1"  data-y="0" title="Interested & Neutral">●</div>
+
+        <div class="axis-label-y">Mean</div>
+        <div class="mood-cell" data-x="-1" data-y="-1" title="Bored & Mean">●</div>
+        <div class="mood-cell" data-x="0"  data-y="-1" title="Neutral & Mean">●</div>
+        <div class="mood-cell" data-x="1"  data-y="-1" title="Interested & Mean">●</div>
+      </div>
+      <pre id="mood-rendered" class="mood-rendered">--</pre>
+      <div class="mood-meta">
+        <span id="mood-signals">--</span>
+        <span id="mood-updated">--</span>
       </div>
     </div>
     <div class="panel" style="margin-top:16px;">
@@ -725,6 +841,33 @@ header .uptime {
 </div>
 
 <div id="status-bar"></div>
+
+<div id="payload-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:#0d1117; border:1px solid #bc8cff; border-radius:8px; width:min(960px, 92vw); max-height:88vh; display:flex; flex-direction:column; padding:18px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h2 style="margin:0; color:#bc8cff; font-size:14px; text-transform:uppercase;">Last LLM Payload</h2>
+      <button id="payload-close-btn" type="button"
+              style="font-size:12px; padding:4px 10px; background:#3a1f1f; color:#f85149; border:1px solid #f85149; border-radius:4px; cursor:pointer;">
+        Close
+      </button>
+    </div>
+    <div id="payload-meta" style="font-size:11px; color:#8b949e; margin-bottom:8px;"></div>
+    <div style="display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
+      <div>
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin-bottom:4px;">User text</div>
+        <pre id="payload-user" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; white-space:pre-wrap; word-wrap:break-word; font-size:12px; color:#e0e0e0; margin:0;"></pre>
+      </div>
+      <div>
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin-bottom:4px;">Ephemeral system prompt (assembled fresh per turn)</div>
+        <pre id="payload-ephemeral" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; white-space:pre-wrap; word-wrap:break-word; font-size:12px; color:#bc8cff; margin:0;"></pre>
+      </div>
+      <details>
+        <summary style="cursor:pointer; font-size:11px; color:#8b949e; text-transform:uppercase;">Full message list (history + system + user)</summary>
+        <pre id="payload-messages" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; white-space:pre-wrap; word-wrap:break-word; font-size:11px; color:#e0e0e0; margin-top:6px;"></pre>
+      </details>
+    </div>
+  </div>
+</div>
 
 <script>
 const SERVICE_ORDER = ["postgresql", "ollama", "gptoss120b", "qwen36", "conversation_llm", "whisper", "little_timmy"];
@@ -1191,6 +1334,40 @@ document.getElementById("reenroll-btn").addEventListener("click", async () => {
   setTimeout(() => { status.textContent = ""; status.style.color = "#8b949e"; }, 12000);
 });
 
+// Last-payload inspector — shows the most recent ephemeral system prompt and full message list.
+const payloadModal = document.getElementById("payload-modal");
+async function showLastPayload() {
+  document.getElementById("payload-meta").textContent = "loading...";
+  document.getElementById("payload-user").textContent = "";
+  document.getElementById("payload-ephemeral").textContent = "";
+  document.getElementById("payload-messages").textContent = "";
+  payloadModal.style.display = "flex";
+  try {
+    const r = await fetch("/api/timmy/last_payload");
+    const j = await r.json();
+    if (!j.available) {
+      document.getElementById("payload-meta").textContent =
+        j.error ? ("error: " + j.error) : "no payload captured yet — wait for one turn";
+      return;
+    }
+    document.getElementById("payload-meta").textContent =
+      "captured " + j.timestamp + " · " + j.history_turn_count + " history turns · "
+      + (j.messages ? j.messages.length : 0) + " total messages";
+    document.getElementById("payload-user").textContent = j.user_text || "(empty)";
+    document.getElementById("payload-ephemeral").textContent = j.ephemeral_block || "(empty)";
+    document.getElementById("payload-messages").textContent = JSON.stringify(j.messages, null, 2);
+  } catch (e) {
+    document.getElementById("payload-meta").textContent = "network error: " + e;
+  }
+}
+document.getElementById("show-payload-btn").addEventListener("click", showLastPayload);
+document.getElementById("payload-close-btn").addEventListener("click", () => {
+  payloadModal.style.display = "none";
+});
+payloadModal.addEventListener("click", (e) => {
+  if (e.target === payloadModal) payloadModal.style.display = "none";
+});
+
 loadConversationHistory();
 pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
@@ -1247,6 +1424,45 @@ async function pollPresence() {
 }
 pollPresence();
 setInterval(pollPresence, 3000);
+
+async function pollMood() {
+  try {
+    const r = await fetch('/api/timmy/mood');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
+    document.querySelectorAll('.mood-cell').forEach(cell => {
+      const cx = Number(cell.dataset.x);
+      const cy = Number(cell.dataset.y);
+      cell.classList.toggle('active', cx === data.x && cy === data.y);
+    });
+    const rendered = document.getElementById('mood-rendered');
+    if (rendered) rendered.textContent = data.rendered || '--';
+    const sig = document.getElementById('mood-signals');
+    if (sig) {
+      const xs = (typeof data.last_x_signal === 'number') ? data.last_x_signal.toFixed(2) : '--';
+      const ys = (typeof data.last_y_signal === 'number') ? data.last_y_signal.toFixed(2) : '--';
+      sig.textContent = 'X (engagement) ' + xs + '  ·  Y (tone, VADER inv) ' + ys;
+    }
+    const upd = document.getElementById('mood-updated');
+    if (upd) {
+      if (data.last_update_ts && data.last_update_ts > 0) {
+        const age = Math.max(0, Date.now() / 1000 - data.last_update_ts);
+        let ageStr;
+        if (age < 60) ageStr = Math.round(age) + 's';
+        else if (age < 3600) ageStr = Math.round(age / 60) + 'm';
+        else ageStr = Math.round(age / 3600) + 'h';
+        upd.textContent = 'updated ' + ageStr + ' ago';
+      } else {
+        upd.textContent = 'never updated';
+      }
+    }
+  } catch (e) {
+    /* network burp; leave previous state */
+  }
+}
+pollMood();
+setInterval(pollMood, 5000);
 
 
 </script>
