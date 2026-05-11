@@ -85,58 +85,44 @@ async def fetch_face_observation_local(
     behavior_url: str,
     timeout_sec: float = 1.5,
 ) -> Optional[FaceObservation]:
-    """Speech-turn observation: in-process face recognition + remote behavior.
+    """Speech-turn observation via streamerpi /faces endpoint.
 
-    Returns None if the vision pipeline isn't ready, capture fails, or
-    face recognition raises. Behavior may be None on its own.
+    Replaces the prior capture-and-local-yunet path. Streamerpi's tracking
+    thread is the single source of face state; this call is ~10-15 ms over
+    LAN instead of ~50-200 ms of local cv2+ONNX work and no longer captures
+    a JPEG just for image-size measurement.
     """
     if vision_context is None:
         return None
-    if not getattr(vision_context, "_face_id_ready", False):
+    if not getattr(vision_context, "_face_remote_ready", False):
         return None
-    if not getattr(vision_context, "_capture", None):
-        return None
-    if not getattr(vision_context, "_face_id", None):
+    if not getattr(vision_context, "_face_remote", None):
         return None
 
     now_ts = time.time()
 
-    # Kick off behavior fetch in parallel with capture+identify
     beh_task = asyncio.create_task(
         _safe_get_behavior(http_client, behavior_url, timeout_sec)
     )
 
-    # Capture fresh frame
     try:
-        jpeg = await asyncio.wait_for(
-            vision_context._capture._fetch_frame("presence"),
+        face_data = await asyncio.wait_for(
+            vision_context._face_remote.fetch_full(),
             timeout=timeout_sec,
         )
     except Exception as e:
-        log.info("[face_client_local] capture failed: %s", e)
+        log.info("[face_client_local] face fetch failed: %s", e)
         beh_task.cancel()
         return None
 
-    if not jpeg:
-        beh_task.cancel()
-        return None
-
-    img_size = _image_size_from_bytes(jpeg)
-
-    # Run face_id off the event loop (cv2 + onnx is synchronous)
-    try:
-        results = await asyncio.wait_for(
-            asyncio.to_thread(vision_context._face_id.identify_from_jpeg, jpeg),
-            timeout=timeout_sec,
-        )
-    except Exception as e:
-        log.info("[face_client_local] face_id failed: %s", e)
+    if face_data is None:
         beh_task.cancel()
         return None
 
     behavior = await beh_task
 
-    predictions = _convert_in_tree_results(results)
+    img_size = face_data["image_size"] if face_data["image_size"][0] > 0 else None
+    predictions = _convert_in_tree_results(face_data["faces"])
 
     return FaceObservation(
         captured_at=now_ts,

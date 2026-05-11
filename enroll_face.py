@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Enroll a face identity by capturing frames from streamerpi.
+"""DEPRECATED 2026-05-08 - prefer enroll_face_remote.py.
+
+Legacy enrollment path: captures frames locally on okdemerzel via
+/capture, runs YuNet+SFace via vision/face_id.py, then POSTs the full
+embeddings dict to streamerpi /face_db/update. Still works but is the
+last live consumer of vision/face_id.py at runtime.
+
+Preferred replacement: enroll_face_remote.py - thin urllib wrapper
+that POSTs to streamerpi /face_db/enroll, which captures + computes
++ persists entirely on streamerpi. Single-DB-on-streamerpi design as
+of 2026-05-07.
+
+Original docstring follows.
+
+Enroll a face identity by capturing frames from streamerpi.
 
 Usage:
     python enroll_face.py Dan          # Enroll "Dan" with 15 captures over 10 seconds
@@ -24,6 +38,17 @@ import numpy as np
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from vision.face_id import FaceID, DEFAULT_DB_PATH
+
+# 2026-05-08: print deprecation banner at module load (stderr so any
+# automation parsing stdout is unaffected). Prefer enroll_face_remote.py.
+print(
+    "WARNING: enroll_face.py is the legacy enrollment path. "
+    "enroll_face_remote.py is preferred -- thin HTTP wrapper that runs the "
+    "entire pipeline on streamerpi instead of dragging cv2 + ONNX + a "
+    "parallel face DB into okdemerzel.",
+    file=sys.stderr,
+)
+
 
 
 STREAMERPI_FACE_DB_URL = "https://192.168.1.110:8080/face_db/update"
