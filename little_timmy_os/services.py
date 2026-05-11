@@ -301,6 +301,113 @@ def get_session_log() -> list[dict]:
     return _session_log
 
 
+async def _tcp_connect(host: str, port: int, timeout: float) -> bool:
+    """Open a TCP connection then immediately close. True iff the port
+    accepts the connection within `timeout`. Cheap "is something listening
+    there" probe — no auth, no TLS handshake, no HTTP parse."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout)
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+async def check_streamerpi_server_status() -> dict:
+    """Probe the streamerpi main codebase (little-timmy-motor.service).
+
+    Returns {reachable, running, error?} where:
+      reachable: host responds on SSH (port 22). Determines whether we
+                 could even attempt a remote start.
+      running:   the main server is listening on STREAMERPI_HTTP_PORT.
+                 Doesn't authenticate against any specific endpoint —
+                 just "the process is bound to the port".
+
+    No SSH, no sudo, no HTTP. Two short TCP-connect probes (~20 ms each
+    when the host is up). Suitable for 10 s polling.
+    """
+    import config as cfg
+    running = await _tcp_connect(cfg.STREAMERPI_HOST, cfg.STREAMERPI_HTTP_PORT, 1.5)
+    if running:
+        return {"reachable": True, "running": True}
+    reachable = await _tcp_connect(cfg.STREAMERPI_HOST, cfg.STREAMERPI_SSH_PORT, 1.5)
+    return {"reachable": reachable, "running": False}
+
+
+async def toggle_streamerpi_server(enabled: bool) -> dict:
+    """Start or stop little-timmy-motor.service on streamerpi via SSH +
+    NOPASSWD sudo. Requires the broad sudoers drop-in on the Pi:
+        echo "pi ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/pi-nopasswd
+        sudo chmod 0440 /etc/sudoers.d/pi-nopasswd
+
+    On enable, refuses to attempt the SSH call if SSH itself is
+    unreachable — surfaces "unreachable" to the dashboard instead of
+    burning the 3 s SSH ConnectTimeout.
+    """
+    import config as cfg
+    action = "start" if enabled else "stop"
+    await _broadcast_status(
+        f"{'Starting' if enabled else 'Stopping'} streamerpi main service...")
+
+    if enabled:
+        reachable = await _tcp_connect(
+            cfg.STREAMERPI_HOST, cfg.STREAMERPI_SSH_PORT, 2.0)
+        if not reachable:
+            await _broadcast_status("streamerpi unreachable, cannot start", "error")
+            _write_session_log()
+            return {"running": False, "reachable": False,
+                    "error": "streamerpi unreachable"}
+
+    cmd = [
+        "ssh", "-i", cfg.STREAMERPI_SSH_KEY,
+        "-o", "ConnectTimeout=3", "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        f"{cfg.STREAMERPI_SSH_USER}@{cfg.STREAMERPI_HOST}",
+        "sudo", "-n", "systemctl", action, cfg.STREAMERPI_MAIN_UNIT,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        await _broadcast_status(f"systemctl {action} timed out", "error")
+        _write_session_log()
+        return {"running": False, "reachable": True, "error": "ssh timeout"}
+    except Exception as e:
+        await _broadcast_status(f"systemctl {action} failed: {e}", "error")
+        _write_session_log()
+        return {"running": False, "reachable": False, "error": str(e)[:200]}
+
+    if proc.returncode != 0:
+        err = (stderr.decode(errors="replace").strip()
+               or stdout.decode(errors="replace").strip()
+               or f"exit {proc.returncode}")[:200]
+        await _broadcast_status(f"systemctl {action} failed: {err}", "error")
+        _write_session_log()
+        return {"running": False, "reachable": True, "error": err}
+
+    # Give the daemon a moment to bind / unbind the listening socket before
+    # the state probe — systemctl returns as soon as the process is forked.
+    await asyncio.sleep(2.0)
+    final = await check_streamerpi_server_status()
+    state_str = "started" if final["running"] else "stopped"
+    await _broadcast_status(f"streamerpi main service {state_str}")
+    _write_session_log()
+    return final
+
+
 async def check_face_tracking_status() -> dict:
     """Check if face tracking is enabled on streamerpi."""
     import config as cfg

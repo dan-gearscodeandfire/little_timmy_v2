@@ -125,6 +125,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     if svc_id == "face_tracking":
                         result = await services.toggle_face_tracking(desired)
                         await broadcast_event("face_tracking", result)
+                    elif svc_id == "streamerpi_main":
+                        result = await services.toggle_streamerpi_server(desired)
+                        await broadcast_event("streamerpi_main", result)
                     elif svc_id in config.SERVICES:
                         result = await services.toggle_service(svc_id, desired)
                         health = await services.check_all_health()
@@ -337,6 +340,19 @@ async def toggle_face_tracking(data: dict):
     enabled = data.get("enabled", True)
     result = await services.toggle_face_tracking(enabled)
     return result
+
+
+@app.get("/api/streamerpi/main")
+async def get_streamerpi_main():
+    """Probe streamerpi main codebase (little-timmy-motor.service)."""
+    return await services.check_streamerpi_server_status()
+
+
+@app.post("/api/streamerpi/main/toggle")
+async def toggle_streamerpi_main(data: dict):
+    """Start / stop little-timmy-motor.service on streamerpi via SSH+sudo."""
+    enabled = data.get("enabled", True)
+    return await services.toggle_streamerpi_server(enabled)
 
 
 
@@ -734,6 +750,17 @@ header .uptime {
       <div id="services"></div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
+        <div class="service-card" id="streamerpi-main-card" style="border-left:3px solid #484f58;"
+             title="little-timmy-motor.service on streamerpi (port 8080)">
+          <div class="service-info">
+            <div class="service-name">Streamerpi Server</div>
+            <div class="service-detail" id="streamerpi-main-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="streamerpi-main-toggle">
+            <input type="checkbox" onchange="toggleStreamerpiMain(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
         <div class="service-card" id="face-tracking-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
             <div class="service-name">Face Tracking</div>
@@ -974,6 +1001,14 @@ function connectWS() {
       faceTrackingEnabled = msg.enabled || false;
       faceTrackingBusy = false;
       updateFaceTrackingUI();
+    } else if (msg.type === "streamerpi_main") {
+      streamerpiMainState = {
+        running: !!msg.running,
+        reachable: msg.reachable !== false,
+        error: msg.error || null,
+      };
+      streamerpiMainBusy = false;
+      updateStreamerpiMainUI();
     } else if (msg.type === "turn") {
       addTurn(msg.role, msg.content, msg.speaker);
     } else if (msg.type === "metrics") {
@@ -1417,6 +1452,68 @@ function toggleFaceTracking(enabled) {
   ws.send(JSON.stringify({type: "toggle", service: "face_tracking", state: enabled}));
 }
 
+// Streamerpi main codebase (little-timmy-motor.service on the Pi).
+// State is two independent signals so the UI can distinguish
+// "host is down" from "host is up but service is stopped".
+let streamerpiMainState = { running: false, reachable: false, error: null };
+let streamerpiMainBusy = false;
+
+async function pollStreamerpiMain() {
+  try {
+    const r = await fetch('/api/streamerpi/main');
+    const data = await r.json();
+    streamerpiMainState = {
+      running: !!data.running,
+      reachable: data.reachable !== false,
+      error: data.error || null,
+    };
+    updateStreamerpiMainUI();
+  } catch(e) {}
+}
+
+function updateStreamerpiMainUI() {
+  const card = document.getElementById('streamerpi-main-card');
+  const toggle = document.querySelector('#streamerpi-main-toggle input');
+  const detail = document.getElementById('streamerpi-main-detail');
+  const toggleLabel = document.getElementById('streamerpi-main-toggle');
+  const { running, reachable, error } = streamerpiMainState;
+
+  // Border: green = running, gray = stopped-but-reachable, red = unreachable.
+  let border = '#484f58';
+  if (running) border = '#3fb950';
+  else if (!reachable) border = '#f85149';
+  if (card) card.style.borderLeftColor = border;
+
+  if (toggle) {
+    toggle.checked = running;
+    // Refuse the toggle if the host is unreachable AND the user is trying
+    // to start it. Stop is still possible (no-op SSH will fail explicitly).
+    toggle.disabled = streamerpiMainBusy || (!reachable && !running);
+  }
+  if (toggleLabel) {
+    toggleLabel.classList.toggle('busy', streamerpiMainBusy);
+  }
+  if (detail) {
+    if (streamerpiMainBusy) {
+      detail.textContent = 'Toggling...';
+    } else if (!reachable) {
+      detail.textContent = 'Host unreachable';
+    } else if (running) {
+      detail.textContent = 'Active on :8080';
+    } else if (error) {
+      detail.textContent = 'Stopped — ' + error;
+    } else {
+      detail.textContent = 'Stopped';
+    }
+  }
+}
+
+function toggleStreamerpiMain(enabled) {
+  streamerpiMainBusy = true;
+  updateStreamerpiMainUI();
+  ws.send(JSON.stringify({type: "toggle", service: "streamerpi_main", state: enabled}));
+}
+
 connectWS();
 // Thumbs-up / thumbs-down: each button carries data-kind. Optional reason via prompt().
 async function submitFlag(kind) {
@@ -1523,6 +1620,8 @@ pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
 pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
+pollStreamerpiMain();
+setInterval(pollStreamerpiMain, 10000);
 async function pollPresence() {
   try {
     const r = await fetch('/api/timmy/presence');

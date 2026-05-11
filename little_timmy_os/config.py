@@ -143,3 +143,9 @@ TIMMY_BASE_URL = "http://localhost:8893"
 
 # streamerpi (Little Timmy's body - Raspberry Pi 4)
 STREAMERPI_URL = "https://192.168.1.110:8080"
+STREAMERPI_HOST = "192.168.1.110"
+STREAMERPI_HTTP_PORT = 8080   # liveness probe: TCP-connect = service is listening
+STREAMERPI_SSH_PORT = 22      # reachability probe: TCP-connect = host is up
+STREAMERPI_SSH_USER = "pi"
+STREAMERPI_SSH_KEY = os.path.expanduser("~/.ssh/id_streamerpi")
+STREAMERPI_MAIN_UNIT = "little-timmy-motor.service"
