@@ -1,18 +1,19 @@
-"""In-process face observation client.
+"""Speech-turn face observation client.
 
-Uses the in-tree vision pipeline's FaceID + FrameCapture instead of the
-demerzel-vision :8895 HTTP service. Same FaceObservation shape returned
-to the caller. Behavior status still fetched over HTTP from streamerpi
-(no in-process equivalent).
+Reads faces from streamerpi's /faces endpoint via vision_context._face_remote
+(a FaceRemote instance). Behavior status is fetched in parallel from
+streamerpi's behavior endpoint over HTTP. Same FaceObservation shape is
+returned to the caller.
 
-Benefits over the HTTP path:
-  - No HTTP latency or stale-cache risk for face recognition
-  - Stable unknown tracking via in-tree FaceID._assign_unknown
-  - Single face DB load shared with the periodic vision enrichment
-  - LT no longer requires demerzel-vision.service to be running
+The 2026-05-07 refactor (commit 3be8d94) replaced the original
+capture-and-local-yunet path: okdemerzel no longer captures JPEGs or runs
+YuNet+SFace locally for the speech-turn observation. Streamerpi's tracking
+thread is the single source of face state and ships {name, distance,
+confidence, bbox} dicts; this call adds ~10-15 ms of LAN latency vs the
+old ~50-200 ms of local cv2+ONNX work.
 
 The caller (Orchestrator) injects vision_context (must have non-None
-_face_id_ready, _face_id, _capture).
+_face_remote and _face_remote_ready=True).
 """
 
 import asyncio

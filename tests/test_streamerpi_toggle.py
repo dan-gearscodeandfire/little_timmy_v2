@@ -5,14 +5,65 @@ Run:
 """
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "little_timmy_os"))
+# LT-OS has flat-module config.py and services.py that collide with LT-root
+# config.py and the LT-root services/ package. Any prior test in the same
+# pytest session that loads main.py (which transitively imports LT-root
+# config) will leave 'config' cached in sys.modules pointing at the wrong
+# module, and our subsequent `import services` would then see that stale
+# config when its `import config as cfg` runs.
+#
+# Load LT-OS config/services from disk under unique aliases, temporarily
+# shimming sys.modules['config'] so services.py's `import config as cfg`
+# resolves to the LT-OS variant during its exec_module pass.
+_LT_OS_DIR = Path(__file__).resolve().parents[1] / "little_timmy_os"
 
-import services  # noqa: E402
+
+def _load_ltos_module(name, deps=None):
+    spec = importlib.util.spec_from_file_location(
+        f"_ltos_{name}", str(_LT_OS_DIR / f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[f"_ltos_{name}"] = mod
+    saved = {}
+    if deps:
+        for k, v in deps.items():
+            saved[k] = sys.modules.get(k)
+            sys.modules[k] = v
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if deps:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+    return mod
+
+
+_ltos_config = _load_ltos_module("config")
+services = _load_ltos_module("services", deps={"config": _ltos_config})
+
+
+@pytest.fixture(autouse=True)
+def _shim_config_in_sysmodules():
+    """services.toggle_streamerpi_server() does `import config as cfg` at
+    call time (not module load), so we have to keep the LT-OS config aliased
+    in sys.modules['config'] for the duration of each test. Restore the
+    prior cached value on teardown so other test files keep their own
+    config."""
+    saved = sys.modules.get("config")
+    sys.modules["config"] = _ltos_config
+    yield
+    if saved is None:
+        sys.modules.pop("config", None)
+    else:
+        sys.modules["config"] = saved
 
 
 @pytest.mark.asyncio

@@ -794,27 +794,39 @@ class TestRoomLedgerPersistence:
 import asyncio
 
 
-class _FakeFaceID:
-    def __init__(self, results):
-        self._results = results
+# 2026-05-11: fixtures rewritten for the post-3be8d94 face pipeline.
+# fetch_face_observation_local no longer touches in-tree FaceID/FrameCapture —
+# it reads from vision_context._face_remote.fetch_full() (a FaceRemote
+# instance that proxies streamerpi /faces). The filter tests now exercise
+# _convert_in_tree_results as a pure function, which is cleaner and survives
+# any future refactor of fetch_face_observation_local's I/O layer.
 
-    def identify_from_jpeg(self, jpeg):
-        return self._results
+
+class _FakeFaceRemote:
+    """Stand-in for vision.face_remote.FaceRemote. fetch_full() returns the
+    same {faces, image_size, age_s} shape the real client returns."""
+    def __init__(self, faces, image_size=(1280, 720), age_s=0.05):
+        self._data = {
+            "faces": list(faces),
+            "image_size": image_size,
+            "age_s": age_s,
+        }
+
+    async def fetch_full(self):
+        return self._data
 
 
-class _FakeCapture:
-    def __init__(self, jpeg=b"\xff\xd8\xff\xe0fakebytes"):
-        self._jpeg = jpeg
-
-    async def _fetch_frame(self, reason):
-        return self._jpeg
+class _NullFaceRemote:
+    """fetch_full() returns None — mirrors the real FaceRemote behavior when
+    the upstream HTTP call fails entirely."""
+    async def fetch_full(self):
+        return None
 
 
 class _FakeVisionContext:
-    def __init__(self, face_id, capture, ready=True):
-        self._face_id = face_id
-        self._capture = capture
-        self._face_id_ready = ready
+    def __init__(self, face_remote, ready=True):
+        self._face_remote = face_remote
+        self._face_remote_ready = ready
 
 
 class _StubResponse:
@@ -838,94 +850,104 @@ class _StubHTTPClient:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
+    return asyncio.run(coro)
 
 
-from presence.face_client_local import fetch_face_observation_local
+from presence.face_client_local import (
+    _convert_in_tree_results,
+    fetch_face_observation_local,
+)
 
 
-class TestFaceClientLocal:
-    def test_returns_none_if_no_vision_context(self):
-        result = _run(fetch_face_observation_local(None, _StubHTTPClient(), "http://x"))
-        assert result is None
+class TestConvertInTreeResults:
+    """Pure-function tests for the streamerpi /faces -> FacePrediction filter.
+    No vision context, no HTTP, no async — calls the converter directly.
+    The function is in the hot path on every speech turn, so its filter
+    invariants matter: the room ledger relies on these to avoid filling up
+    with unknown_face_<hash> noise."""
 
-    def test_returns_none_if_face_id_not_ready(self):
-        vc = _FakeVisionContext(_FakeFaceID([]), _FakeCapture(), ready=False)
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert result is None
-
-    def test_filters_unidentified_results(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "unidentified person", "distance": 0.7, "confidence": "low",
-                 "bbox": [10, 20, 30, 40]},
-            ]),
-            _FakeCapture(),
-        )
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert result is not None
-        assert len(result.predictions) == 0
+    def test_drops_unidentified_person(self):
+        out = _convert_in_tree_results([
+            {"name": "unidentified person", "distance": 0.7,
+             "confidence": "low", "bbox": [10, 20, 30, 40]},
+        ])
+        assert out == ()
 
     def test_keeps_high_confidence_named(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "Dan", "distance": 0.2, "confidence": "high",
-                 "bbox": [100, 80, 100, 120]},
-            ]),
-            _FakeCapture(),
-        )
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert result is not None
-        assert len(result.predictions) == 1
-        pred = result.predictions[0]
+        out = _convert_in_tree_results([
+            {"name": "Dan", "distance": 0.2, "confidence": "high",
+             "bbox": [100, 80, 100, 120]},
+        ])
+        assert len(out) == 1
+        pred = out[0]
         assert pred.user_id == "Dan"
+        # distance 0.2 -> confidence 1 - 0.2 = 0.8
         assert pred.confidence == pytest.approx(0.8)
-        # bbox xywh -> xyxy
+        # bbox is converted xywh -> xyxy
         assert pred.bbox == (100, 80, 200, 200)
 
     def test_keeps_medium_confidence(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "Thea", "distance": 0.35, "confidence": "medium",
-                 "bbox": [10, 10, 100, 100]},
-            ]),
-            _FakeCapture(),
-        )
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert len(result.predictions) == 1
-        assert result.predictions[0].user_id == "Thea"
+        out = _convert_in_tree_results([
+            {"name": "Thea", "distance": 0.35, "confidence": "medium",
+             "bbox": [10, 10, 100, 100]},
+        ])
+        assert len(out) == 1
+        assert out[0].user_id == "Thea"
 
     def test_drops_low_confidence_even_if_named(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "Dan", "distance": 0.55, "confidence": "low",
-                 "bbox": [10, 10, 100, 100]},
-            ]),
-            _FakeCapture(),
-        )
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert len(result.predictions) == 0
+        out = _convert_in_tree_results([
+            {"name": "Dan", "distance": 0.55, "confidence": "low",
+             "bbox": [10, 10, 100, 100]},
+        ])
+        assert out == ()
 
-    def test_drops_in_tree_unknown_named(self):
-        # in-tree FaceID returns names like "unknown_1" for unrecognized faces
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "unknown_1", "distance": 0.7, "confidence": "low",
-                 "bbox": [10, 10, 100, 100]},
-            ]),
-            _FakeCapture(),
-        )
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert len(result.predictions) == 0
+    def test_drops_unknown_stable_ids(self):
+        # In-tree FaceID emits names like "unknown_1" / "unknown_2" for
+        # unrecognized faces it has assigned a stable id to. The filter
+        # drops them at this layer so they don't pollute the room ledger.
+        out = _convert_in_tree_results([
+            {"name": "unknown_1", "distance": 0.7, "confidence": "medium",
+             "bbox": [10, 10, 100, 100]},
+        ])
+        assert out == ()
+
+
+class TestFaceClientLocal:
+    """Integration-ish tests for fetch_face_observation_local. Covers the
+    guards and the parallel face+behavior fetch path. Filter behavior is
+    tested separately in TestConvertInTreeResults."""
+
+    def test_returns_none_if_no_vision_context(self):
+        result = _run(fetch_face_observation_local(
+            None, _StubHTTPClient(), "http://x"))
+        assert result is None
+
+    def test_returns_none_if_face_remote_not_ready(self):
+        vc = _FakeVisionContext(_FakeFaceRemote([]), ready=False)
+        result = _run(fetch_face_observation_local(
+            vc, _StubHTTPClient(), "http://x"))
+        assert result is None
+
+    def test_returns_none_if_face_remote_missing(self):
+        vc = _FakeVisionContext(None, ready=True)
+        result = _run(fetch_face_observation_local(
+            vc, _StubHTTPClient(), "http://x"))
+        assert result is None
+
+    def test_returns_none_if_fetch_full_returns_none(self):
+        # Real FaceRemote returns None when streamerpi /faces is entirely
+        # unreachable (TCP refused, JSON decode failed). Function must
+        # tolerate this without crashing.
+        vc = _FakeVisionContext(_NullFaceRemote(), ready=True)
+        result = _run(fetch_face_observation_local(
+            vc, _StubHTTPClient(), "http://x"))
+        assert result is None
 
     def test_behavior_fetched_when_url_works(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "Dan", "distance": 0.2, "confidence": "high",
-                 "bbox": [10, 10, 100, 100]},
-            ]),
-            _FakeCapture(),
-        )
+        vc = _FakeVisionContext(_FakeFaceRemote([
+            {"name": "Dan", "distance": 0.2, "confidence": "high",
+             "bbox": [10, 10, 100, 100]},
+        ]), ready=True)
         beh_resp = _StubResponse(200, {
             "mode": "track",
             "face_visible": True,
@@ -935,29 +957,22 @@ class TestFaceClientLocal:
         })
         http = _StubHTTPClient(behavior_response=beh_resp)
         result = _run(fetch_face_observation_local(vc, http, "http://x"))
+        assert result is not None
         assert result.behavior is not None
         assert result.behavior.mode == "track"
         assert result.behavior.last_face_pan == 12.0
+        # Face prediction also surfaced (single high-confidence named face).
+        assert len(result.predictions) == 1
+        assert result.predictions[0].user_id == "Dan"
 
     def test_behavior_failure_does_not_break_observation(self):
-        vc = _FakeVisionContext(
-            _FakeFaceID([
-                {"name": "Dan", "distance": 0.2, "confidence": "high",
-                 "bbox": [10, 10, 100, 100]},
-            ]),
-            _FakeCapture(),
-        )
+        vc = _FakeVisionContext(_FakeFaceRemote([
+            {"name": "Dan", "distance": 0.2, "confidence": "high",
+             "bbox": [10, 10, 100, 100]},
+        ]), ready=True)
         http = _StubHTTPClient(raise_exc=RuntimeError("boom"))
         result = _run(fetch_face_observation_local(vc, http, "http://x"))
         assert result is not None
+        # Behavior endpoint failed; face observation must still come back.
         assert result.behavior is None
         assert len(result.predictions) == 1
-
-    def test_capture_returns_none_yields_none(self):
-        class _NullCapture:
-            async def _fetch_frame(self, reason):
-                return None
-
-        vc = _FakeVisionContext(_FakeFaceID([]), _NullCapture())
-        result = _run(fetch_face_observation_local(vc, _StubHTTPClient(), "http://x"))
-        assert result is None
