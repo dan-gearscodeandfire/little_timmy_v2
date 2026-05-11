@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Little Timmy — Visitor</title>
+<style>
+  :root {
+    --bg: #07080a;
+    --fg: #d8d8da;
+    --dim: #5f6470;
+    --rule: #1a1c22;
+    --label-vision: #5fd4b8;
+    --label-speech: #e6c478;
+    --label-speaker: #c894d6;
+    --label-face: #85d690;
+    --label-memory: #7fb3e6;
+    --label-reply: #f0d8a8;
+    --label-voice: #e6889a;
+    --label-system: #8e94a3;
+    --look-engage: #6f6;
+    --look-track: #ddc070;
+    --look-scan: #8e94a3;
+    --look-idle: #4a4f59;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; padding: 22px 30px; gap: 18px;
+    overflow: hidden; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between;
+    border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
+  header h1 { font-weight: 200; letter-spacing: 0.2em; font-size: 14px;
+    color: var(--dim); text-transform: uppercase; }
+  header .nav { font-size: 11px; color: var(--dim); }
+  header .nav a { color: var(--label-memory); text-decoration: none; margin-left: 14px; }
+  header .pills { display: flex; gap: 8px; font: 10px ui-monospace, "SF Mono", Consolas, monospace; }
+  header .pill { padding: 2px 8px; border-radius: 8px; background: #11141b;
+    border: 1px solid var(--rule); color: var(--dim); }
+  header .pill.up { color: #6f6; border-color: #2a4a2a; }
+  header .pill.down { color: #f66; border-color: #4a2a2a; }
+
+  /* Camera stage with face-box overlay + look-at badge */
+  #stage { position: relative; width: 100%; aspect-ratio: 16 / 9;
+    max-height: 50vh; background: #000; border: 1px solid var(--rule);
+    border-radius: 4px; overflow: hidden; }
+  #cam { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; background: #000; }
+  #cam.disconnected { filter: grayscale(1) opacity(0.4); }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; }
+  #overlay rect.face { fill: none; stroke: var(--label-face); stroke-width: 2;
+    vector-effect: non-scaling-stroke; }
+  #overlay rect.face.unknown { stroke: var(--dim); stroke-dasharray: 4 3; }
+  #overlay text.face-label { font: 14px ui-monospace, "SF Mono", Consolas, monospace;
+    fill: var(--label-face); paint-order: stroke; stroke: rgba(0,0,0,0.7);
+    stroke-width: 3; stroke-linejoin: round; }
+  #overlay text.face-label.unknown { fill: var(--dim); }
+  #lookat { position: absolute; top: 12px; right: 14px;
+    font: 11px/1 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.05em; padding: 6px 10px; border-radius: 14px;
+    background: rgba(7,8,10,0.78); border: 1px solid var(--rule);
+    color: var(--look-idle); display: flex; align-items: center; gap: 6px; }
+  #lookat .dot { width: 7px; height: 7px; border-radius: 50%;
+    background: var(--look-idle); }
+  #lookat.engage { color: var(--look-engage); border-color: #2a4a2a; }
+  #lookat.engage .dot { background: var(--look-engage); box-shadow: 0 0 6px var(--look-engage); }
+  #lookat.track  { color: var(--look-track);  border-color: #4a4128; }
+  #lookat.track  .dot { background: var(--look-track); }
+  #lookat.scan   { color: var(--look-scan); }
+  #lookat.scan   .dot { background: var(--look-scan); }
+  #cam-status { position: absolute; bottom: 10px; left: 12px;
+    font: 10px/1 ui-monospace, monospace; color: var(--dim);
+    background: rgba(7,8,10,0.78); padding: 4px 8px; border-radius: 10px; }
+
+  /* Scene caption: persistent, top-left under the camera */
+  #scene { padding: 4px 0 4px 0; }
+  #scene .label { font: 10px/1 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.1em; color: var(--label-vision); margin-bottom: 6px; }
+  #scene .text { font-size: 22px; line-height: 1.3; font-weight: 250;
+    letter-spacing: -0.005em; color: var(--fg); min-height: 56px; }
+  #scene .text.empty { color: var(--dim); font-style: italic; font-weight: 300; }
+
+  /* Live reply panel: anchored slot, typewriter */
+  #reply { padding: 6px 0; border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule); min-height: 80px; }
+  #reply .label { font: 10px/1 ui-monospace, monospace; letter-spacing: 0.1em;
+    color: var(--label-reply); margin-bottom: 6px; }
+  #reply .text { font-size: 18px; line-height: 1.4; color: var(--fg);
+    font-weight: 300; min-height: 50px; }
+  #reply .text.idle { color: var(--dim); font-style: italic; font-weight: 300; }
+  #reply .cursor { display: inline-block; width: 7px; height: 18px;
+    background: var(--label-reply); margin-left: 4px; vertical-align: -3px;
+    animation: blink 1s steps(2) infinite; }
+  #reply .cursor.gone { display: none; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Audit log: scrolling, newest on top */
+  #audit { flex: 1; overflow: hidden; font: 12px/1.55 ui-monospace,
+    "SF Mono", Consolas, monospace; }
+  #audit .row { display: grid; grid-template-columns: 60px 200px 1fr;
+    column-gap: 12px; padding: 1px 0; align-items: baseline;
+    animation: fadeIn 0.4s ease-out; }
+  #audit .ts { color: var(--dim); font-size: 10px; }
+  #audit .lbl { font-size: 10px; letter-spacing: 0.05em; }
+  #audit .body { color: var(--fg); }
+  #audit .lbl.vision   { color: var(--label-vision);  }
+  #audit .lbl.speech   { color: var(--label-speech);  }
+  #audit .lbl.speaker  { color: var(--label-speaker); }
+  #audit .lbl.face     { color: var(--label-face);    }
+  #audit .lbl.memory   { color: var(--label-memory);  }
+  #audit .lbl.reply    { color: var(--label-reply);   }
+  #audit .lbl.voice    { color: var(--label-voice);   }
+  #audit .lbl.system   { color: var(--label-system);  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Little Timmy &middot; Visitor</h1>
+  <div class="pills">
+    <span id="lt-pill" class="pill">lt ?</span>
+    <span id="pi-pill" class="pill">streamerpi ?</span>
+    <span id="rtc-pill" class="pill">webrtc ?</span>
+  </div>
+  <div class="nav"><a href="/operator">operator</a><a href="/health">health</a></div>
+</header>
+
+<section id="stage">
+  <video id="cam" autoplay playsinline muted class="disconnected"></video>
+  <svg id="overlay" viewBox="0 0 640 360" preserveAspectRatio="xMidYMid meet"></svg>
+  <div id="lookat"><span class="dot"></span><span id="lookat-text">idle</span></div>
+  <div id="cam-status">connecting&hellip;</div>
+</section>
+
+<section id="scene">
+  <div class="label">[ VISION / Qwen3.6:8084 ]</div>
+  <div id="scene-text" class="text empty">no scene captured yet</div>
+</section>
+
+<section id="reply">
+  <div class="label">[ REPLY / Llama-3.2-3B ]</div>
+  <div id="reply-text" class="text idle">idle</div>
+</section>
+
+<section id="audit"></section>
+
+<script>
+  const scene_text = document.getElementById('scene-text');
+  const reply_text = document.getElementById('reply-text');
+  const audit = document.getElementById('audit');
+  const lt_pill = document.getElementById('lt-pill');
+  const pi_pill = document.getElementById('pi-pill');
+  const rtc_pill = document.getElementById('rtc-pill');
+  const cam = document.getElementById('cam');
+  const overlay = document.getElementById('overlay');
+  const lookat = document.getElementById('lookat');
+  const lookat_text = document.getElementById('lookat-text');
+  const cam_status = document.getElementById('cam-status');
+
+  const MAX_AUDIT = 18;
+  const FACE_LOG_INTERVAL_MS = 30_000;
+
+  // ----- state for incremental rendering -----
+  let lastSceneText = null;
+  let lastFaceLogged = new Map();
+  let activeReply = null;
+  let overlayViewBox = '0 0 640 360';
+  let lastFacesByKey = new Map();   // bbox dedupe so we don't redraw on every tick
+
+  // ----- helpers -----
+  function fmtTime(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function setPill(el, label, up) {
+    el.textContent = `${label} ${up ? 'up' : 'down'}`;
+    el.className = 'pill ' + (up ? 'up' : 'down');
+  }
+  function appendAudit(kind, source, text) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const tsEl = document.createElement('span'); tsEl.className = 'ts';
+    tsEl.textContent = fmtTime(new Date());
+    const lblEl = document.createElement('span'); lblEl.className = `lbl ${kind}`;
+    lblEl.textContent = source ? `[${kind.toUpperCase()}/${source}]` : `[${kind.toUpperCase()}]`;
+    const bodyEl = document.createElement('span'); bodyEl.className = 'body';
+    bodyEl.textContent = text;
+    row.append(tsEl, lblEl, bodyEl);
+    audit.prepend(row);
+    while (audit.children.length > MAX_AUDIT) audit.removeChild(audit.lastChild);
+  }
+
+  // ----- WebRTC client (one peer, recvonly video, retries forever) -----
+  let pc = null;
+  async function startWebRTC() {
+    cam_status.textContent = 'negotiating…';
+    rtc_pill.className = 'pill';
+    rtc_pill.textContent = 'webrtc neg';
+    if (pc) { try { pc.close(); } catch {} pc = null; }
+    pc = new RTCPeerConnection();
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = (e) => {
+      cam.srcObject = e.streams[0];
+      cam.classList.remove('disconnected');
+      cam_status.textContent = '';
+    };
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState;
+      setPill(rtc_pill, 'webrtc', st === 'connected');
+      if (st === 'failed' || st === 'disconnected' || st === 'closed') {
+        cam.classList.add('disconnected');
+        cam_status.textContent = `webrtc ${st}, retrying…`;
+        setTimeout(startWebRTC, 3000);
+      }
+    };
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      // Non-trickle: wait until ICE gathering is complete before posting.
+      await new Promise((res) => {
+        if (pc.iceGatheringState === 'complete') return res();
+        const onChange = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener('icegatheringstatechange', onChange);
+            res();
+          }
+        };
+        pc.addEventListener('icegatheringstatechange', onChange);
+        // Safety timeout in case gathering stalls.
+        setTimeout(res, 4000);
+      });
+      const r = await fetch('/streamerpi/offer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sdp: pc.localDescription.sdp,
+          type: pc.localDescription.type,
+        }),
+      });
+      if (!r.ok) throw new Error('offer http ' + r.status);
+      const answer = await r.json();
+      await pc.setRemoteDescription(answer);
+      appendAudit('system', 'webrtc', `peer offer accepted (${answer.type})`);
+    } catch (e) {
+      appendAudit('system', 'webrtc', `negotiation failed: ${e.message}, retrying…`);
+      cam.classList.add('disconnected');
+      cam_status.textContent = 'webrtc retry in 3s';
+      setTimeout(startWebRTC, 3000);
+    }
+  }
+
+  // ----- handlers per event type -----
+  function handleVision(d) {
+    if (!d || !d.record) return;
+    const scene = (d.record.scene_state || '').trim();
+    if (!scene) return;
+    if (scene !== lastSceneText) {
+      const arrow = lastSceneText ? '→ ' : '';
+      scene_text.classList.remove('empty');
+      scene_text.textContent = scene;
+      appendAudit('vision', 'Qwen3.6:8084', arrow + scene);
+      lastSceneText = scene;
+    }
+  }
+
+  function handleFaces(d) {
+    if (!d) return;
+    const faces = Array.isArray(d.faces) ? d.faces : [];
+    // Update SVG viewBox to match source image dimensions.
+    if (Array.isArray(d.image_size) && d.image_size.length === 2) {
+      const [w, h] = d.image_size;
+      const vb = `0 0 ${w} ${h}`;
+      if (vb !== overlayViewBox) {
+        overlay.setAttribute('viewBox', vb);
+        overlayViewBox = vb;
+      }
+    }
+    // Redraw face rects + labels.
+    while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+    const ns = 'http://www.w3.org/2000/svg';
+    for (const f of faces) {
+      if (!Array.isArray(f.bbox) || f.bbox.length !== 4) continue;
+      const [x, y, w, h] = f.bbox;
+      const known = f.name && f.name !== 'unknown';
+      const r = document.createElementNS(ns, 'rect');
+      r.setAttribute('x', x); r.setAttribute('y', y);
+      r.setAttribute('width', w); r.setAttribute('height', h);
+      r.setAttribute('class', known ? 'face' : 'face unknown');
+      overlay.appendChild(r);
+      const t = document.createElementNS(ns, 'text');
+      t.setAttribute('x', x + 4);
+      t.setAttribute('y', Math.max(14, y - 4));
+      t.setAttribute('class', known ? 'face-label' : 'face-label unknown');
+      const conf = (typeof f.confidence === 'number') ? ` ${f.confidence.toFixed(2)}` : '';
+      t.textContent = (known ? f.name : 'unknown') + conf;
+      overlay.appendChild(t);
+    }
+    // Audit log: only when a NEW known face appears (rate-limited).
+    const now = Date.now();
+    for (const f of faces) {
+      const name = f.name && f.name !== 'unknown' ? f.name : null;
+      if (!name) continue;
+      const last = lastFaceLogged.get(name) || 0;
+      if (now - last < FACE_LOG_INTERVAL_MS) continue;
+      lastFaceLogged.set(name, now);
+      const conf = (typeof f.confidence === 'number') ? f.confidence.toFixed(2) : '?';
+      appendAudit('face', 'streamerpi', `matched ${name} (${conf})`);
+    }
+  }
+
+  function handleBehavior(d) {
+    if (!d) return;
+    const mode = (d.mode || 'idle').toLowerCase();
+    const visible = !!d.face_visible;
+    const cls = (mode === 'engage') ? 'engage'
+              : (mode === 'track')  ? 'track'
+              : (mode === 'scan')   ? 'scan'
+              : '';
+    lookat.className = cls;
+    const text =
+      mode === 'engage' ? 'looking at someone'
+    : mode === 'track'  ? (visible ? 'tracking' : 'tracking (lost)')
+    : mode === 'scan'   ? (visible ? 'scanning (face seen)' : 'scanning')
+    : 'idle';
+    lookat_text.textContent = text;
+  }
+
+  function startLiveReply() {
+    if (activeReply) return;
+    reply_text.classList.remove('idle');
+    reply_text.innerHTML = '<span class="body"></span><span class="cursor"></span>';
+    activeReply = { accum: '', startTs: performance.now(),
+                     bodyEl: reply_text.querySelector('.body'),
+                     cursorEl: reply_text.querySelector('.cursor') };
+  }
+  function endLiveReply(durMs) {
+    if (!activeReply) return;
+    const d = (durMs / 1000).toFixed(1);
+    const tokens = activeReply.accum ? activeReply.accum.length : 0;
+    activeReply.cursorEl?.classList.add('gone');
+    appendAudit('reply', 'Llama-3.2-3B', `complete (${d}s, ~${tokens} chars)`);
+    activeReply = null;
+  }
+
+  function handleTurn(m) {
+    if (m.role === 'user') {
+      const utterance = (m.content || '').trim();
+      if (utterance) appendAudit('speech', 'Whisper',
+        `heard "${utterance.length > 100 ? utterance.slice(0,97)+'…' : utterance}"`);
+      if (m.speaker) appendAudit('speaker', 'speaker-id', m.speaker);
+      startLiveReply();
+    } else if (m.role === 'assistant') {
+      const dur = activeReply ? performance.now() - activeReply.startTs : 0;
+      endLiveReply(dur);
+    }
+  }
+
+  function handleRetrieval(m) {
+    const memN = (m.memories || []).length;
+    const factN = (m.facts || []).length;
+    appendAudit('memory', 'postgres', `retrieved ${memN} memor${memN===1?'y':'ies'}, ${factN} fact${factN===1?'':'s'}`);
+  }
+
+  function handleToken(content) {
+    if (!activeReply) startLiveReply();
+    activeReply.accum += content;
+    activeReply.bodyEl.textContent = activeReply.accum;
+  }
+
+  function handleMetrics(m) {
+    if (typeof m.tts_ms === 'number' && m.tts_ms > 0) {
+      appendAudit('voice', 'Piper', `synthesized in ${(m.tts_ms/1000).toFixed(1)}s`);
+    }
+  }
+
+  // ----- WS connection -----
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onopen = () => appendAudit('system', 'booth-display', 'connected');
+    ws.onclose = () => {
+      appendAudit('system', 'booth-display', 'reconnecting…');
+      setTimeout(connect, 1500);
+    };
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      switch (m.type) {
+        case 'snapshot':
+          setPill(lt_pill, 'lt', m.lt_ws_up);
+          setPill(pi_pill, 'streamerpi', m.streamerpi_up);
+          if (m.vision) handleVision(m.vision);
+          if (m.faces) handleFaces(m.faces);
+          if (m.behavior) handleBehavior(m.behavior);
+          break;
+        case 'vision':   handleVision(m.data); break;
+        case 'faces':    handleFaces(m.data); break;
+        case 'behavior': handleBehavior(m.data); break;
+        case 'lt_turn':  handleTurn(m); break;
+        case 'lt_retrieval': handleRetrieval(m); break;
+        case 'lt_token': handleToken(m.content); break;
+        case 'lt_metrics': handleMetrics(m); break;
+      }
+    };
+  }
+  connect();
+  startWebRTC();
+</script>
+</body>
+</html>

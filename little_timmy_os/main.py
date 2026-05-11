@@ -1133,17 +1133,13 @@ async function pollVision() {
         parts.push('<b>Changed:</b> ' + r.change_from_prior);
       caption.innerHTML = parts.join('<br>');
 
+      // 2026-05-07: removed Humor / Store / Tags rows alongside the VLM
+      // schema fields they rendered (limited utility; +600 ms VLM cycle).
       const scoreItems = [
         '<span style="color:' + (r.novelty > 0.5 ? '#d29922' : '#484f58') + '">Novelty: ' + r.novelty.toFixed(2) + '</span>',
-        '<span style="color:' + (r.humor_potential > 0.5 ? '#e94560' : '#484f58') + '">Humor: ' + r.humor_potential.toFixed(2) + '</span>',
-        '<span style="color:' + (r.store_as_memory ? '#3fb950' : '#484f58') + '">Store: ' + (r.store_as_memory ? 'yes' : 'no') + '</span>',
         '<span style="color:' + (r.speak_now ? '#f85149' : '#484f58') + '">Speak: ' + (r.speak_now ? 'YES' : 'no') + '</span>',
       ];
       scores.innerHTML = scoreItems.join(' &middot; ');
-
-      if (r.memory_tags && r.memory_tags.length) {
-        scores.innerHTML += '<br><span style="color:#8b5cf6">Tags: ' + r.memory_tags.join(', ') + '</span>';
-      }
     }
 
     const age = v.age_s != null ? v.age_s.toFixed(0) + 's ago' : '--';
