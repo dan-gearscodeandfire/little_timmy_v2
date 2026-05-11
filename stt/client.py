@@ -32,6 +32,8 @@ _STT_CORRECTIONS = {
     "aaron": "Erin",
     "arron": "Erin",
     "erin's": "Erin's",  # possessive
+    "tammy": "Timmy",
+    "tommy": "Timmy",
 }
 
 
@@ -106,12 +108,21 @@ async def transcribe(audio: np.ndarray) -> str:
     wav_bytes = _audio_to_wav_bytes(audio)
     client = await _get_client()
 
-    resp = await client.post(
-        f"{config.WHISPER_URL}/inference",
-        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-        data={"response_format": "verbose_json", "temperature": "0.0"},
-    )
-    resp.raise_for_status()
+    try:
+        resp = await client.post(
+            f"{config.WHISPER_URL}/inference",
+            files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+            data={"response_format": "verbose_json", "temperature": "0.0"},
+        )
+        resp.raise_for_status()
+    except (httpx.ConnectError, httpx.TimeoutException,
+            httpx.NetworkError, httpx.HTTPStatusError) as e:
+        # Whisper is down or unreachable. Returning "" here makes the
+        # capture pipeline skip the turn the same way it skips
+        # hallucinations and empty transcripts — no crash-loop on LT
+        # while whisper-server is stopped.
+        log.warning("STT unavailable, dropping turn: %s", e)
+        return ""
     result = resp.json()
 
     text = result.get("text", "").strip()

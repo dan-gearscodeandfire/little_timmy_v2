@@ -8,6 +8,7 @@ import asyncio
 import logging
 import sys
 import os
+import re
 import time
 import httpx
 import numpy as np
@@ -52,6 +53,72 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("timmy")
+
+
+# --- Reply hygiene ---
+# 2026-05-11 session repeatedly flagged verbose narration replies where the
+# Llama 3B conversation tier treated the [WHAT YOU SEE] vision context as a
+# cue to describe the workshop unprompted, violating "1-2 short sentences"
+# and "do NOT narrate the scene" rules in the system prompt. Two known
+# offenders below; the same canned phrase "a window into the digital world,
+# with lines of code scrolling by" came out twice within a few turns.
+_NARRATION_PREFIXES = (
+    "i'm standing in front of",
+    "i'm surrounded by",
+    "the workshop is",
+    "the room is",
+    "the computer monitor behind",
+    "you are standing in",
+)
+_NARRATION_PREFIX_CHECK_AT = 30  # chars
+_REPLY_MAX_SENTENCES = 2
+_REPLY_VETO_FALLBACK = "Sure."
+
+
+def _looks_like_narration(buf: str) -> bool:
+    head = buf.lower().lstrip()[:50]
+    return any(head.startswith(p) for p in _NARRATION_PREFIXES)
+
+
+async def filtered_assistant_stream(token_iter):
+    """Post-filter the conversation-tier token stream before TTS sees it.
+
+    Two veto paths:
+      - Narration prefix (first ~30 chars) -> swallow the rest of the
+        upstream and yield a single fallback ("Sure.") so TTS still
+        speaks something terse.
+      - 2 sentence terminators (.!?) accumulated -> swallow the rest of
+        the upstream so TTS / persistence / WS broadcast all see the
+        truncated form.
+
+    Sentence terminators inside abbreviations are not a concern here:
+    Llama 3B almost never emits "Mr." / "Dr." in this skeleton-cohost
+    persona.
+    """
+    accum = ""
+    sentence_count = 0
+    narration_checked = False
+    drained = False
+    async for token in token_iter:
+        if drained:
+            # Keep iterating to let the upstream finish cleanly; drop the
+            # tokens silently. Upstream HTTP connection stays healthy.
+            continue
+        accum += token
+        if not narration_checked and len(accum) >= _NARRATION_PREFIX_CHECK_AT:
+            narration_checked = True
+            if _looks_like_narration(accum):
+                log.warning("[POST-FILTER] vetoed narration reply (first 60 chars): %r",
+                            accum[:60])
+                drained = True
+                yield _REPLY_VETO_FALLBACK
+                continue
+        sentence_count += sum(1 for ch in token if ch in ".!?")
+        yield token
+        if sentence_count >= _REPLY_MAX_SENTENCES:
+            log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
+                     _REPLY_MAX_SENTENCES, len(accum))
+            drained = True
 
 
 class Orchestrator:
@@ -303,7 +370,7 @@ class Orchestrator:
         full_response = ""
         sentence_buffer = ""
 
-        async for token in stream_conversation(messages):
+        async for token in filtered_assistant_stream(stream_conversation(messages)):
             full_response += token
             sentence_buffer += token
             await broadcast_event("token", {"content": token})
@@ -361,7 +428,7 @@ class Orchestrator:
         full_response = ""
         sentence_buffer = ""
 
-        async for token in stream_conversation(messages):
+        async for token in filtered_assistant_stream(stream_conversation(messages)):
             full_response += token
             sentence_buffer += token
             await broadcast_event("token", {"content": token})
@@ -583,7 +650,7 @@ class Orchestrator:
         first_token_time = None
         first_tts_time = None
 
-        async for token in stream_conversation(messages):
+        async for token in filtered_assistant_stream(stream_conversation(messages)):
             if first_token_time is None:
                 first_token_time = time.time()
 
