@@ -86,7 +86,9 @@ async def filtered_assistant_stream(token_iter):
     Two veto paths:
       - Narration prefix (first ~30 chars) -> swallow the rest of the
         upstream and yield a single fallback ("Sure.") so TTS still
-        speaks something terse.
+        speaks something terse. Tokens are buffered until the prefix
+        check has fired so the veto suppresses the entire reply rather
+        than letting the first ~29 chars leak to TTS / WS / hot_turns.
       - 2 sentence terminators (.!?) accumulated -> swallow the rest of
         the upstream so TTS / persistence / WS broadcast all see the
         truncated form.
@@ -96,6 +98,7 @@ async def filtered_assistant_stream(token_iter):
     persona.
     """
     accum = ""
+    buffered = ""
     sentence_count = 0
     narration_checked = False
     drained = False
@@ -105,7 +108,13 @@ async def filtered_assistant_stream(token_iter):
             # tokens silently. Upstream HTTP connection stays healthy.
             continue
         accum += token
-        if not narration_checked and len(accum) >= _NARRATION_PREFIX_CHECK_AT:
+        if not narration_checked:
+            # Hold every token until accum reaches the prefix-check window.
+            # Without this hold, the first ~29 chars would already be on
+            # TTS / WS / hot_turns before the veto fires, defeating it.
+            buffered += token
+            if len(accum) < _NARRATION_PREFIX_CHECK_AT:
+                continue
             narration_checked = True
             if _looks_like_narration(accum):
                 log.warning("[POST-FILTER] vetoed narration reply (first 60 chars): %r",
@@ -113,12 +122,32 @@ async def filtered_assistant_stream(token_iter):
                 drained = True
                 yield _REPLY_VETO_FALLBACK
                 continue
+            # Safe prefix — flush the buffer in one chunk and resume
+            # streaming. Sentence counting catches up on the buffered text.
+            sentence_count += sum(1 for ch in buffered if ch in ".!?")
+            yield buffered
+            buffered = ""
+            if sentence_count >= _REPLY_MAX_SENTENCES:
+                log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
+                         _REPLY_MAX_SENTENCES, len(accum))
+                drained = True
+            continue
         sentence_count += sum(1 for ch in token if ch in ".!?")
         yield token
         if sentence_count >= _REPLY_MAX_SENTENCES:
             log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
                      _REPLY_MAX_SENTENCES, len(accum))
             drained = True
+    # End-of-stream flush: a reply shorter than the prefix-check window
+    # never triggered the narration check. Every entry in _NARRATION_PREFIXES
+    # is <30 chars, so a reply that is exactly "the room is" (15 chars) and
+    # then stops would otherwise slip through. Run the check defensively.
+    if buffered and not drained:
+        if _looks_like_narration(accum):
+            log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
+            yield _REPLY_VETO_FALLBACK
+        else:
+            yield buffered
 
 
 class Orchestrator:

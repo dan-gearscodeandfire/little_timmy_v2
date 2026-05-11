@@ -10,9 +10,11 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 import config
 import services
@@ -36,6 +38,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Little Timmy OS", version="0.2.0", lifespan=lifespan)
+
+# Self-hosted vendor JS (Chart.js etc) so the dashboard renders without
+# internet access — booth deploys may be on offline LANs.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 _connected_websockets: list[WebSocket] = []
 
@@ -350,7 +358,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Little Timmy OS</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="/static/vendor/chart.umd.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1092,11 +1100,12 @@ function pushLatencySample(s) {
       && now - lastLatencyTs < 2000) return;
   if (fingerprint === "0|0|0|0|0|0") return;  // nothing to plot
   lastLatencyTs = now;
+  // Use ?? not || so a genuine 0ms metric still plots as 0 instead of a gap.
   latencyBuffer.push({
     ts: now, fp: fingerprint,
-    stt: s.stt || null, retrieval: s.retrieval || null,
-    llm_ft: s.llm_ft || null, llm: s.llm || null,
-    tts: s.tts || null, e2e: s.e2e || null,
+    stt: s.stt ?? null, retrieval: s.retrieval ?? null,
+    llm_ft: s.llm_ft ?? null, llm: s.llm ?? null,
+    tts: s.tts ?? null, e2e: s.e2e ?? null,
   });
   while (latencyBuffer.length > LATENCY_BUFFER_MAX) latencyBuffer.shift();
   redrawLatencyChart();

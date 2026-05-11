@@ -434,7 +434,7 @@
     if (ghostTypeTimer) { clearInterval(ghostTypeTimer); ghostTypeTimer = null; }
     if (ghostFadeTimer) { clearTimeout(ghostFadeTimer); ghostFadeTimer = null; }
     const text = reasoning.length > GHOST_MAX_CHARS
-      ? reasoning.slice(0, GHOST_MAX_CHARS) + '…'
+      ? reasoning.slice(0, GHOST_MAX_CHARS - 1) + '…'
       : reasoning;
     ghost_text.classList.remove('idle', 'fading');
     ghost_src.textContent = source ? `· ${source}` : '';
