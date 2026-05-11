@@ -17,6 +17,15 @@ from memory.facts import Fact
 import config
 
 
+# Most-recent payload sent to the LLM. Updated on every build_messages call so
+# the dashboard can render an "inspect last prompt" view.
+_LAST_PAYLOAD: dict = {}
+
+
+def get_last_payload() -> dict:
+    return dict(_LAST_PAYLOAD)
+
+
 def _format_relative_time(dt) -> str:
     """Format a datetime as a human-readable relative time."""
     if dt is None:
@@ -69,24 +78,30 @@ def build_ephemeral_block(
         now = datetime.now()
 
     parts = [config.PERSONA.strip()]
+
+    # Inject the active mood snippet (X/Y axis) — kept outside config.PERSONA
+    # so the prompt only carries the active cell of the 3x3 grid, not all 9.
+    try:
+        from persona import state as _mood_state
+        from persona.render import render as _render_mood
+        parts.append("\n" + _render_mood(_mood_state.get()))
+    except Exception:
+        pass  # mood system optional; degrade gracefully
+
     parts.append(f"\nCurrent time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
 
-    if speaker_name:
-        if fusion_source == "face_hint" and face_hint_name:
-            parts.append(
-                f"\n[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
-                f"Face recognition strongly suggests this is {face_hint_name.title()} "
-                f"(only visible person, head centered on them). "
-                f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
-                f"unless they correct you."
-            )
-        else:
-            parts.append(
-                f"\nIMPORTANT: The person speaking to you right now is {speaker_name.title()}. "
-                f"Address them as {speaker_name.title()}. Do NOT confuse them with anyone else "
-                f"mentioned in the conversation. Even if other names come up in discussion, "
-                f"you are talking to {speaker_name.title()}."
-            )
+    if speaker_name and fusion_source == "face_hint" and face_hint_name:
+        # Only inject when speaker-ID is uncertain (voiceprint miss, face hint).
+        # The certain-match block was dropped 2026-05-06: redundant with
+        # GROUND TRUTH facts + WHO IS PRESENT + Dan-centric persona for the
+        # common case. Reintroduce if non-Dan speaker confusion shows up.
+        parts.append(
+            f"\n[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
+            f"Face recognition strongly suggests this is {face_hint_name.title()} "
+            f"(only visible person, head centered on them). "
+            f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
+            f"unless they correct you."
+        )
 
     if presence_state and presence_state.get("present"):
         present_lines = []
@@ -164,6 +179,53 @@ def build_messages(
     Order: [history prefix] [ephemeral system] [current user turn]
     """
     messages = list(history)  # copy -- this is the KV-cached prefix
+
+    # Both call paths into _generate_response (voice in main.py:~215, text in
+    # process_text_input) call conversation.add_user_turn(user_text) *before*
+    # _generate_response runs. So by the time history is built here, the
+    # current user turn is already at the tail of hot_turns. Without this
+    # strip, build_messages then appends user_text AGAIN below, producing:
+    #   [..., user_n, system_ephemeral, user_n]
+    # i.e. the user message duplicated with the system block sandwiched
+    # between, which wastes tokens every turn and confuses Llama 3B's chat
+    # template (two consecutive user turns separated by system).
+    # Detected 2026-05-06 via the new /api/last_payload modal — first time
+    # the full messages array was inspectable. No historical receipts in
+    # flagged.jsonl / example_*.json (those snapshot only the ephemeral block,
+    # not the messages list), but the duplication is structurally guaranteed
+    # by both call sites and has been happening on every turn since
+    # conversation rollup was wired in March.
+    if (
+        messages
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("content") == user_text
+    ):
+        messages = messages[:-1]
+
     messages.append({"role": "system", "content": ephemeral_block})
     messages.append({"role": "user", "content": user_text})
+
+    mood_dict = None
+    try:
+        from persona import state as _mood_state
+        s = _mood_state.get()
+        mood_dict = {"x": s.x, "y": s.y,
+                     "last_x_signal": s.last_x_signal,
+                     "last_y_signal": s.last_y_signal}
+    except Exception:
+        pass
+
+    # history_turn_count reports the actual prefix attached to this payload
+    # (post-strip), not the raw input length, so dashboards reflect what the
+    # LLM saw. `len(messages) - 2` peels off the trailing system + user pair.
+    global _LAST_PAYLOAD
+    _LAST_PAYLOAD = {
+        "timestamp": datetime.now().isoformat(),
+        "user_text": user_text,
+        "ephemeral_block": ephemeral_block,
+        "history_turn_count": max(0, len(messages) - 2),
+        "messages": messages,
+        "mood": mood_dict,
+    }
+
     return messages
