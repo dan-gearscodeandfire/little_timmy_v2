@@ -58,13 +58,6 @@ SERVICES = {
         "systemd": "ollama",
         "description": "Embeddings (nomic-embed-text, 768-dim)",
     },
-    "gptoss120b": {
-        "name": "GPT-OSS-120B",
-        "port": 8080,
-        "health_url": "http://localhost:8080/health",
-        "systemd": "llama-server",
-        "description": "Async memory extraction LLM",
-    },
     "conversation_llm": {
         "name": "Llama 3.2 3B Q4",
         "port": 8081,
@@ -77,7 +70,14 @@ SERVICES = {
         "name": "whisper.cpp",
         "port": 8891,
         "health_url": "http://localhost:8891/health",
-        "systemd": None,
+        # Delegate to systemd so LT-OS Start/Stop matches the systemd-managed
+        # process and doesn't shell-spawn a duplicate that races for :8891.
+        # Same dual-manager fix pattern used for little-timmy.service on
+        # 2026-05-05. Note: turning whisper OFF will make LT crash-loop on
+        # STT ConnectError until whisper is back — separate bug to harden
+        # LT against missing STT.
+        "systemd": "whisper-server.service",
+        # start_cmd retained as reference for if the unit is ever removed.
         "start_cmd": (
             "/home/gearscodeandfire/whisper-cpp/build/bin/whisper-server "
             "-m /home/gearscodeandfire/whisper-cpp/models/ggml-base.en.bin "
@@ -86,15 +86,26 @@ SERVICES = {
         "description": "Speech-to-text (GPU)",
     },
     "qwen36": {
-        "name": "Qwen3.6-35B-A3B (brain + vision)",
+        "name": "Qwen3.6 brain (:8083)",
         "port": 8083,
         "health_url": "http://localhost:8083/health",
         "systemd": "qwen36-server.service",
         "start_cmd": None,
         "description": (
-            "Shared brain server: fact extraction (thinking=on) + vision/scene "
-            "captioning (thinking=off) + DWU router first tier + local Claude "
-            "Code. Stopping this affects more than Little Timmy."
+            "Brain server: fact extraction (thinking=on) + DWU router first "
+            "tier + local Claude Code. Shared with non-LT consumers."
+        ),
+    },
+    "qwen36_vision": {
+        "name": "Qwen3.6 vision (:8084)",
+        "port": 8084,
+        "health_url": "http://localhost:8084/health",
+        "systemd": "qwen36-vision-server.service",
+        "start_cmd": None,
+        "description": (
+            "Vision-dedicated Qwen3.6 instance with mmproj-BF16 attached. "
+            "Used by LT vision/analyzer.py (TIMMY_VISION_URL=:8084). "
+            "Stopping this disables Timmy's scene captioning."
         ),
     },
     "little_timmy": {

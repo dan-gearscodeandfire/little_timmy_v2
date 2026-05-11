@@ -350,6 +350,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Little Timmy OS</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -398,6 +399,32 @@ header .uptime {
   margin-bottom: 14px;
   padding-bottom: 8px;
   border-bottom: 1px solid #21262d;
+}
+/* Roll-up: each .panel is wrapped in <details open><summary>...h2...</summary>...
+   Click the h2 to collapse the panel body. ▼ when open, ▶ when closed. */
+.panel > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.panel > summary::-webkit-details-marker { display: none; }
+.panel > summary > h2 { margin-bottom: 0; border-bottom: none; padding-bottom: 0; }
+.panel > summary::before {
+  content: "\25BC";  /* ▼ */
+  display: inline-block;
+  width: 14px;
+  color: #484f58;
+  font-size: 10px;
+  margin-right: 4px;
+  transition: transform 0.15s ease;
+}
+.panel:not([open]) > summary::before { content: "\25B6"; /* ▶ */ }
+.panel:not([open]) > summary > h2 { color: #8b949e; }
+/* Restore the h2's bottom rule only when expanded; place it on the summary */
+.panel[open] > summary {
+  border-bottom: 1px solid #21262d;
+  padding-bottom: 8px;
+  margin-bottom: 14px;
 }
 
 /* Service cards */
@@ -694,8 +721,8 @@ header .uptime {
 
 <div class="main-content">
   <div>
-    <div class="panel">
-      <h2>Services</h2>
+    <details class="panel" open>
+      <summary><h2>Services</h2></summary>
       <div id="services"></div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
@@ -717,11 +744,11 @@ header .uptime {
         </select>
         <div class="model-status" id="model-status"></div>
       </div>
-    </div>
+    </details>
   </div>
   <div>
-    <div class="panel">
-      <h2>Body Behavior</h2>
+    <details class="panel" open>
+      <summary><h2>Body Behavior</h2></summary>
       <div id="behavior-panel" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
         <div id="behavior-mode" style="font-size:28px; font-weight:bold; color:#e94560;">--</div>
         <div style="flex:1; min-width:150px;">
@@ -729,47 +756,48 @@ header .uptime {
           <div id="behavior-stats" style="font-size:10px; color:#484f58;"></div>
         </div>
       </div>
-    </div>
-    <div class="panel" style="margin-top:16px;">
-      <h2>Who's in the Room</h2>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Who's in the Room</h2></summary>
       <div id="presence-panel" style="font-size:12px; min-height:32px;">
         <div id="presence-empty" style="color:#8b949e; font-style:italic;">No one detected yet</div>
       </div>
       <div id="presence-meta" style="font-size:10px; color:#484f58; margin-top:6px;"></div>
-    </div>
-    <div class="panel" style="margin-top:16px; display:flex; flex-direction:column;">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h2 style="margin:0;">Conversation</h2>
-        <div style="display:flex; gap:6px;">
-          <button id="praise-btn" type="button" data-kind="good"
-                  title="Mark the most recent assistant turn as a good (on-persona) example"
-                  style="font-size:12px; padding:4px 10px; background:#1f3a25; color:#3fb950; border:1px solid #3fb950; border-radius:4px; cursor:pointer;">
-            👍 Good
-          </button>
-          <button id="flag-btn" type="button" data-kind="bad"
-                  title="Flag the most recent assistant turn as a persona-drift example for later audit"
-                  style="font-size:12px; padding:4px 10px; background:#3a1f1f; color:#f85149; border:1px solid #f85149; border-radius:4px; cursor:pointer;">
-            👎 Bad
-          </button>
-          <button id="reenroll-btn" type="button"
-                  title="Re-enroll the most recent speaker for ~60s. Optional name prompt to refresh anyone."
-                  style="font-size:12px; padding:4px 10px; background:#1f2a3a; color:#58a6ff; border:1px solid #58a6ff; border-radius:4px; cursor:pointer;">
-            🎤 Re-enroll voice
-          </button>
-          <button id="show-payload-btn" type="button"
-                  title="Show the most recent ephemeral system prompt + full payload sent to the LLM"
-                  style="font-size:12px; padding:4px 10px; background:#2a1f3a; color:#bc8cff; border:1px solid #bc8cff; border-radius:4px; cursor:pointer;">
-            🔍 Last payload
-          </button>
-        </div>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Feedback</h2></summary>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button id="praise-btn" type="button" data-kind="good"
+                title="Mark the most recent assistant turn as a good (on-persona) example"
+                style="font-size:12px; padding:4px 10px; background:#1f3a25; color:#3fb950; border:1px solid #3fb950; border-radius:4px; cursor:pointer;">
+          👍 Good
+        </button>
+        <button id="flag-btn" type="button" data-kind="bad"
+                title="Flag the most recent assistant turn as a persona-drift example for later audit"
+                style="font-size:12px; padding:4px 10px; background:#3a1f1f; color:#f85149; border:1px solid #f85149; border-radius:4px; cursor:pointer;">
+          👎 Bad
+        </button>
+        <button id="reenroll-btn" type="button"
+                title="Re-enroll the most recent speaker for ~60s. Optional name prompt to refresh anyone."
+                style="font-size:12px; padding:4px 10px; background:#1f2a3a; color:#58a6ff; border:1px solid #58a6ff; border-radius:4px; cursor:pointer;">
+          🎤 Re-enroll voice
+        </button>
+        <button id="show-payload-btn" type="button"
+                title="Show the most recent ephemeral system prompt + full payload sent to the LLM"
+                style="font-size:12px; padding:4px 10px; background:#2a1f3a; color:#bc8cff; border:1px solid #bc8cff; border-radius:4px; cursor:pointer;">
+          🔍 Last payload
+        </button>
       </div>
-      <div id="flag-status" style="font-size:11px; color:#8b949e; margin-top:4px; min-height:14px;"></div>
-      <div id="conversation" style="max-height:380px; overflow-y:auto; margin-top:8px;">
+      <div id="flag-status" style="font-size:11px; color:#8b949e; margin-top:8px; min-height:14px;"></div>
+    </details>
+    <details class="panel" open style="margin-top:16px; display:flex; flex-direction:column;">
+      <summary><h2>Conversation</h2></summary>
+      <div id="conversation" style="max-height:380px; overflow-y:auto;">
         <div id="conv-offline">Waiting for Little Timmy...</div>
       </div>
-    </div>
-    <div class="panel" style="margin-top:16px;">
-      <h2>Mood</h2>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Mood</h2></summary>
       <div class="mood-grid">
         <div class="corner"></div>
         <div class="axis-label-x">Bored</div>
@@ -796,17 +824,17 @@ header .uptime {
         <span id="mood-signals">--</span>
         <span id="mood-updated">--</span>
       </div>
-    </div>
-    <div class="panel" style="margin-top:16px;">
-      <h2>Retrieved Context</h2>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Retrieved Context</h2></summary>
       <div id="retrieval" style="max-height:220px; overflow-y:auto; font-size:12px;">
         <div id="ret-empty" style="color:#8b949e; font-style:italic;">No retrievals yet</div>
       </div>
-    </div>
+    </details>
   </div>
   <div>
-    <div class="panel">
-      <h2>Latency</h2>
+    <details class="panel" open>
+      <summary><h2>Latency</h2></summary>
       <div id="metrics">
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
@@ -816,15 +844,29 @@ header .uptime {
         <div class="metric-row"><span class="label">End-to-end</span><span class="value" id="m-e2e">--</span></div>
         <div class="metric-row"><span class="label">Turns</span><span class="value" id="m-turns">--</span></div>
       </div>
-    </div>
-    <div class="panel" style="margin-top:16px">
-      <h2>Session Log</h2>
+      <div style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+          <span>Rolling history</span>
+          <button id="latency-clear-btn" type="button"
+                  title="Clear chart history"
+                  style="font-size:10px; padding:2px 8px; background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:3px; cursor:pointer;">
+            clear
+          </button>
+        </div>
+        <canvas id="latency-chart" height="180"></canvas>
+        <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:14px 0;">
+          waiting for first turn…
+        </div>
+      </div>
+    </details>
+    <details class="panel" open style="margin-top:16px">
+      <summary><h2>Session Log</h2></summary>
       <div id="log-viewer" style="max-height:200px; overflow-y:auto; font-size:12px; color:#8b949e;">
         <em>No events yet</em>
       </div>
-    </div>
-    <div class="panel" style="margin-top:16px">
-      <h2>Vision</h2>
+    </details>
+    <details class="panel" open style="margin-top:16px">
+      <summary><h2>Vision</h2></summary>
       <div id="vision-panel">
         <div style="text-align:center; margin-bottom:8px;">
           <img id="vision-img" style="max-width:100%; border-radius:4px; border:1px solid #21262d; display:none;" />
@@ -835,7 +877,7 @@ header .uptime {
         <div id="vision-stats" style="font-size:10px; color:#484f58; margin-top:6px;"></div>
         <div id="vision-relevance" style="font-size:11px; margin-top:6px; padding-top:6px; border-top:1px solid #21262d;"></div>
       </div>
-    </div>
+    </details>
 
   </div>
 </div>
@@ -870,7 +912,7 @@ header .uptime {
 </div>
 
 <script>
-const SERVICE_ORDER = ["postgresql", "ollama", "gptoss120b", "qwen36", "conversation_llm", "whisper", "little_timmy"];
+const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "conversation_llm", "whisper", "little_timmy"];
 let serviceState = {};
 let busyServices = new Set();
 let modelSwitching = false;
@@ -983,6 +1025,99 @@ function updateMetricsFromWS(msg) {
   document.getElementById("m-tts").textContent = msg.tts_ms != null ? msg.tts_ms + "ms" : "--";
   document.getElementById("m-e2e").textContent = msg.e2e_ms != null ? msg.e2e_ms + "ms" : "--";
   document.getElementById("m-turns").textContent = msg.turns || "--";
+  pushLatencySample({
+    stt: msg.stt_ms, retrieval: msg.retrieval_ms,
+    llm_ft: msg.llm_first_token_ms, llm: msg.llm_total_ms,
+    tts: msg.tts_ms, e2e: msg.e2e_ms,
+  });
+}
+
+// ---- Latency rolling chart ----
+// Each metrics WS event (or poll) appends one sample; chart shows last
+// LATENCY_BUFFER_MAX. Lines are toggleable via Chart.js legend clicks.
+const LATENCY_BUFFER_MAX = 60;
+const LATENCY_SERIES = [
+  {key: "e2e",       label: "End-to-end", color: "#e94560"},
+  {key: "llm",       label: "LLM total",  color: "#bc8cff"},
+  {key: "tts",       label: "TTS",        color: "#3fb950"},
+  {key: "stt",       label: "STT",        color: "#58a6ff"},
+  {key: "retrieval", label: "Retrieval",  color: "#d29922"},
+  {key: "llm_ft",    label: "LLM 1st tok", color: "#79c0ff"},
+];
+let latencyBuffer = [];  // [{ts, stt, retrieval, llm_ft, llm, tts, e2e}, ...]
+let latencyChart = null;
+let lastLatencyTs = 0;
+
+function initLatencyChart() {
+  const canvas = document.getElementById("latency-chart");
+  if (!canvas || typeof Chart === "undefined") return;
+  latencyChart = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: LATENCY_SERIES.map(s => ({
+        label: s.label, data: [], borderColor: s.color,
+        backgroundColor: s.color + "22", borderWidth: 1.5,
+        pointRadius: 2, tension: 0.25, spanGaps: true,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: "#c9d1d9", font: { size: 10 }, boxWidth: 10 } },
+        tooltip: { titleColor: "#c9d1d9", bodyColor: "#c9d1d9",
+                   backgroundColor: "#161b22", borderColor: "#30363d", borderWidth: 1 },
+      },
+      scales: {
+        x: { ticks: { color: "#484f58", font: { size: 9 }, maxRotation: 0,
+                       autoSkipPadding: 12 },
+              grid: { color: "#21262d" } },
+        y: { beginAtZero: true, ticks: { color: "#484f58", font: { size: 9 },
+              callback: v => v + "ms" },
+              grid: { color: "#21262d" } },
+      },
+    },
+  });
+}
+
+function pushLatencySample(s) {
+  // Skip duplicate samples (same metrics object delivered via both WS + poll
+  // within a few seconds). Dedupe key = nonzero metric tuple.
+  const fingerprint = LATENCY_SERIES.map(x => s[x.key] || 0).join("|");
+  const now = Date.now();
+  if (latencyBuffer.length && latencyBuffer[latencyBuffer.length - 1].fp === fingerprint
+      && now - lastLatencyTs < 2000) return;
+  if (fingerprint === "0|0|0|0|0|0") return;  // nothing to plot
+  lastLatencyTs = now;
+  latencyBuffer.push({
+    ts: now, fp: fingerprint,
+    stt: s.stt || null, retrieval: s.retrieval || null,
+    llm_ft: s.llm_ft || null, llm: s.llm || null,
+    tts: s.tts || null, e2e: s.e2e || null,
+  });
+  while (latencyBuffer.length > LATENCY_BUFFER_MAX) latencyBuffer.shift();
+  redrawLatencyChart();
+}
+
+function redrawLatencyChart() {
+  if (!latencyChart) return;
+  const empty = document.getElementById("latency-chart-empty");
+  if (empty && latencyBuffer.length) empty.style.display = "none";
+  const labels = latencyBuffer.map(b =>
+    new Date(b.ts).toLocaleTimeString([], {hour12: false}).slice(3));
+  latencyChart.data.labels = labels;
+  LATENCY_SERIES.forEach((s, i) => {
+    latencyChart.data.datasets[i].data = latencyBuffer.map(b => b[s.key]);
+  });
+  latencyChart.update("none");
+}
+
+function clearLatencyChart() {
+  latencyBuffer = []; lastLatencyTs = 0;
+  const empty = document.getElementById("latency-chart-empty");
+  if (empty) empty.style.display = "";
+  redrawLatencyChart();
 }
 
 function renderRetrieval(msg) {
@@ -1072,6 +1207,11 @@ async function pollMetrics() {
       document.getElementById("m-tts").textContent = m.last_tts_ms != null ? m.last_tts_ms + "ms" : "--";
       document.getElementById("m-e2e").textContent = m.last_e2e_ms != null ? m.last_e2e_ms + "ms" : "--";
       document.getElementById("m-turns").textContent = m.turns || "--";
+      pushLatencySample({
+        stt: m.last_stt_ms, retrieval: m.last_retrieval_ms,
+        llm_ft: m.last_llm_first_token_ms, llm: m.last_llm_total_ms,
+        tts: m.last_tts_ms, e2e: m.last_e2e_ms,
+      });
     }
   } catch(e) {}
 }
@@ -1365,6 +1505,9 @@ payloadModal.addEventListener("click", (e) => {
 });
 
 loadConversationHistory();
+initLatencyChart();
+const _latencyClearBtn = document.getElementById("latency-clear-btn");
+if (_latencyClearBtn) _latencyClearBtn.addEventListener("click", clearLatencyChart);
 pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
 pollFaceTracking();
