@@ -853,8 +853,10 @@ header .uptime {
             clear
           </button>
         </div>
-        <canvas id="latency-chart" height="180"></canvas>
-        <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:14px 0;">
+        <div style="position:relative; height:200px;">
+          <canvas id="latency-chart"></canvas>
+        </div>
+        <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:6px 0;">
           waiting for first turn…
         </div>
       </div>
