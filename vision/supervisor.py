@@ -27,8 +27,14 @@ EVENT_URL = "https://192.168.1.110:8080/behavior/event"
 STATUS_URL = "https://192.168.1.110:8080/behavior/status"
 
 # Timing thresholds
-IDLE_AFTER_SILENCE = 15.0    # seconds of no speech → idle
+IDLE_AFTER_SILENCE = 45.0    # seconds of no speech → idle
 SCAN_AFTER_IDLE = 60.0       # seconds of idle → occasional scan
+# Was 15.0 — too aggressive. 2026-05-11 session: scan kicked in mid-turn
+# while Dan was actively talking but his utterance got mis-IDed as
+# unknown_1 (speaker distance 0.45 vs 0.30 threshold), so the supervisor
+# never saw on_speech_detected and the silence timer ran out. 45s is the
+# upper end of a natural reply-then-think pause; on_speech_detected still
+# bumps the timer immediately when the next real turn starts.
 LOOK_AROUND_CHANCE = 0.3     # probability of look_around vs idle after conversation
 
 

@@ -50,13 +50,21 @@
   #cam.disconnected { filter: grayscale(1) opacity(0.4); }
   #overlay { position: absolute; inset: 0; width: 100%; height: 100%;
     pointer-events: none; }
+  /* Face bbox color states (2026-05-11):
+       known     -> green (matched in streamerpi face_db)
+       candidate -> yellow, dashed (unknown but clear capture, conf > 0.85)
+       unknown   -> red, dashed (unknown and conf <= 0.85)
+     Yellow signals "appropriate for processing" — face captured cleanly,
+     waiting on auto-enrollment / name resolution. */
   #overlay rect.face { fill: none; stroke: var(--label-face); stroke-width: 2;
     vector-effect: non-scaling-stroke; }
-  #overlay rect.face.unknown { stroke: var(--dim); stroke-dasharray: 4 3; }
+  #overlay rect.face.candidate { stroke: #ddc070; stroke-dasharray: 6 3; }
+  #overlay rect.face.unknown { stroke: #e94560; stroke-dasharray: 4 3; }
   #overlay text.face-label { font: 14px ui-monospace, "SF Mono", Consolas, monospace;
     fill: var(--label-face); paint-order: stroke; stroke: rgba(0,0,0,0.7);
     stroke-width: 3; stroke-linejoin: round; }
-  #overlay text.face-label.unknown { fill: var(--dim); }
+  #overlay text.face-label.candidate { fill: #ddc070; }
+  #overlay text.face-label.unknown   { fill: #e94560; }
   #lookat { position: absolute; top: 12px; right: 14px;
     font: 11px/1 ui-monospace, "SF Mono", Consolas, monospace;
     letter-spacing: 0.05em; padding: 6px 10px; border-radius: 14px;
@@ -307,21 +315,29 @@
     // Redraw face rects + labels.
     while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
     const ns = 'http://www.w3.org/2000/svg';
+    // Bbox color state classification (2026-05-11):
+    //   known     -> green (face_db match)
+    //   candidate -> yellow (no match yet but conf > FACE_CAND_CONF)
+    //   unknown   -> red (no match, low capture confidence)
+    const FACE_CAND_CONF = 0.85;
     for (const f of faces) {
       if (!Array.isArray(f.bbox) || f.bbox.length !== 4) continue;
       const [x, y, w, h] = f.bbox;
       const known = f.name && f.name !== 'unknown';
+      const conf = typeof f.confidence === 'number' ? f.confidence : 0;
+      const state = known ? 'known' : (conf > FACE_CAND_CONF ? 'candidate' : 'unknown');
       const r = document.createElementNS(ns, 'rect');
       r.setAttribute('x', x); r.setAttribute('y', y);
       r.setAttribute('width', w); r.setAttribute('height', h);
-      r.setAttribute('class', known ? 'face' : 'face unknown');
+      r.setAttribute('class', state === 'known' ? 'face' : 'face ' + state);
       overlay.appendChild(r);
       const t = document.createElementNS(ns, 'text');
       t.setAttribute('x', x + 4);
       t.setAttribute('y', Math.max(14, y - 4));
-      t.setAttribute('class', known ? 'face-label' : 'face-label unknown');
-      const conf = (typeof f.confidence === 'number') ? ` ${f.confidence.toFixed(2)}` : '';
-      t.textContent = (known ? f.name : 'unknown') + conf;
+      t.setAttribute('class', state === 'known' ? 'face-label' : 'face-label ' + state);
+      const confStr = conf > 0 ? ` ${conf.toFixed(2)}` : '';
+      const labelName = state === 'candidate' ? 'candidate' : (known ? f.name : 'unknown');
+      t.textContent = labelName + confStr;
       overlay.appendChild(t);
     }
     // Audit log: only when a NEW known face appears (rate-limited).
