@@ -20,6 +20,13 @@ from vision.scene_change import SceneChangeDetector
 log = logging.getLogger(__name__)
 
 
+# Single capture resolution for all paths (passive polls + visual
+# questions). Owner does not need OCR (decided 2026-05-08), so the prior
+# adaptive LOW/HIGH split was collapsed. Streamerpi /capture supports
+# ?w=&h= since 2026-05-07.
+LOW_RES = (320, 180)
+
+
 class FrameCapture:
     """Async frame capture with scene-change gating."""
 
@@ -41,6 +48,29 @@ class FrameCapture:
         self._frames_polled: int = 0
         self._frames_analyzed: int = 0
         self._last_change_score: float = 0.0
+
+        # Pause control: counted so overlapping pauses (e.g. concurrent
+        # speech turns) do not race the resume back to running prematurely.
+        # Used by the orchestrator to gate the poll loop during the
+        # speech->TTS window so the conversation-tier LLM does not contend
+        # for GPU with a periodic VLM call. See Orchestrator main loop.
+        self._pause_count: int = 0
+
+    def pause(self):
+        """Increment pause counter. Poll loop skips while count > 0.
+
+        Idempotent and re-entrant safe via counting; matched calls to
+        pause()/resume() compose correctly with overlapping pause windows.
+        """
+        self._pause_count += 1
+
+    def resume(self):
+        """Decrement pause counter. Poll loop resumes when count reaches 0."""
+        self._pause_count = max(0, self._pause_count - 1)
+
+    @property
+    def is_paused(self) -> bool:
+        return self._pause_count > 0
 
     async def start(self, on_frame: Callable[[bytes], Awaitable[None]]):
         """Start polling at ~1fps with scene-change gating."""
@@ -70,24 +100,32 @@ class FrameCapture:
                  self._frames_polled, self._frames_analyzed,
                  (self._frames_analyzed / max(self._frames_polled, 1)) * 100)
 
-    async def trigger(self, reason: str = "event") -> bytes | None:
+    async def trigger(self, reason: str = "event", resolution: tuple | None = None) -> bytes | None:
         """Force an immediate capture + VLM analysis (speech event, etc).
 
-        Bypasses scene-change gating AND cooldown.
+        Bypasses scene-change gating AND cooldown. Optional resolution lets
+        callers escalate to HIGH_RES for visual questions.
         """
         self._detector.force_next()
         self._last_vlm_time = 0.0  # bypass cooldown for forced triggers
-        return await self._fetch_frame(reason)
+        return await self._fetch_frame(reason, resolution)
 
     async def _poll_loop(self):
-        """Poll at ~1fps, only trigger VLM callback on scene change."""
+        """Poll at ~1fps, only trigger VLM callback on scene change.
+
+        Skips while is_paused (set by orchestrator during speech->TTS turn
+        to keep the periodic VLM off the GPU while conversation-tier LLM
+        is generating).
+        """
         while self._running:
             try:
                 await asyncio.sleep(1.0)
                 if not self._running:
                     break
+                if self.is_paused:
+                    continue
 
-                jpeg = await self._fetch_frame("poll")
+                jpeg = await self._fetch_frame("poll", LOW_RES)
                 if jpeg is None:
                     continue
 
@@ -116,13 +154,22 @@ class FrameCapture:
                 log.exception("Error in poll loop")
                 await asyncio.sleep(5.0)
 
-    async def _fetch_frame(self, reason: str) -> bytes | None:
-        """Fetch a single JPEG frame from streamerpi."""
+    async def _fetch_frame(self, reason: str, resolution: tuple | None = None) -> bytes | None:
+        """Fetch a single JPEG frame from streamerpi.
+
+        If resolution is given, append ?w=&h= so streamerpi serves a
+        downsampled JPEG (saves prompt tokens + LAN bytes).
+        """
         if not self._client:
             return None
 
+        url = self.capture_url
+        if resolution and len(resolution) == 2:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}w={int(resolution[0])}&h={int(resolution[1])}"
+
         try:
-            resp = await self._client.get(self.capture_url)
+            resp = await self._client.get(url)
             resp.raise_for_status()
             jpeg_bytes = resp.content
 

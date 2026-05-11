@@ -13,10 +13,10 @@ import time
 from collections import deque
 
 import config
-from vision.capture import FrameCapture
+from vision.capture import FrameCapture, LOW_RES
 from vision.analyzer import analyze_frame, check_model_available, SceneRecord
 from vision.relevance import classify, RelevanceResult, INJECT_THRESHOLD
-from vision.face_id import FaceID
+from vision.face_remote import RemoteFaceClient
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +30,8 @@ class VisionContext:
         self._last_update: float = 0.0
         self._lock = asyncio.Lock()
         self._enabled = False
-        self._face_id = FaceID()
-        self._face_id_ready = False
+        self._face_remote = RemoteFaceClient()
+        self._face_remote_ready = False
         # Rolling buffer of recent scene records (for temporal context)
         self._history: deque[SceneRecord] = deque(maxlen=10)
         # Last analyzed JPEG (for debug/dashboard display)
@@ -61,13 +61,13 @@ class VisionContext:
 
         self._enabled = True
 
-        # Initialize face identification
-        if self._face_id.init_models():
-            n = self._face_id.load_db()
-            self._face_id_ready = True
-            log.info("Face ID ready (%d enrolled identities)", n)
+        # Verify remote face state is reachable on streamerpi
+        data = await self._face_remote.fetch()
+        if data is not None:
+            self._face_remote_ready = True
+            log.info("Remote face state reachable (%s)", self._face_remote.url)
         else:
-            log.warning("Face ID not available (models not found)")
+            log.warning("Remote /faces not reachable at %s -- face id disabled", self._face_remote.url)
 
         await self._capture.start(self._on_frame)
         log.info("Vision context started (Qwen2.5-VL structured pipeline + face ID)")
@@ -83,13 +83,21 @@ class VisionContext:
     def enabled(self) -> bool:
         return self._enabled
 
+    def pause_polling(self):
+        """Pause the periodic VLM poll loop (delegates to FrameCapture)."""
+        self._capture.pause()
+
+    def resume_polling(self):
+        """Resume the periodic VLM poll loop."""
+        self._capture.resume()
+
     async def _on_frame(self, jpeg_bytes: bytes):
         """Callback from FrameCapture -- analyze the frame and update record."""
         record = await analyze_frame(jpeg_bytes)
         if record:
-            # Enrich with face identification
-            if self._face_id_ready:
-                self._enrich_with_face_id(record, jpeg_bytes)
+            # Enrich with remote face state from streamerpi
+            if self._face_remote_ready:
+                await self._enrich_with_face_id(record)
 
             async with self._lock:
                 # Run relevance classifier against history
@@ -103,16 +111,21 @@ class VisionContext:
                 self._last_relevance = relevance
 
     async def trigger_capture(self, reason: str = "speech") -> SceneRecord | None:
-        """Trigger an immediate capture + analysis. Returns the new record."""
+        """Trigger an immediate capture + analysis. Returns the new record.
+
+        2026-05-08: collapsed to single LOW_RES (320x180) because OCR is
+        not a target use case. Visual questions still force a fresh
+        capture; they just don't escalate resolution.
+        """
         if not self._enabled:
             return None
-        jpeg = await self._capture.trigger(reason)
+        jpeg = await self._capture.trigger(reason, LOW_RES)
         if jpeg:
             record = await analyze_frame(jpeg)
             if record:
-                # Enrich with face identification
-                if self._face_id_ready:
-                    self._enrich_with_face_id(record, jpeg)
+                # Enrich with remote face state from streamerpi
+                if self._face_remote_ready:
+                    await self._enrich_with_face_id(record)
 
                 async with self._lock:
                     history_list = list(self._history)
@@ -125,10 +138,17 @@ class VisionContext:
                 return record
         return self._current if self._current else None
 
-    def _enrich_with_face_id(self, record, jpeg_bytes: bytes):
-        """Run face identification and update record.people with real names."""
+    async def _enrich_with_face_id(self, record):
+        """Fetch remote face state and update record.people with real names.
+
+        Calls streamerpi /faces instead of running local YuNet+SFace.
+        """
         try:
-            results = self._face_id.identify_from_jpeg(jpeg_bytes)
+            data = await self._face_remote.fetch_full()
+            if data is None:
+                return
+            results = data["faces"]
+            img_size = data["image_size"] if data["image_size"][0] > 0 else None
             if not results:
                 return
 
@@ -153,16 +173,6 @@ class VisionContext:
 
             if self._passive_face_callback and results:
                 try:
-                    img_size = None
-                    try:
-                        import cv2
-                        import numpy as np
-                        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-                        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                        if img is not None:
-                            img_size = (img.shape[1], img.shape[0])
-                    except Exception:
-                        pass
                     self._passive_face_callback(results, img_size)
                 except Exception:
                     log.exception("[FACE_ID] passive callback failed")
@@ -233,11 +243,12 @@ class VisionContext:
         }
         if self._last_jpeg:
             result["frame_b64"] = base64.b64encode(self._last_jpeg).decode("ascii")
-        # Face ID status
-        if self._face_id_ready:
+        # Face ID status (data lives on streamerpi now)
+        if self._face_remote_ready:
             result["face_id"] = {
-                "enrolled": self._face_id.get_enrolled_names(),
+                "enrolled": [],  # enrolled names not currently exposed by /faces
                 "ready": True,
+                "remote_url": self._face_remote.url,
             }
 
         if self._current:
@@ -248,10 +259,7 @@ class VisionContext:
                 "scene_state": self._current.scene_state,
                 "change_from_prior": self._current.change_from_prior,
                 "novelty": self._current.novelty,
-                "humor_potential": self._current.humor_potential,
-                "store_as_memory": self._current.store_as_memory,
                 "speak_now": self._current.speak_now,
-                "memory_tags": self._current.memory_tags,
                 "timestamp": self._current.timestamp,
             }
             result["age_s"] = round(time.monotonic() - self._last_update, 1)

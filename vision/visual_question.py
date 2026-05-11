@@ -2,6 +2,12 @@
 
 Simple keyword/pattern approach. Returns True if the user is asking
 about something that requires fresh visual input.
+
+2026-05-08: OCR-specific patterns ("read this", "what does it say",
+"what's on the screen/sign/label") were removed. Owner does not need
+OCR; the camera resolution stays at 320x180 across all paths and we
+no longer escalate to HIGH_RES on visual questions. The matcher now
+covers scene/people/clothing/object questions only.
 """
 
 import re
@@ -19,7 +25,6 @@ _VISUAL_PATTERNS = [
     r"\bdo you see\b",
     r"\blook at\b",
     r"\bam i\b.{0,15}\b(wearing|holding|doing)\b",
-    r"\b(read|what does)\b.{0,10}\b(say|it say|the sign|the screen|the label)\b",
     r"\bhow do i look\b",
     r"\bwhat.*\bshirt\b",
     r"\bwhat.*\bjacket\b",

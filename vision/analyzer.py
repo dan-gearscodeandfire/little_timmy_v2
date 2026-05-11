@@ -24,6 +24,13 @@ log = logging.getLogger(__name__)
 
 # --- Structured scene record ---
 
+# 2026-05-07: Removed `humor_potential`, `store_as_memory`, and `memory_tags`
+# from the VLM schema. Reason: limited utility (production logs showed urgency
+# scoring fired with these flags in 0/15 consecutive captures, so they were
+# essentially write-only) and the extra output tokens cost ~600 ms per VLM
+# cycle on the Strix Halo Vulkan stack. `speak_now` is kept because it drives
+# the [ATTENTION] tag in prompt_builder. See `lt-visual-pipeline-baseline-
+# 2026-05-07` in Obsidian for the full pre-removal audit.
 @dataclass
 class SceneRecord:
     """Structured representation of what the VLM sees."""
@@ -34,10 +41,7 @@ class SceneRecord:
     scene_state: str = ""
     change_from_prior: str = ""
     novelty: float = 0.0
-    humor_potential: float = 0.0
-    store_as_memory: bool = False
     speak_now: bool = False
-    memory_tags: list[str] = field(default_factory=list)
     raw_json: dict = field(default_factory=dict)
 
     def summary(self) -> str:
@@ -72,10 +76,7 @@ STRUCTURED_PROMPT = (
     '  "scene_state": "brief phrase describing the overall scene",\n'
     '  "change_from_prior": "what looks like it changed recently, or none if static",\n'
     '  "novelty": 0.0 to 1.0 how unusual or noteworthy this scene is,\n'
-    '  "humor_potential": 0.0 to 1.0 how comment-worthy or funny the situation is,\n'
-    '  "store_as_memory": true if this scene is worth remembering long-term,\n'
-    '  "speak_now": true only if something surprising or urgent is happening,\n'
-    '  "memory_tags": ["category:value tags like activity:soldering, location:workbench"]\n'
+    '  "speak_now": true only if something surprising or urgent is happening\n'
     "}\n"
     "Return ONLY valid JSON. No explanation, no markdown fences."
 )
@@ -150,7 +151,7 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
                 ]
             }
         ],
-        "max_tokens": 300,
+        "max_tokens": 200,
         "temperature": 0.2,
         "stream": False,
         "chat_template_kwargs": {"enable_thinking": False},
@@ -190,10 +191,7 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
             scene_state=parsed.get("scene_state", ""),
             change_from_prior=parsed.get("change_from_prior", ""),
             novelty=float(parsed.get("novelty", 0.0)),
-            humor_potential=float(parsed.get("humor_potential", 0.0)),
-            store_as_memory=bool(parsed.get("store_as_memory", False)),
             speak_now=bool(parsed.get("speak_now", False)),
-            memory_tags=parsed.get("memory_tags", []),
             raw_json=parsed,
         )
 

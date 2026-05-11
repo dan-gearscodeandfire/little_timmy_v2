@@ -7,7 +7,7 @@ and repetition so the 3B model only gets meaningful visual context.
 Scoring dimensions:
   - novelty:     How different is this from recent records?
   - persistence: Has this been true across multiple frames? (filters transient noise)
-  - urgency:     VLM flagged speak_now or store_as_memory?
+  - urgency:     VLM flagged speak_now or high novelty
 
 Output: RelevanceResult with an overall score and per-dimension breakdown,
 plus a filtered summary that omits stale/redundant information.
@@ -124,15 +124,15 @@ def score_persistence(record: SceneRecord, history: list[SceneRecord]) -> float:
 
 
 def score_urgency(record: SceneRecord) -> float:
-    """How urgent/important did the VLM flag this?"""
+    """How urgent/important did the VLM flag this?
+
+    `humor_potential` and `store_as_memory` were removed from the VLM
+    schema 2026-05-07 (limited utility, +600 ms per cycle); urgency now
+    falls back to speak_now + high novelty alone.
+    """
     score = 0.0
     if record.speak_now:
         score = max(score, 0.9)
-    if record.store_as_memory:
-        score = max(score, 0.6)
-    if record.humor_potential > 0.5:
-        score = max(score, 0.4)
-    # High VLM novelty also contributes
     if record.novelty > 0.7:
         score = max(score, 0.5)
     return min(score, 1.0)
