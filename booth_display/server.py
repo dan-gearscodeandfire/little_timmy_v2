@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 import websockets
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(
@@ -230,7 +230,14 @@ async def streamerpi_offer_proxy(request: Request):
     body = await request.json()
     async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
         r = await client.post(f"{STREAMERPI}/offer", json=body)
-        return JSONResponse(r.json(), status_code=r.status_code)
+        # Forward upstream verbatim. r.json() blew up with JSONDecodeError
+        # when streamerpi answered 500 with an aiohttp text body, masking the
+        # actual aiortc traceback behind a useless proxy 500.
+        return Response(
+            content=r.content,
+            status_code=r.status_code,
+            media_type=r.headers.get("content-type", "application/json"),
+        )
 
 
 @app.get("/operator")
