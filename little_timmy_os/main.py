@@ -293,6 +293,18 @@ async def proxy_manual_flag(payload: dict | None = None):
         return {"ok": False, "error": f"timmy unreachable: {e}"}
 
 
+@app.get("/api/timmy/feedback/last_flag")
+async def proxy_last_flag():
+    """Proxy the most recent flagged.jsonl entry from Little Timmy."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/feedback/last_flag")
+            return r.json()
+    except Exception as e:
+        return {"available": False, "error": f"timmy unreachable: {e}"}
+
+
 @app.get("/api/timmy/vision")
 async def get_timmy_vision():
     """Proxy vision debug state from Little Timmy."""
@@ -822,6 +834,11 @@ header .uptime {
                 style="font-size:12px; padding:4px 10px; background:#2a1f3a; color:#bc8cff; border:1px solid #bc8cff; border-radius:4px; cursor:pointer;">
           🔍 Last payload
         </button>
+        <button id="show-last-flag-btn" type="button"
+                title="Re-open the most recent 👍/👎 flag: system prompt, conversation, and your comment"
+                style="font-size:12px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer;">
+          🗂 Last flag
+        </button>
       </div>
       <div id="flag-status" style="font-size:11px; color:#8b949e; margin-top:8px; min-height:14px;"></div>
     </details>
@@ -920,6 +937,38 @@ header .uptime {
 </div>
 
 <div id="status-bar"></div>
+
+<div id="flag-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:#0d1117; border:1px solid #f0883e; border-radius:8px; width:min(960px, 92vw); max-height:88vh; display:flex; flex-direction:column; padding:18px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h2 style="margin:0; color:#f0883e; font-size:14px; text-transform:uppercase;">
+        <span id="flag-modal-kind-chip" style="display:inline-block; padding:2px 8px; border-radius:10px; font-size:13px; margin-right:8px;"></span>
+        <span id="flag-modal-title">Flag Detail</span>
+      </h2>
+      <button id="flag-modal-close-btn" type="button"
+              style="font-size:12px; padding:4px 10px; background:#3a1f1f; color:#f85149; border:1px solid #f85149; border-radius:4px; cursor:pointer;">
+        Close
+      </button>
+    </div>
+    <div id="flag-modal-meta" style="font-size:11px; color:#8b949e; margin-bottom:8px;"></div>
+    <div style="display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
+      <div>
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin-bottom:4px;">This flag</div>
+        <div id="flag-modal-comment" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; font-size:12px; color:#e0e0e0; font-style:italic;"></div>
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin:8px 0 4px;">Flagged assistant response</div>
+        <pre id="flag-modal-response" style="background:#161b22; border:1px solid #f0883e; border-radius:4px; padding:8px; white-space:pre-wrap; word-wrap:break-word; font-size:12px; color:#f0d8a8; margin:0;"></pre>
+      </div>
+      <div>
+        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin-bottom:4px;">Conversation context (hot turns at finalization)</div>
+        <div id="flag-modal-conversation" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; max-height:280px; overflow-y:auto; font-size:12px;"></div>
+      </div>
+      <details>
+        <summary style="cursor:pointer; font-size:11px; color:#8b949e; text-transform:uppercase;">System prompt (ephemeral block the LLM saw)</summary>
+        <pre id="flag-modal-system" style="background:#161b22; border:1px solid #30363d; border-radius:4px; padding:8px; white-space:pre-wrap; word-wrap:break-word; font-size:11px; color:#bc8cff; margin-top:6px;"></pre>
+      </details>
+    </div>
+  </div>
+</div>
 
 <div id="payload-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;">
   <div style="background:#0d1117; border:1px solid #bc8cff; border-radius:8px; width:min(960px, 92vw); max-height:88vh; display:flex; flex-direction:column; padding:18px;">
@@ -1536,6 +1585,18 @@ async function submitFlag(kind) {
       const verb = kind === "good" ? "saved" : "flagged";
       status.textContent = verb + " ✓ (" + j.persona_tuning_file + ")";
       status.style.color = (kind === "good" ? "#3fb950" : "#f0883e");
+      // Auto-pop the detail modal so the user can immediately see what
+      // the LLM saw when it produced the just-flagged response.
+      populateFlagModal({
+        kind: kind,
+        comment: j.comment || reason,
+        response: j.flagged_assistant,
+        conversation_history: j.conversation_history || [],
+        system_prompt: j.system_prompt || "",
+        speaker: j.speaker,
+        ts: Date.now() / 1000,
+      });
+      showFlagModal();
     } else {
       status.textContent = "failed: " + (j.error || "unknown");
       status.style.color = "#f85149";
@@ -1548,6 +1609,112 @@ async function submitFlag(kind) {
 }
 document.getElementById("praise-btn").addEventListener("click", () => submitFlag("good"));
 document.getElementById("flag-btn").addEventListener("click", () => submitFlag("bad"));
+
+// ---- Flag detail modal (System Prompt / Conversation / This Flag) ----
+// Renders the most recent flagged.jsonl entry in plain English. Auto-pops
+// after a 👍/👎 click; 🗂 Last flag re-opens it for the last persisted flag.
+const flagModal = document.getElementById("flag-modal");
+
+function populateFlagModal(data) {
+  const kind = data.kind || "bad";
+  const isGood = kind === "good";
+  const chip = document.getElementById("flag-modal-kind-chip");
+  chip.textContent = isGood ? "👍 GOOD" : "👎 BAD";
+  chip.style.background = isGood ? "#1f3a25" : "#3a1f1f";
+  chip.style.color      = isGood ? "#3fb950" : "#f85149";
+  chip.style.border     = "1px solid " + (isGood ? "#3fb950" : "#f85149");
+
+  document.getElementById("flag-modal-title").textContent =
+    isGood ? "Saved as positive example" : "Flagged for persona-drift audit";
+
+  const ts = data.ts ? new Date(data.ts * 1000).toLocaleString() : "—";
+  const speaker = data.speaker || "—";
+  const histLen = (data.conversation_history || []).length;
+  document.getElementById("flag-modal-meta").textContent =
+    ts + " · speaker: " + speaker + " · " + histLen + " hot turn" +
+    (histLen === 1 ? "" : "s") + " in context";
+
+  const comment = (data.comment || "").trim();
+  document.getElementById("flag-modal-comment").textContent =
+    comment ? "“" + comment + "”" : "(no comment provided)";
+
+  document.getElementById("flag-modal-response").textContent =
+    data.response || "(empty)";
+
+  document.getElementById("flag-modal-system").textContent =
+    data.system_prompt || "(empty)";
+
+  const convEl = document.getElementById("flag-modal-conversation");
+  convEl.innerHTML = "";
+  const turns = data.conversation_history || [];
+  if (turns.length === 0) {
+    convEl.innerHTML = '<div style="color:#8b949e; font-style:italic;">No prior hot turns captured.</div>';
+  } else {
+    turns.forEach((t, i) => {
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:8px; padding:6px 8px; border-radius:4px; " +
+        (t.role === "assistant"
+          ? "background:#1a1f1f; border-left:2px solid #f0d8a8;"
+          : "background:#181b22; border-left:2px solid #58a6ff;");
+      // Highlight the final pair (the actually-flagged turn) so the user
+      // sees which one their 👍/👎 attached to.
+      if (i >= turns.length - 2) {
+        row.style.outline = "1px dashed #f0883e";
+      }
+      const ts = t.timestamp ? new Date(t.timestamp * 1000).toLocaleTimeString() : "";
+      const speaker = t.speaker ? " (" + t.speaker + ")" : "";
+      const label = (t.role === "assistant" ? "TIMMY" : "USER") + speaker;
+      row.innerHTML =
+        '<div style="font-size:10px; color:#8b949e; text-transform:uppercase; margin-bottom:2px;">' +
+        escapeHtml(label) + ' · ' + escapeHtml(ts) +
+        '</div><div style="white-space:pre-wrap; word-wrap:break-word; color:#e0e0e0;">' +
+        escapeHtml(t.content || "") + '</div>';
+      convEl.appendChild(row);
+    });
+  }
+}
+
+function showFlagModal() { flagModal.style.display = "flex"; }
+
+async function showLastFlag() {
+  const status = document.getElementById("flag-status");
+  status.textContent = "loading last flag...";
+  status.style.color = "#8b949e";
+  try {
+    const r = await fetch("/api/timmy/feedback/last_flag");
+    const j = await r.json();
+    if (!j.available) {
+      status.textContent = j.error
+        ? ("last flag: " + j.error)
+        : "no flags persisted yet — click 👍 or 👎 first";
+      status.style.color = "#8b949e";
+      setTimeout(() => { status.textContent = ""; }, 6000);
+      return;
+    }
+    populateFlagModal({
+      kind: j.kind,
+      comment: j.comment,
+      response: j.response,
+      conversation_history: j.conversation_history || [],
+      system_prompt: j.system_prompt || "",
+      speaker: j.speaker,
+      ts: j.ts,
+    });
+    showFlagModal();
+    status.textContent = "";
+  } catch (e) {
+    status.textContent = "network error: " + e;
+    status.style.color = "#f85149";
+  }
+}
+
+document.getElementById("show-last-flag-btn").addEventListener("click", showLastFlag);
+document.getElementById("flag-modal-close-btn").addEventListener("click", () => {
+  flagModal.style.display = "none";
+});
+flagModal.addEventListener("click", (e) => {
+  if (e.target === flagModal) flagModal.style.display = "none";
+});
 
 document.getElementById("reenroll-btn").addEventListener("click", async () => {
   const nameRaw = window.prompt("Name to re-enroll (leave blank for last speaker)", "");

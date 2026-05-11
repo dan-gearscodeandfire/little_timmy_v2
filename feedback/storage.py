@@ -69,6 +69,25 @@ def write_persona_tuning_positive(entry: dict) -> Path:
     return path
 
 
+def read_last_flagged() -> dict | None:
+    """Return the most recent line in flagged.jsonl as a dict, or None if
+    the file is missing / empty / corrupt. Used by GET /api/feedback/last_flag
+    to back the dashboard's "Last flag" review modal."""
+    if not FLAGGED_PATH.exists():
+        return None
+    last = None
+    with open(FLAGGED_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                last = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return last
+
+
 def append_flagged(kind: str, entry: dict) -> None:
     """Append one line to the consolidated good+bad running log at
     ~/little_timmy/persona_tuning/flagged.jsonl. Independent of Obsidian;

@@ -746,12 +746,21 @@ class Orchestrator:
         # --- Meta-feedback capture for Claude-Code-side review (fire-and-forget) ---
         # Snapshot the just-finalized turn so the manual-flag endpoint can
         # read the exact (user, assistant, ephemeral) tuple the LLM saw.
+        # conversation_history is a frozen copy of hot_turns taken AT
+        # finalization (not at flag time) so a flag clicked 30s later still
+        # surfaces the conversation the LLM actually had in context, not a
+        # slice that has since rolled new turns in or out.
         self._last_finalized_turn = {
             "ts": time.time(),
             "user_text": user_text,
             "assistant_response": full_response,
             "ephemeral": ephemeral,
             "speaker_name": speaker_name,
+            "conversation_history": [
+                {"role": t.role, "content": t.content, "speaker": t.speaker,
+                 "timestamp": t.timestamp}
+                for t in self.conversation.hot_turns
+            ],
         }
         asyncio.create_task(
             maybe_capture_feedback(user_text, full_response, messages, speaker_name, ephemeral)

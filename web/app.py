@@ -224,6 +224,7 @@ async def manual_flag(payload: dict | None = None):
             persona_path = write_persona_tuning_positive(persona_entry)
         else:
             persona_path = write_persona_tuning_negative(persona_entry)
+        conversation_history = snap.get("conversation_history") or []
         append_flagged(kind, {
             "ts": ts,
             "source": "ui_button",
@@ -232,6 +233,7 @@ async def manual_flag(payload: dict | None = None):
             "response": snap.get("assistant_response", ""),
             "comment": reason,
             "system_prompt": snap.get("ephemeral", ""),
+            "conversation_history": conversation_history,
             "persona_tuning_file": persona_path.name,
         })
         log.info("[FEEDBACK] manual %s id=%s persona=%s reason=%r",
@@ -239,10 +241,31 @@ async def manual_flag(payload: dict | None = None):
         return {"ok": True, "kind": kind, "event_id": event_id,
                 "persona_tuning_file": persona_path.name,
                 "flagged_user": snap.get("user_text", ""),
-                "flagged_assistant": snap.get("assistant_response", "")}
+                "flagged_assistant": snap.get("assistant_response", ""),
+                "system_prompt": snap.get("ephemeral", ""),
+                "conversation_history": conversation_history,
+                "comment": reason,
+                "speaker": snap.get("speaker_name")}
     except Exception as e:
         log.warning("manual %s persist error: %s", kind, e)
         return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/feedback/last_flag")
+async def get_last_flag():
+    """Return the most recent flagged.jsonl entry verbatim (or
+    {available: False} if none yet). Backs the dashboard's "Last flag"
+    review modal so the user can re-inspect an older flag without
+    needing to re-click 👍/👎."""
+    from feedback.storage import read_last_flagged
+    try:
+        entry = read_last_flagged()
+    except Exception as e:
+        log.warning("last_flag read error: %s", e)
+        return {"available": False, "error": str(e)[:120]}
+    if entry is None:
+        return {"available": False}
+    return {"available": True, **entry}
 
 
 @app.post("/api/speaker/reenroll")
