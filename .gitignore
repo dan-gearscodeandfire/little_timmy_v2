@@ -39,3 +39,6 @@ feedback_inbox.jsonl
 
 # Runtime state
 data/
+
+# LT-OS dashboard session logs (JSON, not *.log)
+little_timmy_os/logs/

@@ -123,6 +123,38 @@ async def get_chatlog():
     return PlainTextResponse(chr(10).join(lines))
 
 
+@app.get("/api/last_payload")
+async def get_last_payload_route():
+    """Most recent (history + ephemeral system + user) payload sent to the LLM.
+    Window into how build_ephemeral_block assembled context for the last turn.
+    """
+    from llm.prompt_builder import get_last_payload
+    p = get_last_payload()
+    if not p:
+        return {"available": False}
+    return {"available": True, **p}
+
+
+@app.get("/api/mood")
+async def get_mood():
+    """Current 2-axis mood state.
+    X: -1 BORED, 0 NEUTRAL, +1 SLIGHTLY_INTERESTED.
+    Y: -1 MEAN, 0 NEUTRAL, +1 BEGRUDGINGLY_NICE.
+    """
+    from persona.state import get as _mood_get
+    from persona.render import render as _render_mood
+    s = _mood_get()
+    return {
+        "x": s.x, "y": s.y,
+        "last_update_ts": s.last_update_ts,
+        "last_x_signal": s.last_x_signal,
+        "last_y_signal": s.last_y_signal,
+        "x_signals": list(s.x_signals),
+        "y_signals": list(s.y_signals),
+        "rendered": _render_mood(s),
+    }
+
+
 @app.get("/api/feedback")
 async def get_feedback(since: float | None = None, limit: int = 200):
     """Return meta-feedback events captured by feedback.detector.

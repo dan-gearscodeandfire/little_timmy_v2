@@ -32,6 +32,7 @@ from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question
+from conversation.enroll_intent import detect_enroll_intent
 from vision.supervisor import BehaviorSupervisor
 from presence import (
     RoomLedger,
@@ -161,6 +162,49 @@ class Orchestrator:
         except Exception as e:
             log.info("[PRESENCE] look_at failed for %s: %s", name, e)
 
+    async def _handle_enrollment(self, name: str, used_speaker_fallback: bool) -> None:
+        """Voice-triggered face enrollment.
+
+        Speaks acknowledgment, calls streamerpi /face_db/enroll over HTTP,
+        speaks the result. Returns when TTS finishes; the caller is expected
+        to early-return from process_speech to skip the normal LLM/memory path.
+        """
+        log.info("[ENROLL] voice-triggered for '%s' (speaker_fallback=%s)",
+                 name, used_speaker_fallback)
+        await self.tts.speak(
+            f"Sure thing. Hold still and look at me for about ten seconds, {name}."
+        )
+
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+                resp = await client.post(
+                    config.STREAMERPI_FACE_ENROLL_URL,
+                    json={"name": name, "count": 15, "interval_s": 0.7},
+                )
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {"error": resp.text[:200]}
+        except Exception:
+            log.exception("[ENROLL] HTTP call failed")
+            await self.tts.speak(
+                "Sorry, something went wrong with my camera. Try again later."
+            )
+            return
+
+        if resp.status_code == 200 and data.get("saved"):
+            captured = data.get("samples_captured", 0)
+            skipped = data.get("samples_skipped", 0)
+            log.info("[ENROLL] saved %s (captured=%d, skipped=%d, total=%d)",
+                     name, captured, skipped, len(data.get("enrolled", [])))
+            await self.tts.speak(f"Got it. I'll remember you, {name}.")
+        else:
+            err = data.get("error", "I couldn't get a clear look at your face.")
+            log.warning("[ENROLL] failed for %s: %s", name, err)
+            await self.tts.speak(
+                f"Sorry, I couldn't get a clear look. Try again with better lighting?"
+            )
+
     async def process_speech(self, audio: np.ndarray):
         """Process a speech segment through the full pipeline."""
         t_start = time.time()
@@ -213,6 +257,12 @@ class Orchestrator:
         })
         await self.conversation.add_user_turn(user_text, speaker=speaker_name)
 
+        # voice-enroll-shortcut
+        enroll = detect_enroll_intent(user_text, speaker_name)
+        if enroll.matched:
+            await self._handle_enrollment(enroll.name, enroll.used_speaker_fallback)
+            return
+
         # --- Handle name solicitation for unknown speakers ---
         if speaker_result.should_ask_name:
             unknown_info = self.speaker_id_module.get_unknown_for_name_ask(
@@ -256,6 +306,7 @@ class Orchestrator:
         async for token in stream_conversation(messages):
             full_response += token
             sentence_buffer += token
+            await broadcast_event("token", {"content": token})
             stripped = sentence_buffer.rstrip()
             if stripped and stripped[-1] in ".?!;:":
                 sentence = sentence_buffer.strip()
@@ -313,6 +364,7 @@ class Orchestrator:
         async for token in stream_conversation(messages):
             full_response += token
             sentence_buffer += token
+            await broadcast_event("token", {"content": token})
             stripped = sentence_buffer.rstrip()
             if stripped and stripped[-1] in ".?!;:":
                 sentence = sentence_buffer.strip()
@@ -537,6 +589,7 @@ class Orchestrator:
 
             full_response += token
             sentence_buffer += token
+            await broadcast_event("token", {"content": token})
 
             stripped = sentence_buffer.rstrip()
             if stripped and stripped[-1] in ".?!;:":
@@ -626,6 +679,17 @@ class Orchestrator:
         # --- Async Memory Formation (fire-and-forget) ---
         await extract_and_store(user_text, full_response,
                                 speaker_id=speaker_db_id)
+
+        # --- Async Mood Update (fire-and-forget) ---
+        # Updates the deterministic 2-axis mood state (engagement, warmth)
+        # off the hot path. Runs VADER on user_text + Ollama embedding for
+        # topic-progression signal. The next turn's ephemeral block reads
+        # the new state; latency cost on this turn is zero.
+        try:
+            from persona.updater import schedule as _schedule_mood_update
+            _schedule_mood_update(user_text, full_response)
+        except Exception as _e:
+            log.warning("mood updater schedule failed: %s", _e)
 
     _COMPLIMENT_PATTERNS = {
         "good one", "nice one", "good job", "well done", "impressive",
@@ -860,7 +924,11 @@ async def main():
     try:
         while True:
             audio_segment = await orch.capture.speech_queue.get()
-            await orch.process_speech(audio_segment)
+            orch.vision.pause_polling()
+            try:
+                await orch.process_speech(audio_segment)
+            finally:
+                orch.vision.resume_polling()
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:
