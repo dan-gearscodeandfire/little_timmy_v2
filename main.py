@@ -20,7 +20,7 @@ from db.connection import get_pool, close_pool
 from audio.capture import AudioCapture
 from stt.client import transcribe
 from tts.engine import TTSEngine
-from llm.client import stream_conversation
+from llm.client import stream_conversation, set_reasoning_tap
 from llm.prompt_builder import build_ephemeral_block, build_messages
 from memory.retrieval import retrieve
 from memory.facts import get_all_facts_for_prompt, resolve_entity
@@ -819,6 +819,14 @@ async def main():
     # Initialize orchestrator
     orch = Orchestrator()
     web_init(orch.conversation, orch)
+
+    # Tap Qwen3.6 thinking-on reasoning_content into the WS fanout. Booth-display
+    # /visitor's "ghost reasoning" panel renders these deltas so visitors see
+    # Timmy's actual thought process from real production work (memory
+    # extraction + rollup) instead of a dedicated narrator service.
+    async def _broadcast_reasoning(source: str, reasoning: str, content: str) -> None:
+        await broadcast_event("reasoning", {"source": source, "reasoning": reasoning})
+    set_reasoning_tap(_broadcast_reasoning)
 
     # Load speaker voiceprints
     await asyncio.to_thread(orch.speaker_id_module.load_voiceprints)

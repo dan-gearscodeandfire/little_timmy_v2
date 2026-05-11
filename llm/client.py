@@ -10,6 +10,36 @@ log = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
 
+# Optional callback set by main.py: fn(source: str, reasoning: str, content: str)
+# fires after a thinking-on response if reasoning_content is non-empty. Used by
+# the booth_display visitor "ghost reasoning" panel to surface Qwen3.6's
+# actual thought process from real production work (memory extraction +
+# rollup) instead of running a dedicated narrator server.
+_reasoning_tap = None
+
+
+def set_reasoning_tap(fn) -> None:
+    """Register an async (source, reasoning, content) callback fired after
+    each thinking-on completion. Pass None to clear."""
+    global _reasoning_tap
+    _reasoning_tap = fn
+
+
+async def _maybe_emit_reasoning(source: str, data: dict, content: str) -> None:
+    if _reasoning_tap is None:
+        return
+    try:
+        msg = data["choices"][0]["message"]
+        reasoning = (msg.get("reasoning_content") or "").strip()
+    except (KeyError, IndexError, TypeError):
+        return
+    if not reasoning:
+        return
+    try:
+        await _reasoning_tap(source, reasoning, content)
+    except Exception:
+        log.debug("reasoning tap callback failed", exc_info=True)
+
 
 async def _get_client() -> httpx.AsyncClient:
     global _client
@@ -80,6 +110,7 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
     # rarely fire, but keep the fallback for any edge-case server config.
     if not content:
         content = data["choices"][0]["message"].get("reasoning_content", "")
+    await _maybe_emit_reasoning("memory", data, content)
     return content
 
 
@@ -105,4 +136,6 @@ async def generate_summary(turns_text: str) -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"].get("content", "").strip()
+    content = data["choices"][0]["message"].get("content", "").strip()
+    await _maybe_emit_reasoning("summary", data, content)
+    return content

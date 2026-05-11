@@ -17,6 +17,7 @@
     --label-reply: #f0d8a8;
     --label-voice: #e6889a;
     --label-system: #8e94a3;
+    --label-ghost: #9b8fbe;
     --look-engage: #6f6;
     --look-track: #ddc070;
     --look-scan: #8e94a3;
@@ -81,6 +82,24 @@
     letter-spacing: -0.005em; color: var(--fg); min-height: 56px; }
   #scene .text.empty { color: var(--dim); font-style: italic; font-weight: 300; }
 
+  /* Ghost reasoning panel: low-contrast italic typewriter from Qwen3.6
+     thinking-on (memory extraction + summary rollup). Aesthetic: visitor
+     glimpses Timmy's actual thought process from real production work. */
+  #ghost { padding: 6px 0; border-top: 1px solid var(--rule);
+    min-height: 64px; max-height: 110px; overflow: hidden; }
+  #ghost .label { font: 10px/1 ui-monospace, monospace; letter-spacing: 0.1em;
+    color: var(--label-ghost); margin-bottom: 6px; opacity: 0.85; }
+  #ghost .label .src { color: var(--dim); margin-left: 6px; font-size: 9px; }
+  #ghost .text { font: 300 13px/1.45 ui-monospace, "SF Mono", Consolas, monospace;
+    color: var(--label-ghost); opacity: 0.55; font-style: italic;
+    transition: opacity 1.2s ease-out; max-height: 80px; overflow: hidden; }
+  #ghost .text.idle { color: var(--dim); opacity: 0.45; }
+  #ghost .text.fading { opacity: 0.18; }
+  #ghost .cursor { display: inline-block; width: 5px; height: 12px;
+    background: var(--label-ghost); margin-left: 3px; vertical-align: -2px;
+    opacity: 0.6; animation: blink 1s steps(2) infinite; }
+  #ghost .cursor.gone { display: none; }
+
   /* Live reply panel: anchored slot, typewriter */
   #reply { padding: 6px 0; border-top: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule); min-height: 80px; }
@@ -112,6 +131,7 @@
   #audit .lbl.reply    { color: var(--label-reply);   }
   #audit .lbl.voice    { color: var(--label-voice);   }
   #audit .lbl.system   { color: var(--label-system);  }
+  #audit .lbl.ghost    { color: var(--label-ghost);   }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
 </style>
 </head>
@@ -139,6 +159,11 @@
   <div id="scene-text" class="text empty">no scene captured yet</div>
 </section>
 
+<section id="ghost">
+  <div class="label">[ THINKING / Qwen3.6:8083 ]<span class="src" id="ghost-src"></span></div>
+  <div id="ghost-text" class="text idle">…</div>
+</section>
+
 <section id="reply">
   <div class="label">[ REPLY / Llama-3.2-3B ]</div>
   <div id="reply-text" class="text idle">idle</div>
@@ -158,6 +183,8 @@
   const lookat = document.getElementById('lookat');
   const lookat_text = document.getElementById('lookat-text');
   const cam_status = document.getElementById('cam-status');
+  const ghost_text = document.getElementById('ghost-text');
+  const ghost_src = document.getElementById('ghost-src');
 
   const MAX_AUDIT = 18;
   const FACE_LOG_INTERVAL_MS = 30_000;
@@ -375,6 +402,49 @@
     }
   }
 
+  // ----- ghost reasoning panel -----
+  // Each Qwen3.6 thinking-on completion (memory extraction or summary
+  // rollup) arrives as one event with the full reasoning_content blob.
+  // Type it out at ~33 chars/sec, cap to GHOST_MAX_CHARS, fade to dim
+  // after GHOST_FADE_MS of inactivity. New event interrupts and resets.
+  const GHOST_TYPE_INTERVAL_MS = 30;
+  const GHOST_MAX_CHARS = 700;
+  const GHOST_FADE_MS = 6000;
+  let ghostTypeTimer = null;
+  let ghostFadeTimer = null;
+
+  function handleReasoning(source, reasoning) {
+    if (!reasoning) return;
+    if (ghostTypeTimer) { clearInterval(ghostTypeTimer); ghostTypeTimer = null; }
+    if (ghostFadeTimer) { clearTimeout(ghostFadeTimer); ghostFadeTimer = null; }
+    const text = reasoning.length > GHOST_MAX_CHARS
+      ? reasoning.slice(0, GHOST_MAX_CHARS) + '…'
+      : reasoning;
+    ghost_text.classList.remove('idle', 'fading');
+    ghost_src.textContent = source ? `· ${source}` : '';
+    ghost_text.innerHTML = '<span class="body"></span><span class="cursor"></span>';
+    const bodyEl = ghost_text.querySelector('.body');
+    const cursorEl = ghost_text.querySelector('.cursor');
+    let i = 0;
+    ghostTypeTimer = setInterval(() => {
+      if (i >= text.length) {
+        clearInterval(ghostTypeTimer);
+        ghostTypeTimer = null;
+        cursorEl.classList.add('gone');
+        ghostFadeTimer = setTimeout(() => {
+          ghost_text.classList.add('fading');
+        }, GHOST_FADE_MS);
+        appendAudit('ghost', `Qwen3.6:8083/${source}`,
+          `reasoned (${reasoning.length} chars)`);
+        return;
+      }
+      // Append in chunks of ~3 chars per tick to feel like thought, not typing.
+      const next = text.slice(i, Math.min(i + 3, text.length));
+      bodyEl.textContent += next;
+      i += next.length;
+    }, GHOST_TYPE_INTERVAL_MS);
+  }
+
   // ----- WS connection -----
   function connect() {
     const ws = new WebSocket(`ws://${location.host}/ws`);
@@ -400,6 +470,7 @@
         case 'lt_retrieval': handleRetrieval(m); break;
         case 'lt_token': handleToken(m.content); break;
         case 'lt_metrics': handleMetrics(m); break;
+        case 'lt_reasoning': handleReasoning(m.source, m.reasoning); break;
       }
     };
   }
