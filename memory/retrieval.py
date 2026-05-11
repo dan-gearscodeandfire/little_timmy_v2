@@ -19,14 +19,28 @@ class RetrievedMemory:
     created_at: object
 
 
+# Cosine-distance floor for the semantic channel. pgvector's <=> returns
+# cosine distance in [0, 2] (0=identical, 1=orthogonal, 2=opposite).
+# Tuned 2026-05-06 against nomic-embed-text + the live LT memory corpus:
+#   genuinely relevant queries land at distance 0.24-0.40
+#   tangentially related ~0.45-0.55
+#   nonsense / completely unrelated ~0.55-0.67 (note: nomic-embed-text never
+#   produces large distances between English sentences — there's no "1.0+"
+#   noise floor like with raw averaged word vectors)
+# 0.50 is the cliff that keeps real hits and rejects everything below.
+SEMANTIC_DISTANCE_MAX = 0.50
+
+
 async def _semantic_search(pool, query_embedding, limit: int) -> list[tuple[int, int]]:
-    """Returns list of (memory_id, rank)."""
+    """Returns list of (memory_id, rank), filtered by cosine-distance floor."""
     rows = await pool.fetch(
         """SELECT id FROM memories
+           WHERE embedding <=> $1 < $3
            ORDER BY embedding <=> $1
            LIMIT $2""",
         query_embedding,
         limit,
+        SEMANTIC_DISTANCE_MAX,
     )
     return [(r["id"], i) for i, r in enumerate(rows)]
 

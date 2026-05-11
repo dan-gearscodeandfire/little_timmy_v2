@@ -84,7 +84,7 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
 
 
 async def generate_summary(turns_text: str) -> str:
-    """Summarize conversation turns using the conversation LLM (fast 3B)."""
+    """Summarize conversation turns using Qwen3.6 thinking-on at LLM_MEMORY_URL."""
     client = await _get_client()
     payload = {
         "messages": [
@@ -94,12 +94,13 @@ async def generate_summary(turns_text: str) -> str:
                 f"{turns_text}"
             )},
         ],
-        "max_tokens": 200,
+        "max_tokens": 800,
         "temperature": 0.3,
         "stream": False,
+        "chat_template_kwargs": {"enable_thinking": True},
     }
     resp = await client.post(
-        f"{config.LLM_CONVERSATION_URL}/v1/chat/completions",
+        f"{config.LLM_MEMORY_URL}/v1/chat/completions",
         json=payload,
     )
     resp.raise_for_status()
