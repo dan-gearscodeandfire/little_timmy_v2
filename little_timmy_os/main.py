@@ -163,6 +163,44 @@ async def get_log():
     return services.get_session_log()
 
 
+@app.get("/api/host")
+async def get_host_metrics():
+    """Lightweight host snapshot for the LT-OS dashboard's Host Metrics panel.
+
+    Currently exposes CPU %, system RAM, disk on /, and load average.
+    VRAM is intentionally absent: Strix Halo's UMA GPU partition needs
+    radeontop / rocm-smi / amdgpu sysfs reads (not portable enough for a
+    quick psutil-only endpoint). Add separately when we wire AMD-specific
+    tooling in.
+    """
+    import psutil
+    import os
+    try:
+        cpu_pct = psutil.cpu_percent(interval=None)
+        vm = psutil.virtual_memory()
+        du = psutil.disk_usage("/")
+        try:
+            load1, load5, load15 = os.getloadavg()
+        except (AttributeError, OSError):
+            load1 = load5 = load15 = None
+        return {
+            "available": True,
+            "cpu_percent": round(cpu_pct, 1),
+            "cpu_count": psutil.cpu_count(logical=True) or 0,
+            "ram_used_gb": round(vm.used / (1024 ** 3), 2),
+            "ram_total_gb": round(vm.total / (1024 ** 3), 2),
+            "ram_percent": round(vm.percent, 1),
+            "disk_used_gb": round(du.used / (1024 ** 3), 1),
+            "disk_total_gb": round(du.total / (1024 ** 3), 1),
+            "disk_percent": round(du.percent, 1),
+            "load_1m": round(load1, 2) if load1 is not None else None,
+            "load_5m": round(load5, 2) if load5 is not None else None,
+            "load_15m": round(load15, 2) if load15 is not None else None,
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)[:120]}
+
+
 @app.get("/api/models")
 async def get_models():
     return {
@@ -919,6 +957,16 @@ header .uptime {
         <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:6px 0;">
           waiting for first turn…
         </div>
+      </div>
+    </details>
+    <details class="panel" open style="margin-top:16px">
+      <summary><h2>Host (okdemerzel)</h2></summary>
+      <div id="host-panel" style="font-size:12px;">
+        <div class="metric-row"><span class="label">CPU</span><span class="value" id="host-cpu">--</span></div>
+        <div class="metric-row"><span class="label">RAM</span><span class="value" id="host-ram">--</span></div>
+        <div class="metric-row"><span class="label">Disk /</span><span class="value" id="host-disk">--</span></div>
+        <div class="metric-row"><span class="label">Load (1m / 5m / 15m)</span><span class="value" id="host-load">--</span></div>
+        <div style="font-size:10px; color:#484f58; margin-top:6px;">VRAM not shown — Strix Halo UMA partition needs separate tooling (radeontop / rocm-smi).</div>
       </div>
     </details>
     <details class="panel" open style="margin-top:16px">
@@ -1860,6 +1908,28 @@ pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
 pollStreamerpiMain();
 setInterval(pollStreamerpiMain, 10000);
+
+async function pollHostMetrics() {
+  try {
+    const r = await fetch('/api/host');
+    const m = await r.json();
+    if (!m.available) return;
+    const cpu = document.getElementById('host-cpu');
+    const ram = document.getElementById('host-ram');
+    const disk = document.getElementById('host-disk');
+    const load = document.getElementById('host-load');
+    if (cpu) cpu.textContent = m.cpu_percent + '% · ' + m.cpu_count + ' cores';
+    if (ram) ram.textContent = m.ram_used_gb + ' / ' + m.ram_total_gb + ' GB (' + m.ram_percent + '%)';
+    if (disk) disk.textContent = m.disk_used_gb + ' / ' + m.disk_total_gb + ' GB (' + m.disk_percent + '%)';
+    if (load) {
+      const parts = [m.load_1m, m.load_5m, m.load_15m]
+        .map(v => v == null ? '?' : v.toFixed(2));
+      load.textContent = parts.join(' / ');
+    }
+  } catch(e) {}
+}
+pollHostMetrics();
+setInterval(pollHostMetrics, 5000);
 async function pollPresence() {
   try {
     const r = await fetch('/api/timmy/presence');
