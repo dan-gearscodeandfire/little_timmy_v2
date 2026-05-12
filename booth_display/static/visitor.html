@@ -93,6 +93,15 @@
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.35; }
   }
+  /* H1: red badge that shows when streamerpi reports face tracking is OFF.
+     Operational bridge so the silent-failure case (visitors interact, video
+     fine, but no face data) is impossible to miss. */
+  #face-tracking-off { position: absolute; top: 12px; right: 14px;
+    font: bold 11px/1 ui-monospace, monospace; color: #fff;
+    background: #b03030; padding: 5px 10px; border-radius: 10px;
+    letter-spacing: 0.08em;
+    box-shadow: 0 0 0 1px #f85149, 0 0 14px rgba(248,81,73,0.45); }
+  #face-tracking-off.hidden { display: none; }
 
   /* Scene caption: persistent, top-left under the camera */
   #scene { padding: 4px 0 4px 0; }
@@ -195,6 +204,7 @@
   <div id="rec-indicator" class="hidden">
     <span class="rec-dot"></span><span>REC</span>
   </div>
+  <div id="face-tracking-off" class="hidden">FACE TRACKING OFF</div>
 </section>
 
 <section id="scene">
@@ -546,6 +556,20 @@
     lookat_text.textContent = text;
   }
 
+  // H1: surface streamerpi's persisted face-tracking enabled state. Only
+  // render the badge for an explicit `false` — `null`/unknown stays hidden
+  // so a probe race at startup doesn't flash an alarm. The streamerpi-down
+  // case is already covered by the streamerpi pill, so we don't double up.
+  function handleFaceTrackingStatus(enabled) {
+    const el = document.getElementById('face-tracking-off');
+    if (!el) return;
+    if (enabled === false) {
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  }
+
   function startLiveReply() {
     if (activeReply) return;
     reply_text.classList.remove('idle');
@@ -734,6 +758,7 @@
           if (m.vision) handleVision(m.vision);
           if (m.faces) handleFaces(m.faces);
           if (m.behavior) handleBehavior(m.behavior);
+          if (typeof m.face_tracking_enabled === 'boolean') handleFaceTrackingStatus(m.face_tracking_enabled);
           break;
         case 'vision':   handleVision(m.data); break;
         case 'faces':    handleFaces(m.data); break;
@@ -745,6 +770,7 @@
         case 'lt_reasoning': handleReasoning(m.source, m.reasoning); break;
         case 'recording_start': handleRecordingStart(m.session_id); break;
         case 'recording_stop':  handleRecordingStop(); break;
+        case 'face_tracking_status': handleFaceTrackingStatus(m.enabled); break;
       }
     };
   }

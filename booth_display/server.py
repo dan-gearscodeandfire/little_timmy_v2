@@ -53,6 +53,10 @@ _last_state: dict = {
     "presence": None,
     "lt_ws_up": False,
     "streamerpi_up": False,
+    # Supervisor H1: surfaced on the visitor screen as a "FACE TRACKING OFF"
+    # badge so an operator can't miss the silent-failure case Dan reported
+    # 2026-05-11 23:07. None until first probe; bool after.
+    "face_tracking_enabled": None,
 }
 
 RECORDINGS_DIR = Path(
@@ -143,6 +147,19 @@ async def streamerpi_poller() -> None:
                         if data != _last_state["behavior"]:
                             _last_state["behavior"] = data
                             await broadcast("behavior", {"data": data})
+                except Exception:
+                    pass
+            # /face_tracking/status every 6 ticks (~3s) — state changes rarely,
+            # but we want it surfaced quickly enough that the visitor badge
+            # appears within a couple seconds of an operator toggle. (H1)
+            if tick % 6 == 0:
+                try:
+                    r = await client.get(f"{STREAMERPI}/face_tracking/status")
+                    if r.status_code == 200:
+                        enabled = bool(r.json().get("enabled", True))
+                        if enabled != _last_state["face_tracking_enabled"]:
+                            _last_state["face_tracking_enabled"] = enabled
+                            await broadcast("face_tracking_status", {"enabled": enabled})
                 except Exception:
                     pass
             elapsed = time.time() - t0
@@ -404,6 +421,7 @@ async def browser_ws(ws: WebSocket):
         "presence": _last_state["presence"],
         "lt_ws_up": _last_state["lt_ws_up"],
         "streamerpi_up": _last_state["streamerpi_up"],
+        "face_tracking_enabled": _last_state["face_tracking_enabled"],
     }
     try:
         await ws.send_text(json.dumps(snap))
