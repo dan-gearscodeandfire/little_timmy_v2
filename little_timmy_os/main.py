@@ -607,7 +607,15 @@ header .uptime {
   text-transform: uppercase;
   letter-spacing: 1px;
   margin-bottom: 3px;
+  font-weight: bold;
 }
+/* Speaker attribution colors: makes mis-classification immediately
+   visible to the operator. Known names (Dan, Erin, etc.) appear in
+   green; unknown_N or empty in amber so the operator sees the
+   misclass without having to read the actual word. */
+.turn .role.speaker-known   { color: #3fb950; }
+.turn .role.speaker-unknown { color: #f0883e; }
+.turn .role.speaker-assistant { color: #58a6ff; }
 .turn .content {
   color: #e6edf3;
 }
@@ -1100,7 +1108,19 @@ function addTurn(role, content, speaker) {
   const div = document.createElement("div");
   div.className = "turn " + role;
   const label = role === "user" ? (speaker ? speaker.toUpperCase() : "USER") : "TIMMY";
-  div.innerHTML = '<div class="role">' + label + '</div><div class="content">' + escapeHtml(content) + '</div>';
+  // Color-code the role label so the operator can see at a glance whether
+  // a user turn was attributed to a known speaker (green) vs a transient
+  // unknown_N cluster (amber). Supervisor H9 — operator was previously
+  // unable to tell live which utterance was tagged Dan vs unknown_N.
+  let speakerClass = "speaker-assistant";
+  if (role === "user") {
+    const s = (speaker || "").toLowerCase();
+    speakerClass = (!s || s === "unknown" || s.startsWith("unknown_"))
+      ? "speaker-unknown" : "speaker-known";
+  }
+  div.innerHTML =
+    '<div class="role ' + speakerClass + '">' + label + '</div>' +
+    '<div class="content">' + escapeHtml(content) + '</div>';
   conv.appendChild(div);
   conv.scrollTop = conv.scrollHeight;
 }

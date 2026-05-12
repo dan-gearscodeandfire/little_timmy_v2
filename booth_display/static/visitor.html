@@ -134,6 +134,9 @@
   #audit .lbl.vision   { color: var(--label-vision);  }
   #audit .lbl.speech   { color: var(--label-speech);  }
   #audit .lbl.speaker  { color: var(--label-speaker); }
+  /* speaker-unknown variant: amber + bold so unknown_N attributions are
+     immediately visible to the operator (Supervisor H9). */
+  #audit .lbl.speaker-unknown { color: #f0883e; font-weight: 700; }
   #audit .lbl.face     { color: var(--label-face);    }
   #audit .lbl.memory   { color: var(--label-memory);  }
   #audit .lbl.reply    { color: var(--label-reply);   }
@@ -445,7 +448,12 @@
       const utterance = (m.content || '').trim();
       if (utterance) appendAudit('speech', 'Whisper',
         `heard "${utterance.length > 100 ? utterance.slice(0,97)+'…' : utterance}"`);
-      if (m.speaker) appendAudit('speaker', 'speaker-id', m.speaker);
+      if (m.speaker) {
+        // Differentiate known vs unknown_N attribution so the operator
+        // sees mis-classification at a glance (Supervisor H9).
+        const isUnknownSpeaker = m.speaker.toLowerCase().startsWith('unknown');
+        appendAudit(isUnknownSpeaker ? 'speaker-unknown' : 'speaker', 'speaker-id', m.speaker);
+      }
       startLiveReply();
     } else if (m.role === 'assistant') {
       const dur = activeReply ? performance.now() - activeReply.startTs : 0;
