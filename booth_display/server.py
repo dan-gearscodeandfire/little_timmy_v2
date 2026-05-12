@@ -55,6 +55,20 @@ _last_state: dict = {
     "streamerpi_up": False,
 }
 
+RECORDINGS_DIR = Path(
+    os.getenv("BOOTH_RECORDINGS_DIR", os.path.expanduser("~/little_timmy/recordings"))
+)
+_recording: dict = {
+    "active": False,
+    "session_id": None,
+    "started_at": None,
+    "stopped_at": None,
+    "chunks_received": 0,
+    "bytes_received": 0,
+    "last_chunk_at": None,
+}
+_recording_lock = asyncio.Lock()
+
 
 async def broadcast(event_type: str, payload: dict) -> None:
     """Fan one event out to every connected browser."""
@@ -243,6 +257,132 @@ async def streamerpi_offer_proxy(request: Request):
 @app.get("/operator")
 async def operator_page():
     return FileResponse(STATIC_DIR / "operator.html")
+
+
+# ---------- session recording (Supervisor M6) ----------
+#
+# Smallest variant: visitor.html runs MediaRecorder on its WebRTC <video>
+# stream and POSTs 2s chunks to /api/recording/chunk. /start broadcasts
+# `recording_start` over the existing browser_ws fanout; visitor.html
+# instantiates the recorder. /stop broadcasts `recording_stop` and writes
+# the chatlog + metadata sidecar files.
+#
+# Output: ~/little_timmy/recordings/<ts>.{webm,jsonl,json}
+#
+# Known limitation: the WebRTC stream is video-only (recvonly transceiver
+# in visitor.html), so the .webm has no audio. LT's TTS is played through
+# okdemerzel speakers, not routed back through the visitor stream. For a
+# camera-side audio track we'd need either visitor mic capture or a server-
+# side mix; both are deferred to the "better" variant.
+
+def _recording_status_payload() -> dict:
+    started = _recording["started_at"]
+    if started is None:
+        duration = 0.0
+    elif _recording["active"]:
+        duration = round(time.time() - started, 1)
+    else:
+        stopped = _recording["stopped_at"] or started
+        duration = round(stopped - started, 1)
+    return {
+        "active": _recording["active"],
+        "session_id": _recording["session_id"],
+        "started_at": started,
+        "stopped_at": _recording["stopped_at"],
+        "duration_s": duration,
+        "chunks_received": _recording["chunks_received"],
+        "bytes_received": _recording["bytes_received"],
+        "last_chunk_at": _recording["last_chunk_at"],
+        "recordings_dir": str(RECORDINGS_DIR),
+    }
+
+
+@app.post("/api/recording/start")
+async def recording_start():
+    async with _recording_lock:
+        if _recording["active"]:
+            return JSONResponse(
+                {"error": "already_recording", **_recording_status_payload()},
+                status_code=409,
+            )
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        # Truncate target file in case of a stale .webm from a crashed prior run.
+        (RECORDINGS_DIR / f"{ts}.webm").write_bytes(b"")
+        _recording.update({
+            "active": True,
+            "session_id": ts,
+            "started_at": time.time(),
+            "stopped_at": None,
+            "chunks_received": 0,
+            "bytes_received": 0,
+            "last_chunk_at": None,
+        })
+        await broadcast("recording_start", {"session_id": ts})
+        log.info("[recording] start session=%s dir=%s", ts, RECORDINGS_DIR)
+        return _recording_status_payload()
+
+
+@app.post("/api/recording/chunk")
+async def recording_chunk(request: Request):
+    body = await request.body()
+    async with _recording_lock:
+        if not _recording["active"]:
+            return JSONResponse({"error": "not_recording"}, status_code=409)
+        ts = _recording["session_id"]
+        path = RECORDINGS_DIR / f"{ts}.webm"
+        with path.open("ab") as f:
+            f.write(body)
+        _recording["chunks_received"] += 1
+        _recording["bytes_received"] += len(body)
+        _recording["last_chunk_at"] = time.time()
+    return {"ok": True, "bytes": len(body)}
+
+
+@app.post("/api/recording/stop")
+async def recording_stop():
+    async with _recording_lock:
+        if not _recording["active"]:
+            return JSONResponse({"error": "not_recording"}, status_code=409)
+        ts = _recording["session_id"]
+        _recording["active"] = False
+        _recording["stopped_at"] = time.time()
+        await broadcast("recording_stop", {"session_id": ts})
+        duration_s = round(_recording["stopped_at"] - (_recording["started_at"] or 0), 2)
+        meta = {
+            "session_id": ts,
+            "started_at": _recording["started_at"],
+            "stopped_at": _recording["stopped_at"],
+            "duration_s": duration_s,
+            "chunks_received": _recording["chunks_received"],
+            "bytes_received": _recording["bytes_received"],
+            "chatlog_fetched": False,
+            "notes": "Audio absent — WebRTC stream is recvonly video.",
+        }
+        # Best-effort chatlog dump. LT may be down; don't fail the stop.
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                r = await client.get(f"{LT_HTTP}/api/chatlog")
+            if r.status_code == 200:
+                (RECORDINGS_DIR / f"{ts}.jsonl").write_text(r.text, encoding="utf-8")
+                meta["chatlog_fetched"] = True
+                meta["chatlog_bytes"] = len(r.text)
+                log.info("[recording] chatlog dumped len=%d", len(r.text))
+            else:
+                log.warning("[recording] chatlog fetch status=%s", r.status_code)
+        except Exception as e:
+            log.warning("[recording] chatlog fetch failed: %s", e)
+        (RECORDINGS_DIR / f"{ts}.json").write_text(json.dumps(meta, indent=2))
+        log.info(
+            "[recording] stop session=%s duration=%.1fs chunks=%d bytes=%d",
+            ts, duration_s, meta["chunks_received"], meta["bytes_received"],
+        )
+        return _recording_status_payload()
+
+
+@app.get("/api/recording/status")
+async def recording_status():
+    return _recording_status_payload()
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

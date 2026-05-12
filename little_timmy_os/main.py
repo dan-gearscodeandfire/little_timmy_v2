@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -199,6 +199,45 @@ async def get_host_metrics():
         }
     except Exception as e:
         return {"available": False, "error": str(e)[:120]}
+
+
+# ---------- Recording control (Supervisor M6) ----------
+# Thin proxy to booth-display's /api/recording/* endpoints. booth-display
+# owns the actual subsystem (file writes, MediaRecorder signal, chunks);
+# LT-OS just exposes operator-facing toggle + status so the recording
+# button lives in the same dashboard as everything else.
+
+@app.post("/api/recording/start")
+async def recording_start():
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.post(f"{config.BOOTH_DISPLAY_URL}/api/recording/start")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"booth-display unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/recording/stop")
+async def recording_stop():
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(f"{config.BOOTH_DISPLAY_URL}/api/recording/stop")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"booth-display unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/recording/status")
+async def recording_status():
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{config.BOOTH_DISPLAY_URL}/api/recording/status")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"active": False, "error": f"booth-display unreachable: {e}"}, status_code=502)
 
 
 @app.get("/api/models")
@@ -967,6 +1006,25 @@ header .uptime {
         <div class="metric-row"><span class="label">Disk /</span><span class="value" id="host-disk">--</span></div>
         <div class="metric-row"><span class="label">Load (1m / 5m / 15m)</span><span class="value" id="host-load">--</span></div>
         <div style="font-size:10px; color:#484f58; margin-top:6px;">VRAM not shown — Strix Halo UMA partition needs separate tooling (radeontop / rocm-smi).</div>
+      </div>
+    </details>
+    <details class="panel" open style="margin-top:16px">
+      <summary><h2>Recording</h2></summary>
+      <div id="recording-panel" style="font-size:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span>
+            <span id="rec-dot" style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#484f58; margin-right:6px; vertical-align:middle;"></span>
+            <span id="rec-state">idle</span>
+          </span>
+          <button id="rec-toggle-btn" type="button" onclick="toggleRecording()"
+                  style="font-size:11px; padding:5px 12px; background:#1f6feb; color:#fff; border:1px solid #1f6feb; border-radius:4px; cursor:pointer;">
+            Start
+          </button>
+        </div>
+        <div id="rec-meta" style="font-size:11px; color:#8b949e;">No active recording</div>
+        <div style="font-size:10px; color:#484f58; margin-top:6px;">
+          Saves to <code>~/little_timmy/recordings/&lt;ts&gt;.{webm,jsonl,json}</code>. Audio is silent (visitor WebRTC stream is video-only).
+        </div>
       </div>
     </details>
     <details class="panel" open style="margin-top:16px">
@@ -1930,6 +1988,56 @@ async function pollHostMetrics() {
 }
 pollHostMetrics();
 setInterval(pollHostMetrics, 5000);
+
+let recIsActive = false;
+async function pollRecording() {
+  try {
+    const r = await fetch('/api/recording/status');
+    const s = await r.json();
+    recIsActive = !!s.active;
+    const dot = document.getElementById('rec-dot');
+    const state = document.getElementById('rec-state');
+    const meta = document.getElementById('rec-meta');
+    const btn = document.getElementById('rec-toggle-btn');
+    if (!dot || !state || !meta || !btn) return;
+    if (s.active) {
+      dot.style.background = '#f85149';
+      state.textContent = 'recording · ' + (s.duration_s || 0).toFixed(1) + 's';
+      btn.textContent = 'Stop';
+      btn.style.background = '#3a1f1f';
+      btn.style.borderColor = '#f85149';
+      btn.style.color = '#f85149';
+      const kb = Math.round((s.bytes_received || 0) / 1024);
+      meta.textContent = (s.session_id || '?') + ' · ' + (s.chunks_received || 0) + ' chunks · ' + kb + ' KB';
+    } else {
+      dot.style.background = '#484f58';
+      state.textContent = 'idle';
+      btn.textContent = 'Start';
+      btn.style.background = '#1f6feb';
+      btn.style.borderColor = '#1f6feb';
+      btn.style.color = '#fff';
+      if (s.session_id && s.duration_s) {
+        const kb = Math.round((s.bytes_received || 0) / 1024);
+        meta.textContent = 'last: ' + s.session_id + ' · ' + s.duration_s.toFixed(1) + 's · ' + (s.chunks_received || 0) + ' chunks · ' + kb + ' KB';
+      } else {
+        meta.textContent = 'No active recording';
+      }
+    }
+  } catch (e) { /* booth-display down — leave UI as-is */ }
+}
+async function toggleRecording() {
+  const btn = document.getElementById('rec-toggle-btn');
+  if (btn) btn.disabled = true;
+  const url = recIsActive ? '/api/recording/stop' : '/api/recording/start';
+  try {
+    await fetch(url, { method: 'POST' });
+  } catch (e) { /* surface via next poll */ }
+  await pollRecording();
+  if (btn) btn.disabled = false;
+}
+pollRecording();
+setInterval(pollRecording, 2000);
+
 async function pollPresence() {
   try {
     const r = await fetch('/api/timmy/presence');

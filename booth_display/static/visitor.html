@@ -81,6 +81,18 @@
   #cam-status { position: absolute; bottom: 10px; left: 12px;
     font: 10px/1 ui-monospace, monospace; color: var(--dim);
     background: rgba(7,8,10,0.78); padding: 4px 8px; border-radius: 10px; }
+  #rec-indicator { position: absolute; top: 12px; left: 14px;
+    display: flex; align-items: center; gap: 6px;
+    font: bold 11px/1 ui-monospace, monospace; color: #f85149;
+    background: rgba(7,8,10,0.78); padding: 5px 9px; border-radius: 10px;
+    letter-spacing: 0.08em; }
+  #rec-indicator.hidden { display: none; }
+  #rec-indicator .rec-dot { width: 8px; height: 8px; border-radius: 50%;
+    background: #f85149; animation: rec-pulse 1.2s ease-in-out infinite; }
+  @keyframes rec-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
 
   /* Scene caption: persistent, top-left under the camera */
   #scene { padding: 4px 0 4px 0; }
@@ -163,6 +175,9 @@
   <svg id="overlay" viewBox="0 0 640 360" preserveAspectRatio="xMidYMid meet"></svg>
   <div id="lookat"><span class="dot"></span><span id="lookat-text">idle</span></div>
   <div id="cam-status">connecting&hellip;</div>
+  <div id="rec-indicator" class="hidden">
+    <span class="rec-dot"></span><span>REC</span>
+  </div>
 </section>
 
 <section id="scene">
@@ -211,6 +226,14 @@
   let overlayViewBox = '0 0 640 360';
   let lastFacesByKey = new Map();   // bbox dedupe so we don't redraw on every tick
   let lastFacesUpdate = 0;          // ts of last handleFaces(); used by stale-overlay sweep
+
+  // ----- session recording (Supervisor M6) -----
+  // booth-display broadcasts recording_start/recording_stop on the existing
+  // /ws fanout when LT-OS toggles recording. We hook MediaRecorder onto the
+  // already-attached WebRTC <video> srcObject and POST 2s webm chunks back.
+  let mediaRecorder = null;
+  let mediaRecorderSessionId = null;
+  const REC_CHUNK_MS = 2000;
 
   // ----- helpers -----
   function fmtTime(d) {
@@ -522,6 +545,81 @@
     }, GHOST_TYPE_INTERVAL_MS);
   }
 
+  // ----- session recording handlers -----
+  function pickRecorderMimeType() {
+    const candidates = [
+      'video/webm; codecs=vp9',
+      'video/webm; codecs=vp8',
+      'video/webm',
+    ];
+    if (typeof MediaRecorder === 'undefined' ||
+        typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    for (const c of candidates) {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return '';
+  }
+  function handleRecordingStart(sessionId) {
+    if (mediaRecorder) {
+      appendAudit('rec', 'visitor', 'already recording, ignoring start');
+      return;
+    }
+    const stream = cam.srcObject;
+    if (!stream) {
+      appendAudit('rec', 'visitor', 'no WebRTC stream yet — cannot record');
+      return;
+    }
+    let mimeType = pickRecorderMimeType();
+    try {
+      mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+    } catch (e) {
+      appendAudit('rec', 'visitor', 'MediaRecorder ctor failed: ' + (e && e.message));
+      mediaRecorder = null;
+      return;
+    }
+    mediaRecorderSessionId = sessionId;
+    mediaRecorder.ondataavailable = async (e) => {
+      if (!e.data || !e.data.size) return;
+      try {
+        await fetch('/api/recording/chunk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: e.data,
+        });
+      } catch (err) {
+        appendAudit('rec', 'visitor', 'chunk upload failed: ' + (err && err.message));
+      }
+    };
+    mediaRecorder.onerror = (ev) => {
+      appendAudit('rec', 'visitor', 'recorder error: ' + (ev.error && ev.error.name));
+    };
+    mediaRecorder.onstop = () => {
+      mediaRecorder = null;
+      mediaRecorderSessionId = null;
+      document.getElementById('rec-indicator')?.classList.add('hidden');
+      appendAudit('rec', 'visitor', 'recorder stopped');
+    };
+    try {
+      mediaRecorder.start(REC_CHUNK_MS);
+    } catch (e) {
+      appendAudit('rec', 'visitor', 'recorder start failed: ' + (e && e.message));
+      mediaRecorder = null;
+      mediaRecorderSessionId = null;
+      return;
+    }
+    document.getElementById('rec-indicator')?.classList.remove('hidden');
+    appendAudit('rec', 'visitor', `recording ${sessionId} (${mimeType || 'browser default'})`);
+  }
+  function handleRecordingStop() {
+    if (!mediaRecorder) {
+      appendAudit('rec', 'visitor', 'stop received but not recording');
+      return;
+    }
+    try { mediaRecorder.stop(); } catch { /* onstop will clear state */ }
+  }
+
   // ----- WS connection -----
   function connect() {
     const ws = new WebSocket(`ws://${location.host}/ws`);
@@ -548,6 +646,8 @@
         case 'lt_token': handleToken(m.content); break;
         case 'lt_metrics': handleMetrics(m); break;
         case 'lt_reasoning': handleReasoning(m.source, m.reasoning); break;
+        case 'recording_start': handleRecordingStart(m.session_id); break;
+        case 'recording_stop':  handleRecordingStop(); break;
       }
     };
   }

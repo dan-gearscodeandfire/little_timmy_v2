@@ -141,6 +141,10 @@ def get_conversation_start_cmd(model_id: str | None = None) -> str:
     )
 TIMMY_BASE_URL = "http://localhost:8893"
 
+# booth-display dashboard server. LT-OS recording controls proxy to its
+# /api/recording/* endpoints (see Supervisor M6).
+BOOTH_DISPLAY_URL = os.getenv("BOOTH_DISPLAY_URL", "http://localhost:8085")
+
 # streamerpi (Little Timmy's body - Raspberry Pi 4)
 STREAMERPI_URL = "https://192.168.1.110:8080"
 STREAMERPI_HOST = "192.168.1.110"
