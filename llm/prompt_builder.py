@@ -11,6 +11,7 @@ current turn. This exploits LLM recency bias (instructions closer to
 generation = stronger adherence) while keeping history as a cacheable prefix.
 """
 
+import logging
 from datetime import datetime
 from memory.retrieval import RetrievedMemory
 from memory.facts import Fact
@@ -169,6 +170,43 @@ def build_ephemeral_block(
     return "\n".join(parts)
 
 
+def _matches_current_user_turn(history_user_content: str, user_text: str) -> bool:
+    """True if the trailing user-turn content in history matches the current
+    user_text, tolerating the `[Name]: ` speaker prefix that
+    `ConversationManager.build_history_messages` prepends for speaker'd
+    turns. Bare-equals path covers the no-speaker case (e.g. text input)."""
+    if history_user_content == user_text:
+        return True
+    # Speaker-prefixed shape: `[Dan]: hey timmy` → trailing part after `]: `
+    if history_user_content.startswith("[") and "]: " in history_user_content:
+        _, _, tail = history_user_content.partition("]: ")
+        if tail == user_text:
+            return True
+    return False
+
+
+def _warn_on_duplicate_adjacent_user_messages(messages: list[dict]) -> None:
+    """Loud-log if assembly produced two adjacent `user` messages with
+    identical raw content. The original regression went undetected for
+    days because the dup was structural-but-silent; this guard turns the
+    next regression into a visible WARNING in the LT log."""
+    for i in range(1, len(messages)):
+        prev, cur = messages[i - 1], messages[i]
+        if (
+            prev.get("role") == "user"
+            and cur.get("role") == "user"
+            and prev.get("content") == cur.get("content")
+            and prev.get("content")
+        ):
+            log = logging.getLogger(__name__)
+            log.warning(
+                "[PROMPT] adjacent duplicate user messages detected at "
+                "positions %d, %d (content=%r) — dedup may have regressed",
+                i - 1, i, (prev.get("content") or "")[:80],
+            )
+            break  # one warning per call is enough
+
+
 def build_messages(
     history: list[dict],
     ephemeral_block: str,
@@ -190,20 +228,29 @@ def build_messages(
     # between, which wastes tokens every turn and confuses Llama 3B's chat
     # template (two consecutive user turns separated by system).
     # Detected 2026-05-06 via the new /api/last_payload modal — first time
-    # the full messages array was inspectable. No historical receipts in
-    # flagged.jsonl / example_*.json (those snapshot only the ephemeral block,
-    # not the messages list), but the duplication is structurally guaranteed
-    # by both call sites and has been happening on every turn since
-    # conversation rollup was wired in March.
+    # the full messages array was inspectable.
+    #
+    # 2026-05-12 regression note: the dedup originally checked
+    #   messages[-1].content == user_text
+    # but `conversation/manager.py:build_history_messages` rewrites user-turn
+    # content as `f"[{speaker.title()}]: {content}"` when a speaker is set
+    # (which is *always* on the voice path). So the equality check fell
+    # through silently and duplication came back. The fixed check tolerates
+    # the speaker prefix.
     if (
         messages
         and messages[-1].get("role") == "user"
-        and messages[-1].get("content") == user_text
+        and _matches_current_user_turn(messages[-1].get("content", ""), user_text)
     ):
         messages = messages[:-1]
 
     messages.append({"role": "system", "content": ephemeral_block})
     messages.append({"role": "user", "content": user_text})
+
+    # Permanent guard: if two adjacent `user` messages with identical raw
+    # content slipped through, log loudly so the next regression isn't
+    # silent. The earlier silent regression went undetected for ~6 days.
+    _warn_on_duplicate_adjacent_user_messages(messages)
 
     mood_dict = None
     try:
