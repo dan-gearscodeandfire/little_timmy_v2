@@ -1281,13 +1281,49 @@ function toggleService(sid, state) {
 }
 
 function addStatusEntry(msg) {
-  const bar = document.getElementById("status-bar");
-  const div = document.createElement("div");
-  div.className = "status-entry " + (msg.level || "info");
   const ts = msg.timestamp ? msg.timestamp.split("T")[1].split(".")[0] : "";
-  div.innerHTML = '<span class="ts">' + ts + "</span>" + (msg.message || "");
-  bar.prepend(div);
-  while (bar.children.length > 50) bar.removeChild(bar.lastChild);
+  const level = msg.level || "info";
+  const text = msg.message || "";
+
+  // Live ticker at the bottom of the page (existing surface).
+  const bar = document.getElementById("status-bar");
+  if (bar) {
+    const div = document.createElement("div");
+    div.className = "status-entry " + level;
+    div.innerHTML = '<span class="ts">' + ts + "</span>" + text;
+    bar.prepend(div);
+    while (bar.children.length > 50) bar.removeChild(bar.lastChild);
+  }
+
+  // Dedicated Session Log panel — previously never populated despite the
+  // WS broadcast pipeline firing for every service action. The panel sat
+  // showing "No events yet" all session. Now mirrors the status-bar
+  // entries with a higher cap so the user can scroll session history.
+  const logViewer = document.getElementById("log-viewer");
+  if (logViewer) {
+    // Clear the "No events yet" placeholder on first real entry.
+    const placeholder = logViewer.querySelector("em");
+    if (placeholder) logViewer.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "status-entry " + level;
+    row.innerHTML = '<span class="ts">' + ts + "</span>" + text;
+    logViewer.prepend(row);
+    // Cap history at 500 entries so memory stays bounded across long demos.
+    while (logViewer.children.length > 500) logViewer.removeChild(logViewer.lastChild);
+  }
+}
+
+async function loadSessionLog() {
+  // Backfill the Session Log panel on page (re)load. /api/log returns
+  // services.get_session_log() — the full in-memory _session_log list.
+  // Without this, every refresh would empty the panel until the next WS
+  // status event arrives.
+  try {
+    const r = await fetch("/api/log");
+    const entries = await r.json();
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    entries.forEach(e => addStatusEntry(e));
+  } catch(e) {}
 }
 
 async function pollMetrics() {
@@ -1780,6 +1816,7 @@ payloadModal.addEventListener("click", (e) => {
 });
 
 loadConversationHistory();
+loadSessionLog();
 initLatencyChart();
 const _latencyClearBtn = document.getElementById("latency-clear-btn");
 if (_latencyClearBtn) _latencyClearBtn.addEventListener("click", clearLatencyChart);
