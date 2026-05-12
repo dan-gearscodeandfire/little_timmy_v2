@@ -12,7 +12,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main import filtered_assistant_stream, _REPLY_VETO_FALLBACK
+from main import (
+    filtered_assistant_stream,
+    user_invites_longer_reply,
+    _REPLY_VETO_FALLBACK,
+)
 
 
 async def _agen(tokens):
@@ -152,3 +156,59 @@ async def test_post_flush_two_sentence_cap_in_buffered_text():
     assert "Hi there friend" in joined
     assert "Done already" in joined
     assert "And more" not in joined
+
+
+# ---------------------------------------------------------------------------
+# max_sentences override (Supervisor M5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_max_sentences_override_lets_more_sentences_through():
+    tokens = ["First. ", "Second. ", "Third. ", "Fourth. ", "Fifth.", " Sixth."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), max_sentences=5))
+    joined = "".join(out)
+    assert "First" in joined and "Second" in joined and "Third" in joined
+    assert "Fourth" in joined and "Fifth" in joined
+    # Sixth would push past the 5-sentence cap; should be dropped.
+    assert "Sixth" not in joined
+
+
+@pytest.mark.asyncio
+async def test_max_sentences_none_uses_default_two():
+    tokens = ["One. ", "Two. ", "Three."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), max_sentences=None))
+    joined = "".join(out)
+    assert "One" in joined and "Two" in joined
+    assert "Three" not in joined
+
+
+@pytest.mark.asyncio
+async def test_max_sentences_invalid_falls_back_to_default():
+    """Zero / negative caps fall back to the default 2."""
+    tokens = ["A. ", "B. ", "C."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), max_sentences=0))
+    joined = "".join(out)
+    assert "A" in joined and "B" in joined
+    assert "C" not in joined
+
+
+# ---------------------------------------------------------------------------
+# user_invites_longer_reply detector
+# ---------------------------------------------------------------------------
+
+
+def test_user_invites_longer_reply_positive_cases():
+    assert user_invites_longer_reply("you can speak longer than usual")
+    assert user_invites_longer_reply("Tell me more about your life")
+    assert user_invites_longer_reply("Go into detail please")
+    assert user_invites_longer_reply("This is open-ended, no rush")
+    assert user_invites_longer_reply("Give me a long answer")
+    assert user_invites_longer_reply("Tell me your story")
+
+
+def test_user_invites_longer_reply_negative_cases():
+    assert not user_invites_longer_reply("How are you")
+    assert not user_invites_longer_reply("what time is it")
+    assert not user_invites_longer_reply("")
+    assert not user_invites_longer_reply("describe the room")  # narration test, not length permission

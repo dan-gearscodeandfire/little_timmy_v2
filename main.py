@@ -74,13 +74,52 @@ _NARRATION_PREFIX_CHECK_AT = 30  # chars
 _REPLY_MAX_SENTENCES = 2
 _REPLY_VETO_FALLBACK = "Sure."
 
+# When the user explicitly invites a longer reply, allow up to this many
+# sentences instead of _REPLY_MAX_SENTENCES. Still bounded — runaway-prone
+# narration is still a risk — but enough for a substantive answer like
+# "what do you know about me" or "tell me your story".
+_REPLY_LONGER_SENTENCES = 6
+
+# Phrases (lowercase substring match on the user turn) that signal the user
+# explicitly wants Timmy to speak past the default 2-sentence cap. Matched
+# loosely — false positives just lengthen one reply, false negatives are
+# the regression we're trying to avoid.
+_LONGER_REPLY_PERMISSION_PHRASES = (
+    "speak longer",
+    "talk longer",
+    "longer than usual",
+    "longer answer",
+    "longer response",
+    "go into detail",
+    "in detail",
+    "in depth",
+    "tell me more about",
+    "tell me everything",
+    "tell me your story",
+    "you can be verbose",
+    "you may be verbose",
+    "open-ended",
+    "open ended",
+    "long answer",
+    "give me a long",
+)
+
+
+def user_invites_longer_reply(user_text: str) -> bool:
+    """True if the user's turn contains an explicit permission phrase
+    inviting Timmy to speak beyond the default 2-sentence cap."""
+    if not user_text:
+        return False
+    lower = user_text.lower()
+    return any(p in lower for p in _LONGER_REPLY_PERMISSION_PHRASES)
+
 
 def _looks_like_narration(buf: str) -> bool:
     head = buf.lower().lstrip()[:50]
     return any(head.startswith(p) for p in _NARRATION_PREFIXES)
 
 
-async def filtered_assistant_stream(token_iter):
+async def filtered_assistant_stream(token_iter, max_sentences: int | None = None):
     """Post-filter the conversation-tier token stream before TTS sees it.
 
     Two veto paths:
@@ -89,14 +128,18 @@ async def filtered_assistant_stream(token_iter):
         speaks something terse. Tokens are buffered until the prefix
         check has fired so the veto suppresses the entire reply rather
         than letting the first ~29 chars leak to TTS / WS / hot_turns.
-      - 2 sentence terminators (.!?) accumulated -> swallow the rest of
+      - N sentence terminators (.!?) accumulated -> swallow the rest of
         the upstream so TTS / persistence / WS broadcast all see the
-        truncated form.
+        truncated form. Default N is _REPLY_MAX_SENTENCES (2). Callers
+        can override via `max_sentences` (e.g. _REPLY_LONGER_SENTENCES
+        when the user invited a longer reply via
+        `user_invites_longer_reply`).
 
     Sentence terminators inside abbreviations are not a concern here:
     Llama 3B almost never emits "Mr." / "Dr." in this skeleton-cohost
     persona.
     """
+    cap = max_sentences if max_sentences and max_sentences > 0 else _REPLY_MAX_SENTENCES
     accum = ""
     buffered = ""
     sentence_count = 0
@@ -127,26 +170,34 @@ async def filtered_assistant_stream(token_iter):
             sentence_count += sum(1 for ch in buffered if ch in ".!?")
             yield buffered
             buffered = ""
-            if sentence_count >= _REPLY_MAX_SENTENCES:
+            if sentence_count >= cap:
                 log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
-                         _REPLY_MAX_SENTENCES, len(accum))
+                         cap, len(accum))
                 drained = True
             continue
         sentence_count += sum(1 for ch in token if ch in ".!?")
         yield token
-        if sentence_count >= _REPLY_MAX_SENTENCES:
+        if sentence_count >= cap:
             log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
-                     _REPLY_MAX_SENTENCES, len(accum))
+                     cap, len(accum))
             drained = True
     # End-of-stream flush: a reply shorter than the prefix-check window
     # never triggered the narration check. Every entry in _NARRATION_PREFIXES
     # is <30 chars, so a reply that is exactly "the room is" (15 chars) and
     # then stops would otherwise slip through. Run the check defensively.
+    # Also apply the sentence cap here — short replies that fit entirely
+    # inside the buffer bypass the per-token cap check otherwise.
     if buffered and not drained:
         if _looks_like_narration(accum):
             log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
             yield _REPLY_VETO_FALLBACK
         else:
+            terminator_positions = [i for i, ch in enumerate(buffered) if ch in ".!?"]
+            if len(terminator_positions) > cap:
+                cutoff = terminator_positions[cap - 1] + 1
+                log.info("[POST-FILTER] capped short reply at %d sentences (%d chars)",
+                         cap, cutoff)
+                buffered = buffered[:cutoff]
             yield buffered
 
 
@@ -679,7 +730,14 @@ class Orchestrator:
         first_token_time = None
         first_tts_time = None
 
-        async for token in filtered_assistant_stream(stream_conversation(messages)):
+        # Honor explicit user permission to speak past the 2-sentence cap
+        # ("you can speak longer than usual", "tell me more about", etc).
+        # Detected on the user_text only — Llama 3B's reply itself can't
+        # promote the cap. Bounded to _REPLY_LONGER_SENTENCES so unbounded
+        # narration is still impossible.
+        cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(user_text) else None
+
+        async for token in filtered_assistant_stream(stream_conversation(messages), max_sentences=cap):
             if first_token_time is None:
                 first_token_time = time.time()
 
