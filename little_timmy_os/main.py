@@ -905,7 +905,7 @@ header .uptime {
             clear
           </button>
         </div>
-        <div style="position:relative; height:200px;">
+        <div style="position:relative; height:200px; max-width:360px;">
           <canvas id="latency-chart"></canvas>
         </div>
         <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:6px 0;">
@@ -1161,7 +1161,18 @@ function initLatencyChart() {
       plugins: {
         legend: { labels: { color: "#c9d1d9", font: { size: 10 }, boxWidth: 10 } },
         tooltip: { titleColor: "#c9d1d9", bodyColor: "#c9d1d9",
-                   backgroundColor: "#161b22", borderColor: "#30363d", borderWidth: 1 },
+                   backgroundColor: "#161b22", borderColor: "#30363d", borderWidth: 1,
+                   callbacks: {
+                     // Hover title shows wall-clock time for the sample,
+                     // since the X axis itself is now turn-indexed (#N).
+                     title: (items) => {
+                       const i = items && items[0] ? items[0].dataIndex : -1;
+                       const b = (i >= 0 && i < latencyBuffer.length) ? latencyBuffer[i] : null;
+                       const turnLabel = '#' + (i + 1);
+                       return b ? turnLabel + ' · ' + new Date(b.ts).toLocaleTimeString([], {hour12: false}) : turnLabel;
+                     },
+                   },
+        },
       },
       scales: {
         x: { ticks: { color: "#484f58", font: { size: 9 }, maxRotation: 0,
@@ -1199,8 +1210,11 @@ function redrawLatencyChart() {
   if (!latencyChart) return;
   const empty = document.getElementById("latency-chart-empty");
   if (empty && latencyBuffer.length) empty.style.display = "none";
-  const labels = latencyBuffer.map(b =>
-    new Date(b.ts).toLocaleTimeString([], {hour12: false}).slice(3));
+  // Turn-indexed X axis: one notch per sample (response), evenly spaced.
+  // Was wall-clock-time-derived, which left dead gaps during idle stretches
+  // and made it hard to read "last N responses" trends. Wall-clock time is
+  // still available on hover via the tooltip title callback below.
+  const labels = latencyBuffer.map((_, i) => '#' + (i + 1));
   latencyChart.data.labels = labels;
   LATENCY_SERIES.forEach((s, i) => {
     latencyChart.data.datasets[i].data = latencyBuffer.map(b => b[s.key]);
