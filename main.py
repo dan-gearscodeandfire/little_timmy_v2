@@ -697,19 +697,35 @@ class Orchestrator:
         # --- Build Prompt ---
         history = self.conversation.build_history_messages()
 
-        # On-demand vision: if the user is asking a visual question,
-        # force a fresh VLM capture and WAIT for the result
+        # Vision context on visual questions: always use the cached scene
+        # description rather than blocking the response on a fresh VLM call.
+        # `_handle_speech` (~line 393) already fired
+        # `asyncio.create_task(self.vision.trigger_capture("speech"))` on this
+        # turn, plus the periodic poll updates the cache on its own cadence
+        # (VISION_PERIODIC_INTERVAL=10s, scene-change gated). The cache is
+        # typically <10s old when a visual question lands.
+        #
+        # The previous `await trigger_capture("visual_question")` path added
+        # ~5-8s of Qwen3.6 :8084 latency to the response (observed e2e=10.8s
+        # on 2026-05-12 00:28 "Can you tell me what you see right now?", with
+        # llm=1.1s + tts=0.7s and ~9s unaccounted = blocking VLM call). For a
+        # forced refresh on visual_question specifically, schedule with
+        # asyncio.create_task — never await on the response path. Mirrors the
+        # rollup-detach fix in conversation/manager.py (commit d5d434a).
+        #
+        # Trade-off: on a true cold-start (no cached scene yet, periodic
+        # poll hasn't completed once), `vision_desc` will be None and Llama
+        # answers without visual context. The speech-trigger fires the same
+        # capture; the second visual question of the session lands with
+        # context. For OpenSauce this beats the 10s blocking pattern by a
+        # wide margin.
         visual_q = is_visual_question(user_text)
-        if visual_q and self.vision.enabled:
-            log.info("[VISION] Visual question detected, triggering fresh capture")
-            fresh_record = await self.vision.trigger_capture("visual_question")
-            if fresh_record:
-                vision_desc = fresh_record.summary()
-                log.info("[VISION] Fresh capture: %s", vision_desc[:100])
-            else:
-                vision_desc = self.vision.get_description()
-        else:
-            vision_desc = self.vision.get_description()
+        vision_desc = self.vision.get_description()
+        if visual_q:
+            log.info(
+                "[VISION] Visual question detected; using cached scene "
+                "(speech-trigger refresh runs in background)"
+            )
 
         ephemeral = build_ephemeral_block(
             memories=retrieved_memories,
