@@ -196,6 +196,10 @@
 
   const MAX_AUDIT = 18;
   const FACE_LOG_INTERVAL_MS = 30_000;
+  // Clear face overlays if no fresh /faces update has arrived in this window.
+  // Prevents stale "phantom Dan box floating in air" when face tracking is
+  // toggled off or the WS stalls — symptom Dan reported 2026-05-11 23:02.
+  const FACE_STALE_MS = 2000;
 
   // ----- state for incremental rendering -----
   let lastSceneText = null;
@@ -203,6 +207,7 @@
   let activeReply = null;
   let overlayViewBox = '0 0 640 360';
   let lastFacesByKey = new Map();   // bbox dedupe so we don't redraw on every tick
+  let lastFacesUpdate = 0;          // ts of last handleFaces(); used by stale-overlay sweep
 
   // ----- helpers -----
   function fmtTime(d) {
@@ -349,6 +354,7 @@
 
   function handleFaces(d) {
     if (!d) return;
+    lastFacesUpdate = Date.now();
     const faces = Array.isArray(d.faces) ? d.faces : [];
     // Update SVG viewBox to match source image dimensions.
     if (Array.isArray(d.image_size) && d.image_size.length === 2) {
@@ -537,6 +543,18 @@
       }
     };
   }
+  // Staleness sweep: if no /faces event has arrived in FACE_STALE_MS, clear
+  // any rendered overlay so the visitor never sees a phantom box floating
+  // in the air after detections have stopped (face-tracking-off, WS stall,
+  // streamerpi reboot, etc.). Cheap: runs once per second.
+  function sweepStaleFaceOverlay() {
+    if (!lastFacesUpdate) return;
+    if (Date.now() - lastFacesUpdate < FACE_STALE_MS) return;
+    if (!overlay || overlay.childElementCount === 0) return;
+    while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
+  }
+  setInterval(sweepStaleFaceOverlay, 1000);
+
   connect();
   startWebRTC();
 </script>
