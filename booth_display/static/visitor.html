@@ -156,6 +156,23 @@
   #audit .lbl.system   { color: var(--label-system);  }
   #audit .lbl.ghost    { color: var(--label-ghost);   }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
+
+  /* M4: full-bleed take-over overlay shown when streamerpi /offer returns 409
+     because another visitor tab/screen holds the single-client lock. */
+  #takeover-overlay { position: fixed; inset: 0; background: rgba(7, 8, 10, 0.95);
+    backdrop-filter: blur(6px); z-index: 9999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 24px; text-align: center;
+    color: #c9d1d9; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+  #takeover-overlay.hidden { display: none; }
+  #takeover-overlay h2 { margin: 0; font-size: 22px; font-weight: 400; color: #f0883e; letter-spacing: 0.02em; }
+  #takeover-overlay p  { margin: 0; max-width: 520px; font-size: 13px; line-height: 1.5; color: #8b949e; }
+  #takeover-overlay code { color: #c9d1d9; background: #161b22; padding: 1px 5px; border-radius: 3px; }
+  #takeover-overlay .actions { display: flex; gap: 12px; margin-top: 6px; }
+  #takeover-overlay button { font: 12px ui-monospace, monospace; padding: 10px 22px;
+    background: #1f6feb; color: #fff; border: 1px solid #1f6feb; border-radius: 4px; cursor: pointer; letter-spacing: 0.05em; }
+  #takeover-overlay button:hover { background: #388bfd; border-color: #388bfd; }
+  #takeover-overlay button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -197,6 +214,15 @@
 
 <section id="audit"></section>
 
+<div id="takeover-overlay" class="hidden" role="dialog" aria-live="polite">
+  <h2>Another screen is already connected</h2>
+  <p>The Little Timmy visitor stream is single-client; only one tab/screen on the LAN can hold the WebRTC video at a time. Close the other tab, or take this one over.</p>
+  <p id="takeover-detail" style="font-size: 11px;"></p>
+  <div class="actions">
+    <button id="takeover-btn" type="button">Take Over</button>
+  </div>
+</div>
+
 <script>
   const scene_text = document.getElementById('scene-text');
   const reply_text = document.getElementById('reply-text');
@@ -235,6 +261,26 @@
   let mediaRecorderSessionId = null;
   const REC_CHUNK_MS = 2000;
 
+  // ----- single-client lock token (Supervisor M4) -----
+  // streamerpi's /offer enforces one client at a time. Generate a stable
+  // per-tab UUID and send it on every offer so a same-tab reconnect
+  // supersedes silently, while a *different* tab gets HTTP 409 and shows
+  // the take-over overlay below. Persisting in sessionStorage means a
+  // page refresh keeps the same id; closing the tab gives the next visit
+  // a fresh id.
+  function genClientId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    return 'tab-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+  }
+  let CLIENT_ID = null;
+  try {
+    CLIENT_ID = sessionStorage.getItem('lt_visitor_client_id');
+  } catch { /* sessionStorage may be blocked; fall back to in-memory */ }
+  if (!CLIENT_ID) {
+    CLIENT_ID = genClientId();
+    try { sessionStorage.setItem('lt_visitor_client_id', CLIENT_ID); } catch {}
+  }
+
   // ----- helpers -----
   function fmtTime(d) {
     const pad = n => String(n).padStart(2, '0');
@@ -272,7 +318,11 @@
   let disconnectGraceTimer = null;
   const DISCONNECT_GRACE_MS = 5000;
 
-  async function startWebRTC() {
+  async function startWebRTC(opts = {}) {
+    const force = !!opts.force;
+    // The take-over overlay (if visible) gates retries; clear it on any
+    // fresh negotiation attempt regardless of force.
+    hideTakeoverOverlay();
     cam_status.textContent = 'negotiating…';
     rtc_pill.className = 'pill';
     rtc_pill.textContent = 'webrtc neg';
@@ -348,8 +398,29 @@
         body: JSON.stringify({
           sdp: thisPc.localDescription.sdp,
           type: thisPc.localDescription.type,
+          client_id: CLIENT_ID,
+          force: force,
         }),
       });
+      if (r.status === 409) {
+        // Another visitor tab/screen holds the single-client lock. Don't
+        // auto-retry — that's exactly the ping-pong loop M4 closes. Park
+        // here until the user clicks "Take Over" (which retries with
+        // force=true) or closes the other tab and reloads.
+        let detail = null;
+        try { detail = await r.json(); } catch {}
+        if (pc !== thisPc) return;
+        try { thisPc.close(); } catch {}
+        if (pc === thisPc) pc = null;
+        cam.classList.add('disconnected');
+        cam_status.textContent = 'another screen connected';
+        rtc_pill.className = 'pill down';
+        rtc_pill.textContent = 'webrtc locked';
+        appendAudit('system', 'webrtc',
+          `rejected 409 (current uptime ${detail?.current_uptime_s ?? '?'}s) — showing take-over`);
+        showTakeoverOverlay(detail);
+        return;
+      }
       if (!r.ok) throw new Error('offer http ' + r.status);
       const answer = await r.json();
       if (pc !== thisPc) return;
@@ -360,9 +431,35 @@
       appendAudit('system', 'webrtc', `negotiation failed: ${e.message}, retrying…`);
       cam.classList.add('disconnected');
       cam_status.textContent = 'webrtc retry in 3s';
-      setTimeout(startWebRTC, 3000);
+      setTimeout(() => startWebRTC(), 3000);
     }
   }
+
+  // ----- take-over overlay (M4) -----
+  function showTakeoverOverlay(detail) {
+    const overlay = document.getElementById('takeover-overlay');
+    const detailEl = document.getElementById('takeover-detail');
+    if (!overlay) return;
+    if (detailEl) {
+      const parts = [];
+      if (detail?.current_remote_addr) parts.push(`other client: <code>${detail.current_remote_addr}</code>`);
+      if (typeof detail?.current_uptime_s === 'number') parts.push(`connected ${detail.current_uptime_s}s`);
+      detailEl.innerHTML = parts.length ? parts.join(' · ') : '';
+    }
+    overlay.classList.remove('hidden');
+  }
+  function hideTakeoverOverlay() {
+    const overlay = document.getElementById('takeover-overlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    const btn = document.getElementById('takeover-btn');
+    if (btn) btn.disabled = false;
+  }
+  document.getElementById('takeover-btn')?.addEventListener('click', () => {
+    const btn = document.getElementById('takeover-btn');
+    if (btn) btn.disabled = true;
+    startWebRTC({ force: true });
+  });
 
   // ----- handlers per event type -----
   function handleVision(d) {
