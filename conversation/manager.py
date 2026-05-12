@@ -1,5 +1,6 @@
 """Conversation turn tracking and history assembly."""
 
+import asyncio
 import time
 import logging
 from conversation.models import Turn, ConversationState
@@ -16,6 +17,11 @@ def estimate_tokens(text: str) -> int:
 class ConversationManager:
     def __init__(self):
         self.state = ConversationState()
+        # Serializes background rollups so concurrent triggers don't race
+        # on hot_turns mutation. maybe_rollup truncates self.state.hot_turns
+        # AFTER awaiting generate_summary; without the lock a second turn
+        # could append in that gap and get sliced off too.
+        self._rollup_lock = asyncio.Lock()
 
     @property
     def hot_turns(self):
@@ -29,6 +35,15 @@ class ConversationManager:
     def turn_count(self):
         return self.state.turn_count
 
+    async def _rollup_in_background(self) -> None:
+        """Run maybe_rollup off the response hot path. Errors are logged
+        and swallowed so a rollup failure can't break the next turn."""
+        async with self._rollup_lock:
+            try:
+                await maybe_rollup(self.state)
+            except Exception:
+                log.exception("background rollup failed")
+
     async def add_user_turn(self, text: str, speaker: str | None = None):
         turn = Turn(
             role="user",
@@ -39,7 +54,9 @@ class ConversationManager:
         )
         self.state.hot_turns.append(turn)
         self.state.turn_count += 1
-        await maybe_rollup(self.state)
+        # Detached: rollup uses Qwen3.6 thinking-on which can take 15-45 s.
+        # Awaiting it here used to stall the next response by that long.
+        asyncio.create_task(self._rollup_in_background())
 
     async def add_assistant_turn(self, text: str):
         turn = Turn(
@@ -49,7 +66,7 @@ class ConversationManager:
             token_count=estimate_tokens(text),
         )
         self.state.hot_turns.append(turn)
-        await maybe_rollup(self.state)
+        asyncio.create_task(self._rollup_in_background())
 
     def build_history_messages(self) -> list[dict]:
         """Build conversation history for prompt prefix (KV-cacheable)."""

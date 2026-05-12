@@ -228,57 +228,104 @@
   }
 
   // ----- WebRTC client (one peer, recvonly video, retries forever) -----
+  // ICE 'disconnected' is recoverable per W3C: a single missed keepalive
+  // can flip the state to 'disconnected' and back to 'connected' without
+  // needing a new offer. The earlier version treated 'disconnected' as
+  // terminal and reissued offers every ~10 s — streamerpi's single-client
+  // lock then superseded the previous peer on each offer, causing the
+  // visitor's video to gray and restart in a tight loop. Hold 'disconnected'
+  // for DISCONNECT_GRACE_MS before tearing down so transient flicker can
+  // recover in place. Capture the pc in the handler closure so a stale
+  // event from a closed pc can't restart the new one.
   let pc = null;
+  let disconnectGraceTimer = null;
+  const DISCONNECT_GRACE_MS = 5000;
+
   async function startWebRTC() {
     cam_status.textContent = 'negotiating…';
     rtc_pill.className = 'pill';
     rtc_pill.textContent = 'webrtc neg';
+    if (disconnectGraceTimer) {
+      clearTimeout(disconnectGraceTimer);
+      disconnectGraceTimer = null;
+    }
     if (pc) { try { pc.close(); } catch {} pc = null; }
-    pc = new RTCPeerConnection();
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.ontrack = (e) => {
+    const thisPc = new RTCPeerConnection();
+    pc = thisPc;
+    thisPc.addTransceiver('video', { direction: 'recvonly' });
+    thisPc.ontrack = (e) => {
       cam.srcObject = e.streams[0];
       cam.classList.remove('disconnected');
       cam_status.textContent = '';
     };
-    pc.onconnectionstatechange = () => {
-      const st = pc.connectionState;
+    thisPc.onconnectionstatechange = () => {
+      // Ignore handlers from a pc that has already been replaced.
+      if (pc !== thisPc) return;
+      const st = thisPc.connectionState;
       setPill(rtc_pill, 'webrtc', st === 'connected');
-      if (st === 'failed' || st === 'disconnected' || st === 'closed') {
+      // Any state change clears a pending grace timer.
+      if (disconnectGraceTimer) {
+        clearTimeout(disconnectGraceTimer);
+        disconnectGraceTimer = null;
+      }
+      if (st === 'connected') {
+        cam.classList.remove('disconnected');
+        cam_status.textContent = '';
+        return;
+      }
+      if (st === 'failed' || st === 'closed') {
         cam.classList.add('disconnected');
         cam_status.textContent = `webrtc ${st}, retrying…`;
         setTimeout(startWebRTC, 3000);
+        return;
+      }
+      if (st === 'disconnected') {
+        // Transient flicker — hold for grace window before treating as a real
+        // failure. Don't gray out yet; ICE may recover in place.
+        cam_status.textContent = `webrtc flicker, holding ${DISCONNECT_GRACE_MS/1000}s…`;
+        disconnectGraceTimer = setTimeout(() => {
+          disconnectGraceTimer = null;
+          if (pc === thisPc && thisPc.connectionState === 'disconnected') {
+            cam.classList.add('disconnected');
+            cam_status.textContent = 'webrtc still disconnected, retrying…';
+            startWebRTC();
+          }
+        }, DISCONNECT_GRACE_MS);
       }
     };
     try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const offer = await thisPc.createOffer();
+      await thisPc.setLocalDescription(offer);
       // Non-trickle: wait until ICE gathering is complete before posting.
       await new Promise((res) => {
-        if (pc.iceGatheringState === 'complete') return res();
+        if (thisPc.iceGatheringState === 'complete') return res();
         const onChange = () => {
-          if (pc.iceGatheringState === 'complete') {
-            pc.removeEventListener('icegatheringstatechange', onChange);
+          if (thisPc.iceGatheringState === 'complete') {
+            thisPc.removeEventListener('icegatheringstatechange', onChange);
             res();
           }
         };
-        pc.addEventListener('icegatheringstatechange', onChange);
+        thisPc.addEventListener('icegatheringstatechange', onChange);
         // Safety timeout in case gathering stalls.
         setTimeout(res, 4000);
       });
+      // Abort if this pc was already replaced by a newer startWebRTC call.
+      if (pc !== thisPc) return;
       const r = await fetch('/streamerpi/offer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sdp: pc.localDescription.sdp,
-          type: pc.localDescription.type,
+          sdp: thisPc.localDescription.sdp,
+          type: thisPc.localDescription.type,
         }),
       });
       if (!r.ok) throw new Error('offer http ' + r.status);
       const answer = await r.json();
-      await pc.setRemoteDescription(answer);
+      if (pc !== thisPc) return;
+      await thisPc.setRemoteDescription(answer);
       appendAudit('system', 'webrtc', `peer offer accepted (${answer.type})`);
     } catch (e) {
+      if (pc !== thisPc) return;  // stale path
       appendAudit('system', 'webrtc', `negotiation failed: ${e.message}, retrying…`);
       cam.classList.add('disconnected');
       cam_status.textContent = 'webrtc retry in 3s';
