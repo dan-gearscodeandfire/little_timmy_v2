@@ -408,33 +408,71 @@ async def toggle_streamerpi_server(enabled: bool) -> dict:
     return final
 
 
-async def check_face_tracking_status() -> dict:
-    """Check if face tracking is enabled on streamerpi."""
+async def check_face_pipeline_status() -> dict:
+    """Read the three-layer face-pipeline state on streamerpi.
+
+    Returns {detection_enabled, tracking_enabled, motors_enabled,
+    detection_alive, behavior_mode} or an error stub on failure.
+    """
     import config as cfg
     try:
         async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
-            r = await client.get(f"{cfg.STREAMERPI_URL}/face_tracking/status")
+            r = await client.get(f"{cfg.STREAMERPI_URL}/face_pipeline/status")
             return r.json()
     except Exception as e:
-        return {"enabled": False, "error": str(e)[:120]}
+        return {
+            "detection_enabled": False, "tracking_enabled": False, "motors_enabled": False,
+            "error": str(e)[:120],
+        }
 
 
-async def toggle_face_tracking(enabled: bool) -> dict:
-    """Enable/disable face tracking on streamerpi."""
+async def _toggle_pipeline_layer(layer: str, enabled: bool) -> dict:
+    """Shared backend for the three layer-specific toggles."""
     import config as cfg
-    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} face tracking on streamerpi...")
+    if layer not in ("detection", "tracking", "motors"):
+        return {"error": f"unknown layer: {layer}"}
+    label = {"detection": "Face detection", "tracking": "Face tracking", "motors": "Motors"}[layer]
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} {label.lower()} on streamerpi...")
     try:
         async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
             r = await client.post(
-                f"{cfg.STREAMERPI_URL}/face_tracking/toggle",
+                f"{cfg.STREAMERPI_URL}/{layer}/toggle",
                 json={"enabled": enabled},
             )
             result = r.json()
             state_str = "enabled" if result.get("enabled") else "disabled"
-            await _broadcast_status(f"Face tracking {state_str}")
+            await _broadcast_status(f"{label} {state_str}")
             _write_session_log()
             return result
     except Exception as e:
-        await _broadcast_status(f"Face tracking toggle failed: {e}", "error")
+        await _broadcast_status(f"{label} toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_detection(enabled: bool) -> dict:
+    return await _toggle_pipeline_layer("detection", enabled)
+
+
+async def toggle_tracking(enabled: bool) -> dict:
+    return await _toggle_pipeline_layer("tracking", enabled)
+
+
+async def toggle_motors(enabled: bool) -> dict:
+    return await _toggle_pipeline_layer("motors", enabled)
+
+
+# Legacy aliases kept so existing callers in main.py keep working during
+# the rename; remove once main.py is fully migrated.
+async def check_face_tracking_status() -> dict:
+    """LEGACY: returns the new face_pipeline_status shape with an `enabled`
+    key bound to tracking_enabled for backwards compat with current callers."""
+    p = await check_face_pipeline_status()
+    if "error" not in p:
+        p["enabled"] = p.get("tracking_enabled", False)
+    return p
+
+
+async def toggle_face_tracking(enabled: bool) -> dict:
+    """LEGACY alias of toggle_tracking."""
+    return await toggle_tracking(enabled)

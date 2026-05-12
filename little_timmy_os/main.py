@@ -417,18 +417,43 @@ async def get_behavior():
     except Exception:
         return {"mode": "unknown", "error": "streamerpi not reachable"}
 
+@app.get("/api/face_pipeline")
+async def get_face_pipeline():
+    """Get all three face-pipeline flags from streamerpi (detection /
+    tracking / motors) + diagnostics."""
+    return await services.check_face_pipeline_status()
+
+
+@app.post("/api/detection/toggle")
+async def toggle_detection(data: dict):
+    """Toggle YuNet+SFace detection on streamerpi."""
+    return await services.toggle_detection(bool(data.get("enabled", True)))
+
+
+@app.post("/api/tracking/toggle")
+async def toggle_tracking(data: dict):
+    """Toggle face→servo target binding on streamerpi."""
+    return await services.toggle_tracking(bool(data.get("enabled", True)))
+
+
+@app.post("/api/motors/toggle")
+async def toggle_motors(data: dict):
+    """Toggle the global motors enable on streamerpi (pan/tilt only;
+    audio/jaw is on separate hardware and unaffected)."""
+    return await services.toggle_motors(bool(data.get("enabled", True)))
+
+
+# Legacy endpoint kept so any consumer still pointing at /api/face_tracking
+# keeps working. Maps to the new face_pipeline status with a back-compat
+# `enabled` key bound to tracking_enabled.
 @app.get("/api/face_tracking")
 async def get_face_tracking():
-    """Get face tracking status from streamerpi."""
     return await services.check_face_tracking_status()
 
 
 @app.post("/api/face_tracking/toggle")
 async def toggle_face_tracking(data: dict):
-    """Toggle face tracking on streamerpi."""
-    enabled = data.get("enabled", True)
-    result = await services.toggle_face_tracking(enabled)
-    return result
+    return await services.toggle_face_tracking(bool(data.get("enabled", True)))
 
 
 @app.get("/api/streamerpi/main")
@@ -858,13 +883,33 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <div class="service-card" id="face-tracking-card" style="border-left:3px solid #484f58;">
+        <div class="service-card" id="detection-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
-            <div class="service-name">Face Tracking</div>
-            <div class="service-detail" id="face-tracking-detail">Checking...</div>
+            <div class="service-name">Face Detection (YuNet+SFace)</div>
+            <div class="service-detail" id="detection-detail">Checking...</div>
           </div>
-          <label class="toggle" id="face-tracking-toggle">
-            <input type="checkbox" onchange="toggleFaceTracking(this.checked)">
+          <label class="toggle" id="detection-toggle">
+            <input type="checkbox" onchange="toggleFacePipeline('detection', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="tracking-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Face Tracking (face → servo target)</div>
+            <div class="service-detail" id="tracking-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="tracking-toggle">
+            <input type="checkbox" onchange="toggleFacePipeline('tracking', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="motors-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Motors (pan / tilt)</div>
+            <div class="service-detail" id="motors-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="motors-toggle">
+            <input type="checkbox" onchange="toggleFacePipeline('motors', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -1633,48 +1678,61 @@ pollBehavior();
 setInterval(pollBehavior, 2000);
 
 
-// Face tracking toggle
-let faceTrackingEnabled = false;
-let faceTrackingBusy = false;
+// Face pipeline (three independent layers: detection / tracking / motors).
+// Each has its own card with its own toggle. State arrives via /api/face_pipeline
+// poll, mutated via /api/{detection,tracking,motors}/toggle.
+const FACE_PIPELINE_LAYERS = {
+  detection: { detail: 'YuNet+SFace inference inside the thread' },
+  tracking:  { detail: 'face → servo target binding' },
+  motors:    { detail: 'pan/tilt actuation (audio/jaw unaffected)' },
+};
+const facePipelineState = { detection: null, tracking: null, motors: null };
+const facePipelineBusy  = { detection: false, tracking: false, motors: false };
 
-async function pollFaceTracking() {
+async function pollFaceTracking() {  // kept the function name so existing setInterval still wires up
   try {
-    const r = await fetch('/api/face_tracking');
+    const r = await fetch('/api/face_pipeline');
     const data = await r.json();
-    faceTrackingEnabled = data.enabled || false;
-    updateFaceTrackingUI();
+    facePipelineState.detection = !!data.detection_enabled;
+    facePipelineState.tracking  = !!data.tracking_enabled;
+    facePipelineState.motors    = !!data.motors_enabled;
+    for (const layer of Object.keys(FACE_PIPELINE_LAYERS)) updateFacePipelineUI(layer);
   } catch(e) {}
 }
 
-function updateFaceTrackingUI() {
-  const card = document.getElementById('face-tracking-card');
-  const toggle = document.querySelector('#face-tracking-toggle input');
-  const detail = document.getElementById('face-tracking-detail');
-  const toggleLabel = document.getElementById('face-tracking-toggle');
-
-  if (card) {
-    card.style.borderLeftColor = faceTrackingEnabled ? '#3fb950' : '#484f58';
-  }
-  if (toggle) {
-    toggle.checked = faceTrackingEnabled;
-    toggle.disabled = faceTrackingBusy;
-  }
-  if (toggleLabel) {
-    toggleLabel.classList.toggle('busy', faceTrackingBusy);
-  }
+function updateFacePipelineUI(layer) {
+  const enabled = facePipelineState[layer];
+  const busy    = facePipelineBusy[layer];
+  const card    = document.getElementById(layer + '-card');
+  const toggle  = document.querySelector('#' + layer + '-toggle input');
+  const tlabel  = document.getElementById(layer + '-toggle');
+  const detail  = document.getElementById(layer + '-detail');
+  if (card)   card.style.borderLeftColor = enabled ? '#3fb950' : '#484f58';
+  if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
+  if (tlabel) tlabel.classList.toggle('busy', busy);
   if (detail) {
-    if (faceTrackingBusy) {
-      detail.textContent = 'Toggling...';
-    } else {
-      detail.textContent = faceTrackingEnabled ? 'YuNet active (2Hz)' : 'Disabled';
-    }
+    if (busy)                  detail.textContent = 'Toggling...';
+    else if (enabled === null) detail.textContent = 'Checking...';
+    else if (enabled)          detail.textContent = FACE_PIPELINE_LAYERS[layer].detail;
+    else                       detail.textContent = 'Disabled';
   }
 }
 
-function toggleFaceTracking(enabled) {
-  faceTrackingBusy = true;
-  updateFaceTrackingUI();
-  ws.send(JSON.stringify({type: "toggle", service: "face_tracking", state: enabled}));
+async function toggleFacePipeline(layer, enabled) {
+  if (!FACE_PIPELINE_LAYERS[layer]) return;
+  facePipelineBusy[layer] = true;
+  updateFacePipelineUI(layer);
+  try {
+    const r = await fetch('/api/' + layer + '/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    const data = await r.json();
+    if (typeof data.enabled === 'boolean') facePipelineState[layer] = data.enabled;
+  } catch(e) { /* fall back to next poll */ }
+  facePipelineBusy[layer] = false;
+  updateFacePipelineUI(layer);
 }
 
 // Streamerpi main codebase (little-timmy-motor.service on the Pi).

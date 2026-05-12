@@ -556,16 +556,25 @@
     lookat_text.textContent = text;
   }
 
-  // H1/H8: surface streamerpi's persisted servo-following flag. After H8
-  // this no longer warns about silent detection failure (detection is now
-  // always-on); it indicates the operator has explicitly turned off the
-  // pan/tilt response so visitors / staff understand why Timmy isn't
-  // looking back. Only render for an explicit `false` — `null`/unknown
-  // stays hidden so a probe race at startup doesn't flash an alarm.
-  function handleFaceTrackingStatus(enabled) {
+  // H1 / H8 / H8-extension: surface the three-layer face pipeline state on
+  // the visitor screen as a single priority-ordered badge. Each layer has
+  // its own semantic; the badge picks the highest-priority off-state so
+  // visitors and staff get one clear cue. Hidden when all three are on.
+  //
+  // Priority: MOTORS OFF > DETECTION OFF > TRACKING IDLE
+  // (motors-off is most visible to a visitor — Timmy literally cannot move;
+  // detection-off is unusual / privacy-flag; tracking-off is subtle —
+  // motors may still move via gaze_around or behavior_machine.)
+  function handleFacePipelineStatus(p) {
     const el = document.getElementById('face-tracking-off');
     if (!el) return;
-    if (enabled === false) {
+    if (!p || typeof p !== 'object') { el.classList.add('hidden'); return; }
+    let text = null;
+    if (p.motors_enabled === false)         text = 'MOTORS OFF';
+    else if (p.detection_enabled === false) text = 'DETECTION OFF';
+    else if (p.tracking_enabled === false)  text = 'TRACKING IDLE';
+    if (text) {
+      el.textContent = text;
       el.classList.remove('hidden');
     } else {
       el.classList.add('hidden');
@@ -760,7 +769,7 @@
           if (m.vision) handleVision(m.vision);
           if (m.faces) handleFaces(m.faces);
           if (m.behavior) handleBehavior(m.behavior);
-          if (typeof m.face_tracking_enabled === 'boolean') handleFaceTrackingStatus(m.face_tracking_enabled);
+          if (m.face_pipeline) handleFacePipelineStatus(m.face_pipeline);
           break;
         case 'vision':   handleVision(m.data); break;
         case 'faces':    handleFaces(m.data); break;
@@ -772,7 +781,7 @@
         case 'lt_reasoning': handleReasoning(m.source, m.reasoning); break;
         case 'recording_start': handleRecordingStart(m.session_id); break;
         case 'recording_stop':  handleRecordingStop(); break;
-        case 'face_tracking_status': handleFaceTrackingStatus(m.enabled); break;
+        case 'face_pipeline_status': handleFacePipelineStatus(m); break;
       }
     };
   }

@@ -53,10 +53,11 @@ _last_state: dict = {
     "presence": None,
     "lt_ws_up": False,
     "streamerpi_up": False,
-    # Supervisor H1: surfaced on the visitor screen as a "FACE TRACKING OFF"
-    # badge so an operator can't miss the silent-failure case Dan reported
-    # 2026-05-11 23:07. None until first probe; bool after.
-    "face_tracking_enabled": None,
+    # Supervisor H1 / H8 extension: three-layer face pipeline state surfaced
+    # on the visitor screen as a single priority-ordered badge. None until
+    # first probe; bool after. Detection-off = privacy/test mode; tracking-
+    # off = Timmy doesn't lock onto faces; motors-off = no pan/tilt at all.
+    "face_pipeline": None,  # dict: {detection_enabled, tracking_enabled, motors_enabled} or None
 }
 
 RECORDINGS_DIR = Path(
@@ -149,17 +150,22 @@ async def streamerpi_poller() -> None:
                             await broadcast("behavior", {"data": data})
                 except Exception:
                     pass
-            # /face_tracking/status every 6 ticks (~3s) — state changes rarely,
-            # but we want it surfaced quickly enough that the visitor badge
-            # appears within a couple seconds of an operator toggle. (H1)
+            # /face_pipeline/status every 6 ticks (~3s) — three orthogonal
+            # flags change rarely, but we want the visitor badge to flip
+            # within a couple seconds of any operator toggle. (H1/H8-ext)
             if tick % 6 == 0:
                 try:
-                    r = await client.get(f"{STREAMERPI}/face_tracking/status")
+                    r = await client.get(f"{STREAMERPI}/face_pipeline/status")
                     if r.status_code == 200:
-                        enabled = bool(r.json().get("enabled", True))
-                        if enabled != _last_state["face_tracking_enabled"]:
-                            _last_state["face_tracking_enabled"] = enabled
-                            await broadcast("face_tracking_status", {"enabled": enabled})
+                        payload = r.json()
+                        snap = {
+                            "detection_enabled": bool(payload.get("detection_enabled", True)),
+                            "tracking_enabled":  bool(payload.get("tracking_enabled", True)),
+                            "motors_enabled":    bool(payload.get("motors_enabled", True)),
+                        }
+                        if snap != _last_state["face_pipeline"]:
+                            _last_state["face_pipeline"] = snap
+                            await broadcast("face_pipeline_status", snap)
                 except Exception:
                     pass
             elapsed = time.time() - t0
@@ -421,7 +427,7 @@ async def browser_ws(ws: WebSocket):
         "presence": _last_state["presence"],
         "lt_ws_up": _last_state["lt_ws_up"],
         "streamerpi_up": _last_state["streamerpi_up"],
-        "face_tracking_enabled": _last_state["face_tracking_enabled"],
+        "face_pipeline": _last_state["face_pipeline"],
     }
     try:
         await ws.send_text(json.dumps(snap))
