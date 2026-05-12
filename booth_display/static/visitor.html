@@ -204,7 +204,7 @@
   <div id="rec-indicator" class="hidden">
     <span class="rec-dot"></span><span>REC</span>
   </div>
-  <div id="face-tracking-off" class="hidden">FACE TRACKING OFF</div>
+  <div id="face-tracking-off" class="hidden">SERVO FOLLOWING OFF</div>
 </section>
 
 <section id="scene">
@@ -556,10 +556,12 @@
     lookat_text.textContent = text;
   }
 
-  // H1: surface streamerpi's persisted face-tracking enabled state. Only
-  // render the badge for an explicit `false` — `null`/unknown stays hidden
-  // so a probe race at startup doesn't flash an alarm. The streamerpi-down
-  // case is already covered by the streamerpi pill, so we don't double up.
+  // H1/H8: surface streamerpi's persisted servo-following flag. After H8
+  // this no longer warns about silent detection failure (detection is now
+  // always-on); it indicates the operator has explicitly turned off the
+  // pan/tilt response so visitors / staff understand why Timmy isn't
+  // looking back. Only render for an explicit `false` — `null`/unknown
+  // stays hidden so a probe race at startup doesn't flash an alarm.
   function handleFaceTrackingStatus(enabled) {
     const el = document.getElementById('face-tracking-off');
     if (!el) return;
