@@ -476,3 +476,68 @@ async def check_face_tracking_status() -> dict:
 async def toggle_face_tracking(enabled: bool) -> dict:
     """LEGACY alias of toggle_tracking."""
     return await toggle_tracking(enabled)
+
+
+# ---------- LT-side toggles (vision auto-poll + hearing) ----------
+
+async def check_lt_toggles_status() -> dict:
+    """Read both LT toggles in one round-trip-pair against :8893."""
+    import config as cfg
+    out = {
+        "vision_auto_poll_enabled": False,
+        "hearing_enabled": False,
+        "error": None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            v = await client.get(f"{cfg.TIMMY_BASE_URL}/api/vision/auto_poll")
+            h = await client.get(f"{cfg.TIMMY_BASE_URL}/api/hearing")
+            out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
+            out["hearing_enabled"] = bool(h.json().get("enabled", False))
+    except Exception as e:
+        out["error"] = str(e)[:120]
+    return out
+
+
+async def toggle_vision_auto_poll(enabled: bool) -> dict:
+    """Enable/disable LT's periodic VLM poll loop. Event-driven trigger
+    calls (speech, visual question) are unaffected."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} vision auto-poll...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/vision/auto_poll",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Vision auto-poll {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Vision auto-poll toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_hearing(enabled: bool) -> dict:
+    """Mute/unmute LT's hearing. whisper-server stays running; only the
+    mic-frame -> STT enqueue path is gated."""
+    import config as cfg
+    await _broadcast_status(f"{'Unmuting' if enabled else 'Muting'} Little Timmy's hearing...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/hearing",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "unmuted" if result.get("enabled") else "muted"
+            await _broadcast_status(f"Hearing {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Hearing toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}

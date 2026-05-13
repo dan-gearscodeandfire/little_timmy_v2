@@ -91,6 +91,19 @@ class VisionContext:
         """Resume the periodic VLM poll loop."""
         self._capture.resume()
 
+    def set_auto_poll(self, enabled: bool):
+        """User-facing auto-poll toggle (orthogonal to pause/resume).
+
+        Disables the periodic 1fps VLM poll loop. Event-driven calls
+        (trigger_capture for speech / visual questions) still fire so
+        conversational vision context still works.
+        """
+        self._capture.set_auto_poll(enabled)
+
+    @property
+    def is_auto_poll_enabled(self) -> bool:
+        return self._capture.is_auto_poll_enabled
+
     async def _on_frame(self, jpeg_bytes: bytes):
         """Callback from FrameCapture -- analyze the frame and update record."""
         record = await analyze_frame(jpeg_bytes)

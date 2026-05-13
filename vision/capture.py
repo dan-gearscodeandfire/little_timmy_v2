@@ -56,6 +56,14 @@ class FrameCapture:
         # for GPU with a periodic VLM call. See Orchestrator main loop.
         self._pause_count: int = 0
 
+        # User-facing auto-poll toggle, independent of the orchestrator's
+        # transient pause counter above. When False the periodic poll loop
+        # skips entirely (no streamerpi fetch, no VLM call). Event-driven
+        # trigger() calls still fire so a speech event can still grab a
+        # snapshot. Exposed via LT-OS so the user can save GPU/electricity
+        # while the conversation tier and event-driven vision still work.
+        self._auto_poll_enabled: bool = True
+
     def pause(self):
         """Increment pause counter. Poll loop skips while count > 0.
 
@@ -71,6 +79,17 @@ class FrameCapture:
     @property
     def is_paused(self) -> bool:
         return self._pause_count > 0
+
+    def set_auto_poll(self, enabled: bool):
+        """Toggle the periodic poll loop. Event-driven trigger() unaffected."""
+        prev = self._auto_poll_enabled
+        self._auto_poll_enabled = bool(enabled)
+        if prev != self._auto_poll_enabled:
+            log.info("Vision auto-poll %s", "enabled" if self._auto_poll_enabled else "disabled")
+
+    @property
+    def is_auto_poll_enabled(self) -> bool:
+        return self._auto_poll_enabled
 
     async def start(self, on_frame: Callable[[bytes], Awaitable[None]]):
         """Start polling at ~1fps with scene-change gating."""
@@ -123,6 +142,8 @@ class FrameCapture:
                 if not self._running:
                     break
                 if self.is_paused:
+                    continue
+                if not self._auto_poll_enabled:
                     continue
 
                 jpeg = await self._fetch_frame("poll", LOW_RES)

@@ -489,3 +489,43 @@ async def presence_state():
     state = _orchestrator.room_ledger.current_state()
     state["enabled"] = True
     return state
+
+
+@app.get("/api/vision/auto_poll")
+async def get_vision_auto_poll():
+    """Read the periodic-poll-loop toggle. Event-driven trigger_capture
+    calls (speech, visual question) are not affected by this flag."""
+    if not _orchestrator or not hasattr(_orchestrator, "vision"):
+        return {"enabled": False, "error": "not initialized"}
+    return {"enabled": bool(_orchestrator.vision.is_auto_poll_enabled)}
+
+
+@app.post("/api/vision/auto_poll")
+async def set_vision_auto_poll(payload: dict | None = None):
+    """Enable or disable the 1fps VLM poll loop."""
+    if not _orchestrator or not hasattr(_orchestrator, "vision"):
+        return {"ok": False, "error": "orchestrator not ready"}
+    enabled = bool((payload or {}).get("enabled", True))
+    _orchestrator.vision.set_auto_poll(enabled)
+    return {"ok": True, "enabled": bool(_orchestrator.vision.is_auto_poll_enabled)}
+
+
+@app.get("/api/hearing")
+async def get_hearing():
+    """Read the mic-mute toggle. whisper-server stays untouched; this only
+    gates whether captured speech segments get enqueued for STT."""
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"enabled": False, "muted": True, "error": "not initialized"}
+    cap = _orchestrator.capture
+    return {"enabled": bool(cap.is_hearing_enabled), "muted": bool(cap.hearing_muted)}
+
+
+@app.post("/api/hearing")
+async def set_hearing(payload: dict | None = None):
+    """Mute or unmute Little Timmy's hearing."""
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"ok": False, "error": "orchestrator not ready"}
+    cap = _orchestrator.capture
+    enabled = bool((payload or {}).get("enabled", True))
+    cap.set_hearing(enabled)
+    return {"ok": True, "enabled": bool(cap.is_hearing_enabled), "muted": bool(cap.hearing_muted)}

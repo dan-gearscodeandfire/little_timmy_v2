@@ -114,6 +114,13 @@ async def websocket_endpoint(websocket: WebSocket):
         "current": config.current_conversation_model,
     }))
 
+    # Send LT-side toggles (vision auto-poll + hearing)
+    try:
+        toggles = await services.check_lt_toggles_status()
+        await websocket.send_text(json.dumps({"type": "lt_toggles", **toggles}))
+    except Exception:
+        pass
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -128,6 +135,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif svc_id == "streamerpi_main":
                         result = await services.toggle_streamerpi_server(desired)
                         await broadcast_event("streamerpi_main", result)
+                    elif svc_id == "vision_auto_poll":
+                        result = await services.toggle_vision_auto_poll(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "hearing":
+                        result = await services.toggle_hearing(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
                         result = await services.toggle_service(svc_id, desired)
                         health = await services.check_all_health()
@@ -469,6 +484,23 @@ async def toggle_streamerpi_main(data: dict):
     return await services.toggle_streamerpi_server(enabled)
 
 
+@app.get("/api/timmy/toggles")
+async def get_lt_toggles():
+    """LT-side runtime toggles (vision auto-poll + hearing)."""
+    return await services.check_lt_toggles_status()
+
+
+@app.post("/api/vision/auto_poll/toggle")
+async def toggle_vision_auto_poll(data: dict):
+    """Toggle the LT periodic 1fps VLM poll loop. Event-driven trigger
+    calls (speech, visual question) keep working independently."""
+    return await services.toggle_vision_auto_poll(bool(data.get("enabled", True)))
+
+
+@app.post("/api/hearing/toggle")
+async def toggle_hearing(data: dict):
+    """Mute/unmute LT's hearing. whisper-server stays running."""
+    return await services.toggle_hearing(bool(data.get("enabled", True)))
 
 
 async def health_poll_loop():
@@ -478,6 +510,8 @@ async def health_poll_loop():
         try:
             health = await services.check_all_health()
             await broadcast_event("health", {"services": health})
+            toggles = await services.check_lt_toggles_status()
+            await broadcast_event("lt_toggles", toggles)
         except Exception as e:
             log.warning("Health poll error: %s", e)
 
@@ -913,6 +947,26 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="service-card" id="vision-auto-poll-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Vision Auto-Poll (1fps VLM)</div>
+            <div class="service-detail" id="vision-auto-poll-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="vision-auto-poll-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('vision_auto_poll', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Hearing (mic → STT)</div>
+            <div class="service-detail" id="hearing-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="hearing-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
       <div class="model-selector" id="model-selector">
         <label>Conversation LLM Model</label>
@@ -1217,6 +1271,10 @@ function connectWS() {
       };
       streamerpiMainBusy = false;
       updateStreamerpiMainUI();
+    } else if (msg.type === "lt_toggles") {
+      ltFlagBusy.vision_auto_poll = false;
+      ltFlagBusy.hearing = false;
+      applyLTToggles(msg);
     } else if (msg.type === "turn") {
       addTurn(msg.role, msg.content, msg.speaker);
     } else if (msg.type === "metrics") {
@@ -1735,6 +1793,79 @@ async function toggleFacePipeline(layer, enabled) {
   updateFacePipelineUI(layer);
 }
 
+// LT-side runtime flags (vision auto-poll + hearing). State arrives via
+// /api/timmy/toggles poll AND lt_toggles WS broadcasts.
+const LT_FLAGS = {
+  vision_auto_poll: {
+    cardId: 'vision-auto-poll-card',
+    toggleId: 'vision-auto-poll-toggle',
+    detailId: 'vision-auto-poll-detail',
+    enabledDetail: '1fps poll loop active (~3-4 VLM calls/min)',
+    disabledDetail: 'Polling paused (event-driven trigger still fires)',
+  },
+  hearing: {
+    cardId: 'hearing-card',
+    toggleId: 'hearing-toggle',
+    detailId: 'hearing-detail',
+    enabledDetail: 'Mic frames feeding whisper.cpp',
+    disabledDetail: 'Muted (whisper-server still running)',
+  },
+};
+const ltFlagState = { vision_auto_poll: null, hearing: null };
+const ltFlagBusy  = { vision_auto_poll: false, hearing: false };
+
+function applyLTToggles(data) {
+  if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
+  if (typeof data.hearing_enabled === 'boolean') ltFlagState.hearing = data.hearing_enabled;
+  for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
+}
+
+async function pollLTToggles() {
+  try {
+    const r = await fetch('/api/timmy/toggles');
+    const data = await r.json();
+    applyLTToggles(data);
+  } catch(e) {}
+}
+
+function updateLTFlagUI(flag) {
+  const def = LT_FLAGS[flag];
+  if (!def) return;
+  const enabled = ltFlagState[flag];
+  const busy    = ltFlagBusy[flag];
+  const card    = document.getElementById(def.cardId);
+  const toggle  = document.querySelector('#' + def.toggleId + ' input');
+  const tlabel  = document.getElementById(def.toggleId);
+  const detail  = document.getElementById(def.detailId);
+  if (card)   card.style.borderLeftColor = enabled ? '#3fb950' : '#484f58';
+  if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
+  if (tlabel) tlabel.classList.toggle('busy', busy);
+  if (detail) {
+    if (busy)                  detail.textContent = 'Toggling...';
+    else if (enabled === null) detail.textContent = 'Checking...';
+    else if (enabled)          detail.textContent = def.enabledDetail;
+    else                       detail.textContent = def.disabledDetail;
+  }
+}
+
+async function toggleLTFlag(flag, enabled) {
+  if (!LT_FLAGS[flag]) return;
+  ltFlagBusy[flag] = true;
+  updateLTFlagUI(flag);
+  try {
+    const route = (flag === 'vision_auto_poll') ? '/api/vision/auto_poll/toggle' : '/api/hearing/toggle';
+    const r = await fetch(route, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    const data = await r.json();
+    if (typeof data.enabled === 'boolean') ltFlagState[flag] = data.enabled;
+  } catch(e) { /* fall back to next poll */ }
+  ltFlagBusy[flag] = false;
+  updateLTFlagUI(flag);
+}
+
 // Streamerpi main codebase (little-timmy-motor.service on the Pi).
 // State is two independent signals so the UI can distinguish
 // "host is down" from "host is up but service is stopped".
@@ -2024,6 +2155,8 @@ pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
 pollStreamerpiMain();
 setInterval(pollStreamerpiMain, 10000);
+pollLTToggles();
+setInterval(pollLTToggles, 10000);
 
 async function pollHostMetrics() {
   try {

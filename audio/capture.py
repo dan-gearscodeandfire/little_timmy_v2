@@ -33,6 +33,10 @@ class AudioCapture:
     def __init__(self):
         self.speech_queue: asyncio.Queue[np.ndarray] = asyncio.Queue()
         self.suppressed = False  # set True during TTS playback to prevent feedback
+        # User-facing mute. Same gate semantics as `suppressed` (frames go
+        # through VAD for diagnostics, then get dropped before STT) so the
+        # whisper-server stays untouched and unmuting is instant.
+        self.hearing_muted = False
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -224,11 +228,14 @@ class AudioCapture:
                              self.diag_last_vad_prob, self.diag_overflows,
                              recording, self.suppressed)
 
-                # Suppress: treat as silence during TTS playback
-                if self.suppressed:
+                # Suppress: treat as silence during TTS playback OR when the
+                # user has muted hearing from LT-OS. Mic + VAD keep running
+                # (diagnostics stay fresh) but no segment is enqueued to STT.
+                if self.suppressed or self.hearing_muted:
                     is_speech = False
                     if recording:
-                        log.debug('Discarding speech buffer (TTS suppression)')
+                        reason = "TTS suppression" if self.suppressed else "hearing muted"
+                        log.debug("Discarding speech buffer (%s)", reason)
                         recording = False
                         audio_buffer = []
                         silence_count = 0
@@ -335,6 +342,18 @@ class AudioCapture:
                 self._latest_live_text = text or ""
             except Exception as e:
                 log.warning("live_transcribe failed: %s", e)
+
+    def set_hearing(self, enabled: bool):
+        """Toggle hearing. Whisper-server stays running; this only gates
+        whether mic frames get enqueued for STT. Unmute is instant."""
+        prev = self.hearing_muted
+        self.hearing_muted = not bool(enabled)
+        if prev != self.hearing_muted:
+            log.info("Hearing %s", "muted" if self.hearing_muted else "unmuted")
+
+    @property
+    def is_hearing_enabled(self) -> bool:
+        return not self.hearing_muted
 
     async def start(self, loop: asyncio.AbstractEventLoop):
         """Start the capture thread."""
