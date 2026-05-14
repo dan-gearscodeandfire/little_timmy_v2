@@ -436,6 +436,74 @@ class Orchestrator:
             spk_ms=spk_ms,
         )
 
+    async def _stream_to_tts(
+        self,
+        messages: list[dict],
+        *,
+        max_sentences: int | None = None,
+        on_first_token=None,
+        on_first_sentence=None,
+    ) -> tuple[str, dict]:
+        """Stream LLM tokens, sentence-buffer them, hand each sentence to TTS.
+
+        Returns (full_response, timings) where timings keys are:
+          first_token_ms : ms from helper-start to the first model token
+                           (None if the stream produced nothing)
+          first_tts_ms   : ms from helper-start to the first TTS-speak call
+                           (None if no sentence was spoken)
+          total_ms       : ms from helper-start to helper-return
+
+        Optional callbacks (each can be an async function):
+          on_first_token    : fires once, when the first token lands
+          on_first_sentence : fires once, just before the first TTS-speak call
+
+        M2 2026-05-14: extracted from three near-identical loops in
+        _ask_speaker_name, _confirm_name, and _generate_response. Per-token
+        broadcast_event("token", ...) and sentence-boundary detection are
+        identical; the side-effect hooks let the generate path layer in
+        eye_led + supervisor calls without duplicating the loop body.
+        """
+        t_start = time.time()
+        full_response = ""
+        sentence_buffer = ""
+        first_token_time: float | None = None
+        first_tts_time: float | None = None
+
+        async for token in filtered_assistant_stream(
+            stream_conversation(messages), max_sentences=max_sentences,
+        ):
+            if first_token_time is None:
+                first_token_time = time.time()
+                if on_first_token is not None:
+                    await on_first_token()
+            full_response += token
+            sentence_buffer += token
+            await broadcast_event("token", {"content": token})
+            stripped = sentence_buffer.rstrip()
+            if stripped and stripped[-1] in ".?!;:":
+                sentence = sentence_buffer.strip()
+                sentence_buffer = ""
+                if sentence:
+                    if first_tts_time is None:
+                        first_tts_time = time.time()
+                        if on_first_sentence is not None:
+                            await on_first_sentence()
+                    await self.tts.speak(sentence)
+
+        if sentence_buffer.strip():
+            if first_tts_time is None:
+                first_tts_time = time.time()
+                if on_first_sentence is not None:
+                    await on_first_sentence()
+            await self.tts.speak(sentence_buffer.strip())
+
+        end_time = time.time()
+        return full_response, {
+            "first_token_ms": int((first_token_time - t_start) * 1000) if first_token_time else None,
+            "first_tts_ms":   int((first_tts_time - t_start) * 1000) if first_tts_time else None,
+            "total_ms":       int((end_time - t_start) * 1000),
+        }
+
     async def _ask_speaker_name(self, unknown_info, t_start, stt_ms, spk_ms):
         """Generate a response asking an unknown speaker for their name."""
         known_names = [
@@ -455,25 +523,8 @@ class Orchestrator:
         ephemeral = build_ephemeral_block(memories=[], facts=[])
         messages = build_messages(history, ephemeral, prompt_text)
 
-        t2 = time.time()
-        full_response = ""
-        sentence_buffer = ""
-
-        async for token in filtered_assistant_stream(stream_conversation(messages)):
-            full_response += token
-            sentence_buffer += token
-            await broadcast_event("token", {"content": token})
-            stripped = sentence_buffer.rstrip()
-            if stripped and stripped[-1] in ".?!;:":
-                sentence = sentence_buffer.strip()
-                sentence_buffer = ""
-                if sentence:
-                    await self.tts.speak(sentence)
-
-        if sentence_buffer.strip():
-            await self.tts.speak(sentence_buffer.strip())
-
-        llm_ms = int((time.time() - t2) * 1000)
+        full_response, _timings = await self._stream_to_tts(messages)
+        llm_ms = _timings["total_ms"]
         e2e_ms = int((time.time() - t_start) * 1000)
 
         log.info("[TIMMY] %s", full_response)
@@ -513,25 +564,8 @@ class Orchestrator:
         )
         messages = build_messages(history, ephemeral, confirm_prompt)
 
-        t2 = time.time()
-        full_response = ""
-        sentence_buffer = ""
-
-        async for token in filtered_assistant_stream(stream_conversation(messages)):
-            full_response += token
-            sentence_buffer += token
-            await broadcast_event("token", {"content": token})
-            stripped = sentence_buffer.rstrip()
-            if stripped and stripped[-1] in ".?!;:":
-                sentence = sentence_buffer.strip()
-                sentence_buffer = ""
-                if sentence:
-                    await self.tts.speak(sentence)
-
-        if sentence_buffer.strip():
-            await self.tts.speak(sentence_buffer.strip())
-
-        llm_ms = int((time.time() - t2) * 1000)
+        full_response, _timings = await self._stream_to_tts(messages)
+        llm_ms = _timings["total_ms"]
         e2e_ms = int((time.time() - t_start) * 1000)
 
         log.info("[TIMMY] %s (name confirmation)", full_response)
@@ -765,51 +799,33 @@ class Orchestrator:
         messages = build_messages(history, ephemeral, user_text)
 
         # --- Stream LLM + TTS Pipeline ---
-        t2 = time.time()
-        full_response = ""
-        sentence_buffer = ""
-        first_token_time = None
-        first_tts_time = None
-
         # Honor explicit user permission to speak past the 2-sentence cap
         # ("you can speak longer than usual", "tell me more about", etc).
-        # Detected on the user_text only — Llama 3B's reply itself can't
+        # Detected on the user_text only -- Llama 3B's reply itself can't
         # promote the cap. Bounded to _REPLY_LONGER_SENTENCES so unbounded
         # narration is still impossible.
         cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(user_text) else None
 
-        async for token in filtered_assistant_stream(stream_conversation(messages), max_sentences=cap):
-            if first_token_time is None:
-                first_token_time = time.time()
+        async def _on_first_sentence():
+            # Eye LED + supervisor side effects fire the moment the first
+            # sentence is about to hit TTS. Both are fire-and-forget so they
+            # don't delay the speak() call.
+            asyncio.create_task(self.supervisor.on_tts_start())
+            asyncio.create_task(eye_led.notify("SPEAKING"))
 
-            full_response += token
-            sentence_buffer += token
-            await broadcast_event("token", {"content": token})
+        full_response, _timings = await self._stream_to_tts(
+            messages,
+            max_sentences=cap,
+            on_first_sentence=_on_first_sentence,
+        )
 
-            stripped = sentence_buffer.rstrip()
-            if stripped and stripped[-1] in ".?!;:":
-                sentence = sentence_buffer.strip()
-                sentence_buffer = ""
-                if sentence:
-                    if first_tts_time is None:
-                        first_tts_time = time.time()
-                        asyncio.create_task(self.supervisor.on_tts_start())
-                        asyncio.create_task(eye_led.notify("SPEAKING"))
-                    await self.tts.speak(sentence)
-
-        if sentence_buffer.strip():
-            if first_tts_time is None:
-                first_tts_time = time.time()
-            await self.tts.speak(sentence_buffer.strip())
-
-        # Notify supervisor that TTS is done
+        # Notify supervisor that TTS is done + Eye LED back to listening.
         asyncio.create_task(self.supervisor.on_tts_end())
-        # Eye LED: return to listening / normal pulsing state
         asyncio.create_task(eye_led.notify("AI_CONNECTED"))
 
-        llm_first_token_ms = int((first_token_time - t2) * 1000) if first_token_time else 0
-        llm_total_ms = int((time.time() - t2) * 1000)
-        tts_ms = int((first_tts_time - t2) * 1000) if first_tts_time else 0
+        llm_first_token_ms = _timings["first_token_ms"] or 0
+        llm_total_ms = _timings["total_ms"]
+        tts_ms = _timings["first_tts_ms"] or 0
         e2e_ms = int((time.time() - t_start) * 1000)
 
         log.info("[TIMMY] %s", full_response)
