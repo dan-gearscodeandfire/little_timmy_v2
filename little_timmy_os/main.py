@@ -807,6 +807,31 @@ header .uptime {
 .turn .role.speaker-known   { color: #3fb950; }
 .turn .role.speaker-unknown { color: #f0883e; }
 .turn .role.speaker-assistant { color: #58a6ff; }
+
+/* H9: prominent live speaker-ID badge in Body Behavior panel.
+   Operator-glanceable indicator of the most recent user-turn speaker.
+   Updates from the same WS turn-event flow that drives addTurn(). */
+.speaker-badge {
+  font-size: 18px;
+  font-weight: bold;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  min-width: 80px;
+  text-align: center;
+}
+.speaker-badge.speaker-known {
+  color: #3fb950;
+  background: #1f3a25;
+  border-color: #3fb950;
+}
+.speaker-badge.speaker-unknown {
+  color: #f0883e;
+  background: #3a2a1f;
+  border-color: #f0883e;
+}
 .turn .content {
   color: #e6edf3;
 }
@@ -1037,6 +1062,7 @@ header .uptime {
       <summary><h2>Body Behavior</h2></summary>
       <div id="behavior-panel" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
         <div id="behavior-mode" style="font-size:28px; font-weight:bold; color:#e94560;">--</div>
+        <div id="speaker-badge" class="speaker-badge speaker-unknown" title="Most recent user-turn speaker-ID — green = known voice-print, orange = transient unknown_N">--</div>
         <div style="flex:1; min-width:150px;">
           <div id="behavior-info" style="font-size:11px; margin-bottom:4px;"></div>
           <div id="behavior-stats" style="font-size:10px; color:#484f58;"></div>
@@ -1383,6 +1409,15 @@ function addTurn(role, content, speaker) {
     const s = (speaker || "").toLowerCase();
     speakerClass = (!s || s === "unknown" || s.startsWith("unknown_"))
       ? "speaker-unknown" : "speaker-known";
+    // H9: also push the speaker to the live badge in Body Behavior so the
+    // operator has a glance-distance read on Dan-vs-unknown_N without
+    // scanning the conversation log.
+    const badge = document.getElementById("speaker-badge");
+    if (badge) {
+      badge.textContent = label;
+      badge.classList.remove("speaker-known", "speaker-unknown");
+      badge.classList.add(speakerClass);
+    }
   }
   div.innerHTML =
     '<div class="role ' + speakerClass + '">' + label + '</div>' +
