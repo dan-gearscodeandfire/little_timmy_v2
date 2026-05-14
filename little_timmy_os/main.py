@@ -1581,11 +1581,12 @@ async function pollMetrics() {
       document.getElementById("m-tts").textContent = m.last_tts_ms != null ? m.last_tts_ms + "ms" : "--";
       document.getElementById("m-e2e").textContent = m.last_e2e_ms != null ? m.last_e2e_ms + "ms" : "--";
       document.getElementById("m-turns").textContent = m.turns || "--";
-      pushLatencySample({
-        stt: m.last_stt_ms, retrieval: m.last_retrieval_ms,
-        llm_ft: m.last_llm_first_token_ms, llm: m.last_llm_total_ms,
-        tts: m.last_tts_ms, e2e: m.last_e2e_ms,
-      });
+      // NOTE: do NOT pushLatencySample from this 30s poller. The chart is
+      // turn-indexed and the canonical sample source is the WS metrics event
+      // (updateMetricsFromWS), which fires exactly once per real turn. Pushing
+      // from the poll loop replayed the same last-turn metrics every 30s,
+      // producing phantom samples during quiet stretches (H7 fix 2026-05-13).
+      // Text labels above still update from poll — that part is useful.
     }
   } catch(e) {}
 }
