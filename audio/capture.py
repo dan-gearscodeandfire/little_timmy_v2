@@ -36,7 +36,10 @@ class AudioCapture:
         # User-facing mute. Same gate semantics as `suppressed` (frames go
         # through VAD for diagnostics, then get dropped before STT) so the
         # whisper-server stays untouched and unmuting is instant.
-        self.hearing_muted = False
+        # Bundle D 2026-05-14: read persisted state instead of
+        # hard-coding unmuted so a manual mute survives a reboot.
+        from persistence import runtime_toggles as _toggles
+        self.hearing_muted = not _toggles.get("hearing_enabled")
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -350,6 +353,13 @@ class AudioCapture:
         self.hearing_muted = not bool(enabled)
         if prev != self.hearing_muted:
             log.info("Hearing %s", "muted" if self.hearing_muted else "unmuted")
+            # Bundle D 2026-05-14: persist the change so a reboot doesn't
+            # silently reset the toggle. Read-back at next AudioCapture init.
+            try:
+                from persistence import runtime_toggles as _toggles
+                _toggles.set("hearing_enabled", not self.hearing_muted)
+            except Exception as e:
+                log.warning("hearing persist failed: %s", e)
 
     @property
     def is_hearing_enabled(self) -> bool:

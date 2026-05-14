@@ -62,7 +62,10 @@ class FrameCapture:
         # trigger() calls still fire so a speech event can still grab a
         # snapshot. Exposed via LT-OS so the user can save GPU/electricity
         # while the conversation tier and event-driven vision still work.
-        self._auto_poll_enabled: bool = True
+        # Bundle D 2026-05-14: read persisted state instead of
+        # hard-coding True so a manual disable survives a reboot.
+        from persistence import runtime_toggles as _toggles
+        self._auto_poll_enabled: bool = _toggles.get("vision_auto_poll_enabled")
 
     def pause(self):
         """Increment pause counter. Poll loop skips while count > 0.
@@ -86,6 +89,13 @@ class FrameCapture:
         self._auto_poll_enabled = bool(enabled)
         if prev != self._auto_poll_enabled:
             log.info("Vision auto-poll %s", "enabled" if self._auto_poll_enabled else "disabled")
+            # Bundle D 2026-05-14: persist the change so a reboot doesn't
+            # silently reset the toggle. Read-back at next FrameCapture init.
+            try:
+                from persistence import runtime_toggles as _toggles
+                _toggles.set("vision_auto_poll_enabled", self._auto_poll_enabled)
+            except Exception as e:
+                log.warning("auto_poll persist failed: %s", e)
 
     @property
     def is_auto_poll_enabled(self) -> bool:
