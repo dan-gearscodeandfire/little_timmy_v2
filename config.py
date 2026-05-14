@@ -84,7 +84,7 @@ STREAMERPI_FACE_ENROLL_URL = os.getenv(
 STREAMERPI_EYE_LED_URL = os.getenv(
     "TIMMY_EYE_LED_URL", "https://192.168.1.110:8080/esp32/write"
 )
-LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8083")
+LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8084")  # dedicated vision server (mmproj-BF16); :8083 is the brain without mmproj
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
 VISION_MIN_CAPTURE_GAP = 3.0     # minimum seconds between any captures
 VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this

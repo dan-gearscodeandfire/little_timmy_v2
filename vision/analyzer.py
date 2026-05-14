@@ -1,7 +1,7 @@
 """Scene analysis via Qwen3.6 multimodal through llama-server.
 
 Sends captured JPEG frames to the brain LLM at config.LLM_VISION_URL
-(Qwen3.6-35B-A3B with mmproj-BF16 attached, default :8083) using the
+(Qwen3.6-35B-A3B with mmproj-BF16 attached, default :8084 — the dedicated qwen36-vision-server.service instance) using the
 /v1/chat/completions endpoint with image_url. Always sends
 chat_template_kwargs:{enable_thinking:false} — thinking-on adds 4-13×
 latency on warm images and is unnecessary for structured scene
@@ -223,7 +223,7 @@ async def check_model_available() -> bool:
         return False
     except httpx.ConnectError:
         log.warning(
-            "Vision server not reachable at %s — qwen36-server.service should be active.",
+            "Vision server not reachable at %s — qwen36-vision-server.service should be active.",
             config.LLM_VISION_URL,
         )
         return False
