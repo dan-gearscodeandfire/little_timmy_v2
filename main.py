@@ -817,6 +817,14 @@ class Orchestrator:
                  stt_ms, spk_ms, retrieval_ms, llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms)
 
         await broadcast_event("turn", {"role": "assistant", "content": full_response})
+        # Bundle A 00:37 reframe: surface the estimated prompt token count
+        # for this turn so the LT-OS Latency panel can show "1234 tokens sent
+        # to LLM" alongside the timing metrics. ~4 chars/token English
+        # heuristic matches conversation.manager.estimate_tokens.
+        _prompt_chars = sum(len(m.get("content", "") or "") for m in messages)
+        est_prompt_tokens = max(1, _prompt_chars // 4)
+        est_completion_tokens = max(0, len(full_response) // 4)
+
         await broadcast_event("metrics", {
             "stt_ms": stt_ms,
             "spk_ms": spk_ms,
@@ -827,6 +835,8 @@ class Orchestrator:
             "e2e_ms": e2e_ms,
             "turns": self.conversation.turn_count,
             "speaker": speaker_name,
+            "est_prompt_tokens": est_prompt_tokens,
+            "est_completion_tokens": est_completion_tokens,
         })
         update_metrics(
             last_stt_ms=stt_ms,
@@ -836,6 +846,8 @@ class Orchestrator:
             last_tts_ms=tts_ms,
             last_e2e_ms=e2e_ms,
             turns=self.conversation.turn_count,
+            last_est_prompt_tokens=est_prompt_tokens,
+            last_est_completion_tokens=est_completion_tokens,
         )
 
         await self.conversation.add_assistant_turn(full_response)

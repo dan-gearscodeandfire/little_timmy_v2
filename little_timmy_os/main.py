@@ -1189,9 +1189,9 @@ header .uptime {
         <div class="metric-row"><span class="label">Turns</span><span class="value" id="m-turns">--</span></div>
       </div>
       <div id="latency-context" style="margin-top:10px; padding-top:8px; border-top:1px solid #21262d; font-size:11px; line-height:1.5;">
-        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Last token payload (the turn these numbers describe)</div>
-        <div><span style="color:#484f58;">user</span> <span id="latency-user-text" style="color:#c9d1d9;">(awaiting first turn)</span></div>
-        <div><span style="color:#484f58;">timmy</span> <span id="latency-asst-text" style="color:#bc8cff;">(awaiting first reply)</span></div>
+        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Last token payload (sent to LLM)</div>
+        <div><span style="color:#484f58;">prompt</span> <span id="latency-prompt-tokens" style="color:#c9d1d9; font-weight:bold;">--</span> <span style="color:#484f58;">tokens (estimated, ~4 chars/token)</span></div>
+        <div><span style="color:#484f58;">completion</span> <span id="latency-completion-tokens" style="color:#bc8cff; font-weight:bold;">--</span> <span style="color:#484f58;">tokens (estimated)</span></div>
       </div>
     </details>
     <details class="panel" open style="margin-top:16px;">
@@ -1471,15 +1471,11 @@ function addTurn(role, content, speaker) {
   conv.appendChild(div);
   conv.scrollTop = conv.scrollHeight;
 
-  // Bundle A 00:37 / 00:39: keep the latency-context strip + payload-modal
-  // header in sync with the most recent turn content.
-  if (role === "user") {
-    const el = document.getElementById("latency-user-text");
-    if (el) el.textContent = content || "(empty)";
-  } else if (role === "assistant") {
+  // Bundle A 00:39: keep the payload-modal header in sync with the most
+  // recent assistant utterance. The latency-context strip is no longer
+  // text-based (00:37 reframe to token counts via updateMetricsFromWS).
+  if (role === "assistant") {
     _setLastAssistantTurn(renderedContent);
-    const el = document.getElementById("latency-asst-text");
-    if (el) el.textContent = renderedContent || "(empty)";
   }
 }
 
@@ -1518,6 +1514,11 @@ function updateMetricsFromWS(msg) {
   document.getElementById("m-tts").textContent = msg.tts_ms != null ? msg.tts_ms + "ms" : "--";
   document.getElementById("m-e2e").textContent = msg.e2e_ms != null ? msg.e2e_ms + "ms" : "--";
   document.getElementById("m-turns").textContent = msg.turns || "--";
+  // Bundle A 00:37 reframe: prompt/completion token estimates from main.py.
+  const pTok = document.getElementById("latency-prompt-tokens");
+  const cTok = document.getElementById("latency-completion-tokens");
+  if (pTok) pTok.textContent = msg.est_prompt_tokens != null ? msg.est_prompt_tokens.toLocaleString() : "--";
+  if (cTok) cTok.textContent = msg.est_completion_tokens != null ? msg.est_completion_tokens.toLocaleString() : "--";
   pushLatencySample({
     stt: msg.stt_ms, retrieval: msg.retrieval_ms,
     llm_ft: msg.llm_first_token_ms, llm: msg.llm_total_ms,
