@@ -23,9 +23,24 @@ _conversation_in_flight = asyncio.Event()
 _slow_call_tasks: set[asyncio.Task] = set()
 
 
+def _current_conversation_url() -> str:
+    """Return the URL to use for the next conversation request. Prefers
+    the runtime override (set by LT-OS when the dropdown picks an
+    external-service model like qwen36); falls back to the static
+    config.LLM_CONVERSATION_URL otherwise."""
+    try:
+        from persistence import runtime_toggles
+        override = runtime_toggles.get("conversation_url_override")
+    except Exception:
+        override = None
+    if override:
+        return str(override)
+    return config.LLM_CONVERSATION_URL
+
+
 def _conversation_shares_brain() -> bool:
     """True when conversation routes to the same server as memory."""
-    return config.LLM_CONVERSATION_URL == config.LLM_MEMORY_URL
+    return _current_conversation_url() == config.LLM_MEMORY_URL
 
 
 async def _wait_for_conversation_idle() -> None:
@@ -140,10 +155,11 @@ async def stream_conversation(
     if _conversation_shares_brain():
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
+    conv_url = _current_conversation_url()
     try:
         async with client.stream(
             "POST",
-            f"{config.LLM_CONVERSATION_URL}/v1/chat/completions",
+            f"{conv_url}/v1/chat/completions",
             json=payload,
         ) as resp:
             resp.raise_for_status()

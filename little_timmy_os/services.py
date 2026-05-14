@@ -271,14 +271,52 @@ async def switch_conversation_model(model_id: str) -> dict:
     model = config.CONVERSATION_MODELS[model_id]
     old_model = config.current_conversation_model
     old_name = config.CONVERSATION_MODELS.get(old_model, {}).get("name", old_model)
+    new_is_external = bool(model.get("external_url"))
 
     if model_id == old_model:
+        # Same model -- only re-probe health for spawnable entries; external
+        # URLs are managed by their own systemd unit (qwen36-server) and a
+        # no-op suffices.
+        if new_is_external:
+            await _broadcast_status(f"{model['name']} is already selected")
+            return {"success": True, "model": model_id}
         health = await check_health("conversation_llm")
         if health["status"] == "connected":
             await _broadcast_status(f"{model['name']} is already loaded")
             return {"success": True, "model": model_id, "health": health}
 
     await _broadcast_status(f"Switching conversation LLM: {old_name} -> {model['name']}...")
+
+    if new_is_external:
+        # 2026-05-14 Qwen3.6 conversation-tier path: stop the local llama-3b
+        # server (frees ~2 GB GPU), write the URL override into LT-side
+        # runtime_toggles so llm.client.stream_conversation routes at the
+        # brain on the next call. No LT restart needed: the URL lookup is
+        # per-call.
+        await kill_service("conversation_llm")
+        await asyncio.sleep(1)
+        try:
+            from persistence import runtime_toggles
+            runtime_toggles.set("conversation_url_override", model["external_url"])
+        except Exception as e:
+            await _broadcast_status(
+                f"Failed to set conversation override: {e}", "error")
+            return {"success": False, "model": model_id, "error": str(e)}
+        config.current_conversation_model = model_id
+        config.SERVICES["conversation_llm"]["name"] = model["name"]
+        await _broadcast_status(
+            f"Conversation LLM routed to {model['name']} (no local server spawned)")
+        return {"success": True, "model": model_id, "external": True}
+
+    # Switching FROM an external-url model back to a spawnable one: clear
+    # the override before spawning so the next LT request reads the static
+    # default URL (Llama 3B :8081 or whichever spawn target).
+    if config.CONVERSATION_MODELS.get(old_model, {}).get("external_url"):
+        try:
+            from persistence import runtime_toggles
+            runtime_toggles.set("conversation_url_override", "")
+        except Exception as e:
+            log.warning("failed to clear conversation override: %s", e)
 
     await kill_service("conversation_llm")
     await asyncio.sleep(1)

@@ -38,6 +38,20 @@ CONVERSATION_MODELS = {
         "file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
         "params": "-ngl 99 -c 8192 -np 1",
     },
+    # 2026-05-14: Qwen3.6 conversation-tier option. Routes LT to the always-
+    # running qwen36-server.service on :8083 (the brain that already handles
+    # memory extraction + rollup summaries) instead of spawning a duplicate
+    # Qwen3.6 on :8081. Saves the ~22 GB GPU a duplicate would cost and
+    # ~2 GB by retiring the Llama 3B server while selected. LT's priority
+    # gate in llm/client.py ensures conversation always preempts in-flight
+    # memory/rollup calls so this shared-model setup never queues a user
+    # reply behind a 15-45 s thinking-on extraction.
+    "qwen36": {
+        "name": "Qwen3.6 brain (thinking-off, shared :8083)",
+        "external_url": "http://localhost:8083",
+        "file": None,
+        "params": None,
+    },
 }
 
 # Track which model is currently loaded
