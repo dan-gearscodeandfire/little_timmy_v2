@@ -85,7 +85,6 @@ The orchestrator runs as a systemd unit; the canonical launch path is `sudo syst
     relevance.py           # Urgency scoring → inject vs skip
     context.py             # VisionContext, get_vision_debug, pause_polling delegate
     face_remote.py         # RemoteFaceClient — reads streamerpi /faces (replaces in-tree YuNet)
-    face_id.py             # Legacy; only enroll_face.py imports it (deprecated)
     visual_question.py     # User-utterance matcher for explicit visual questions
   presence/
     face_client_local.py   # Per-turn face observation via streamerpi /faces
@@ -167,7 +166,7 @@ End-to-end VLM cycle: ~2.0 s on the workshop scene. Capture payload: ~8 KB. See 
 
 ## Face recognition (single-source on streamerpi)
 
-There is **one** face database, on streamerpi at `~/little_timmy_motor_raspi/face_db/embeddings.json`. okdemerzel's in-tree YuNet+SFace path was retired; `vision/face_id.py` is referenced only by the legacy `enroll_face.py` script (deprecation banner attached).
+There is **one** face database, on streamerpi at `~/little_timmy_motor_raspi/face_db/embeddings.json`. okdemerzel's in-tree YuNet+SFace path was retired in 2026-04-27; `vision/face_id.py` + the legacy `enroll_face.py` script were deleted 2026-05-14 (the streamerpi-remote path is the only enrollment route now).
 
 Live consumers on okdemerzel:
 

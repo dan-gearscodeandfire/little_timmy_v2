@@ -60,7 +60,7 @@ class RemoteFaceClient:
         """Fetch faces, return [] if stale or unavailable.
 
         Returns list of {name, distance, confidence, bbox} dicts in the same
-        shape that vision/face_id.py FaceID.identify_from_jpeg used to return.
+        shape: list of {name, distance, confidence, bbox} dicts (legacy in-tree YuNet+SFace path was retired 2026-05-14).
         """
         data = await self.fetch()
         if data is None:
