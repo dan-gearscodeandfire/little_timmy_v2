@@ -897,7 +897,8 @@ class Orchestrator:
 
         # --- Async Memory Formation (fire-and-forget) ---
         await extract_and_store(user_text, full_response,
-                                speaker_id=speaker_db_id)
+                                speaker_id=speaker_db_id,
+                                speaker_name=speaker_name)
 
         # --- Async Mood Update (fire-and-forget) ---
         # Updates the deterministic 2-axis mood state (engagement, warmth)

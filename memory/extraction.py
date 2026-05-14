@@ -45,16 +45,50 @@ _CLASSIFIER_PROMPT = (
 )
 
 
+_SELF_REFERENCE_SUBJECTS = frozenset({"user", "i", "me", "myself"})
+
+
+def _normalize_subject(subj: str, speaker_name: str | None) -> str:
+    """Map LLM self-reference subjects to the canonical speaker name.
+
+    No-op if speaker_name is missing or the subject is already a proper
+    name / non-self-reference. Case-insensitive matching; result is
+    always lowercase (matches memory.facts.store_fact normalization).
+    """
+    if not speaker_name:
+        return subj
+    name = speaker_name.strip().lower()
+    if not name or name.startswith("unknown"):
+        return subj
+    lowered = subj.lower().strip()
+    if lowered in _SELF_REFERENCE_SUBJECTS:
+        return name
+    # Handle possessive self-references like "user's wife", "my wife".
+    # Preserve the relation suffix, only swap the leading possessor.
+    for prefix in ("user's ", "user’s ", "user' s ", "my "):
+        if lowered.startswith(prefix):
+            return f"{name}'s {lowered[len(prefix):].strip()}"
+    return subj
+
+
 async def extract_and_store(
     user_text: str,
     assistant_text: str,
     speaker_id: int | None = None,
+    speaker_name: str | None = None,
 ):
     """Extract memories and facts from a conversation exchange.
 
     Two-pass: thinking-OFF classifier first (cheap), then thinking-ON
     structured extraction only if the classifier says yes. Single-flight:
     drops new requests while one is in progress.
+
+    speaker_name (when known) is used to normalize self-reference subjects
+    in the LLM output: "user" / "i" / "me" become the canonical name,
+    and "user\'s X" becomes "<name>\'s X". Pairs with the retrieval-side
+    alias in memory.facts.get_facts_about_speaker so the write path lands
+    canonical going forward while the historical "user" rows stay
+    surfaceable via the alias.
     """
     global _extraction_running
     # Skip extraction for very short/empty user messages (likely STT hallucinations)
@@ -66,10 +100,10 @@ async def extract_and_store(
         log.debug("Memory extraction skipped - previous extraction still running")
         return
     _extraction_running = True
-    asyncio.create_task(_do_extraction(user_text, assistant_text, speaker_id))
+    asyncio.create_task(_do_extraction(user_text, assistant_text, speaker_id, speaker_name))
 
 
-async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | None):
+async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | None, speaker_name: str | None = None):
     global _extraction_running
     try:
         # Pass 1: cheap thinking-OFF classifier
@@ -130,7 +164,14 @@ async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | 
             pred = str(fact_data.get("predicate", "")).strip()
             val = str(fact_data.get("value", "")).strip()
             if subj and pred and val:
-                await store_fact(subj, pred, val, speaker_id=speaker_id)
+                # Bundle B option b: rewrite self-reference subjects to the
+                # canonical speaker_name so new rows don\'t accumulate under
+                # the generic "user" bucket. The LLM prompt biases toward
+                # subject="user" because the prompt frames the input as
+                # "the user said X"; normalizing at store time is more
+                # robust than tightening the prompt.
+                subj_canonical = _normalize_subject(subj, speaker_name)
+                await store_fact(subj_canonical, pred, val, speaker_id=speaker_id)
 
         for mem_data in parsed.get("memories", []):
             mem_type = str(mem_data.get("type", "episodic")).strip()
