@@ -32,6 +32,8 @@ class VisionContext:
         self._enabled = False
         self._face_remote = RemoteFaceClient()
         self._face_remote_ready = False
+        # Background retry task for vision-server health-probe (boot race recovery)
+        self._retry_task: asyncio.Task | None = None
         # Rolling buffer of recent scene records (for temporal context)
         self._history: deque[SceneRecord] = deque(maxlen=10)
         # Last analyzed JPEG (for debug/dashboard display)
@@ -49,16 +51,51 @@ class VisionContext:
         self._passive_face_callback = fn
 
     async def start(self):
-        """Initialize vision pipeline: check model, start capture."""
+        """Initialize vision pipeline: check model, start capture.
+
+        If the vision server is not ready at boot (HTTP 503 during model load,
+        connection refused before service binds), launch a background retry
+        task with exponential backoff that flips _enabled once the server
+        becomes reachable. LT does not block on it.
+        """
         if not config.VISION_ENABLED:
             log.info("Vision pipeline disabled by config")
             return
 
-        available = await check_model_available()
-        if not available:
-            log.warning("Vision pipeline disabled -- vision model not available")
+        if await check_model_available():
+            await self._enable_pipeline()
             return
 
+        log.warning(
+            "Vision server not ready at %s -- launching background retry task",
+            config.LLM_VISION_URL,
+        )
+        self._retry_task = asyncio.create_task(self._wait_for_vision_then_enable())
+
+    async def _wait_for_vision_then_enable(self):
+        """Poll /health with backoff until reachable, then enable the pipeline."""
+        backoff = 2.0
+        max_backoff = 30.0
+        attempts = 0
+        while not self._enabled:
+            attempts += 1
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+            try:
+                if await check_model_available():
+                    log.info(
+                        "Vision server became available after %d retry attempts -- enabling pipeline",
+                        attempts,
+                    )
+                    await self._enable_pipeline()
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.debug("Vision health-retry attempt %d errored", attempts, exc_info=True)
+
+    async def _enable_pipeline(self):
+        """Mark enabled and run the post-health-check init sequence."""
         self._enabled = True
 
         # Verify remote face state is reachable on streamerpi
@@ -70,10 +107,16 @@ class VisionContext:
             log.warning("Remote /faces not reachable at %s -- face id disabled", self._face_remote.url)
 
         await self._capture.start(self._on_frame)
-        log.info("Vision context started (Qwen2.5-VL structured pipeline + face ID)")
+        log.info("Vision context started (Qwen3.6-VL structured pipeline + face ID)")
 
     async def stop(self):
         """Stop the vision pipeline."""
+        if self._retry_task and not self._retry_task.done():
+            self._retry_task.cancel()
+            try:
+                await self._retry_task
+            except asyncio.CancelledError:
+                pass
         if self._enabled:
             await self._capture.stop()
             self._enabled = False
