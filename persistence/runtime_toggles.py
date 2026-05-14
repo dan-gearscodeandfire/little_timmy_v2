@@ -28,6 +28,11 @@ _DEFAULTS: dict = {
     # picks an external-service model from the dropdown (qwen36 today).
     # Empty string == use the static default (Llama 3B :8081).
     "conversation_url_override": "",
+    # Persisted dropdown choice. LT-OS reads on startup to restore the
+    # last-selected conversation model and applies it: stops/starts the
+    # llama-3b systemd unit + sets/clears conversation_url_override as
+    # appropriate. Default matches the LT-OS config.py module default.
+    "conversation_model_id": "llama3.2-3b",
 }
 
 _lock = threading.Lock()

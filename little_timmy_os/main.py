@@ -4,6 +4,12 @@ Runs independently of Little Timmy on port 8894.
 Manages, monitors, and controls all Little Timmy stack services.
 """
 
+# LT-OS needs the sibling persistence module from /home/gearscodeandfire/little_timmy/
+# (Bundle D + Qwen3.6 conversation-tier swap). LT-OS cwd is little_timmy_os/ which
+# does not have persistence/ in its search path; inject the parent dir.
+import sys as _sys
+_sys.path.append("/home/gearscodeandfire/little_timmy")
+
 import asyncio
 import json
 import logging
@@ -32,6 +38,20 @@ async def lifespan(app: FastAPI):
     poll_task = asyncio.create_task(health_poll_loop())
     timmy_ws_task = asyncio.create_task(timmy_ws_relay())
     log.info("Little Timmy OS started on http://%s:%d", config.WEB_HOST, config.WEB_PORT)
+    # Restore persisted conversation model choice (Bundle: persistence for
+    # Dan-requested toggles 2026-05-14). Lives inside lifespan() because
+    # @app.on_event("startup") is silently no-op when lifespan is provided.
+    try:
+        from persistence import runtime_toggles
+        persisted = runtime_toggles.get("conversation_model_id")
+        if persisted and persisted in config.CONVERSATION_MODELS and persisted != config.current_conversation_model:
+            log.info("Restoring conversation tier from persistence: %s", persisted)
+            asyncio.create_task(services.switch_conversation_model(persisted))
+        elif persisted and persisted not in config.CONVERSATION_MODELS:
+            log.warning("persisted conversation_model_id %r unknown; keeping default %r",
+                        persisted, config.current_conversation_model)
+    except Exception as e:
+        log.warning("runtime_toggles unavailable during startup restore: %s", e)
     yield
     poll_task.cancel()
     timmy_ws_task.cancel()

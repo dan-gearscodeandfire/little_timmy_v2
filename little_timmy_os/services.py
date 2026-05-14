@@ -263,6 +263,41 @@ async def toggle_service(svc_id: str, desired_state: bool) -> dict:
         return await check_health(svc_id)
 
 
+_LLAMA_3B_UNIT = "llama-3b-server.service"
+
+
+async def _systemctl(action: str, unit: str) -> bool:
+    """Run sudo systemctl <action> <unit>. Returns True on success.
+
+    The systemd unit auto-restarts on SIGKILL because Restart=on-failure,
+    so a fuser/kill-by-PID is not durable. systemctl stop / start are.
+    Requires NOPASSWD sudo for systemctl on this host (already in place).
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "sudo", "-n", "systemctl", action, unit,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        log.warning("systemctl %s %s failed: %s",
+                    action, unit, err.decode(errors="replace").strip())
+        return False
+    return True
+
+
+def _persist_model_choice(model_id: str, external_url: str | None) -> None:
+    """Write conversation_model_id + conversation_url_override atomically
+    (best-effort). Keeps the two keys in sync so a future LT-OS restart can
+    restore state without ambiguity."""
+    try:
+        from persistence import runtime_toggles
+        runtime_toggles.set("conversation_model_id", model_id)
+        runtime_toggles.set("conversation_url_override", external_url or "")
+    except Exception as e:
+        log.warning("failed to persist conversation model choice: %s", e)
+
+
 async def switch_conversation_model(model_id: str) -> dict:
     if model_id not in config.CONVERSATION_MODELS:
         await _broadcast_status(f"Unknown model: {model_id}", "error")
@@ -272,11 +307,9 @@ async def switch_conversation_model(model_id: str) -> dict:
     old_model = config.current_conversation_model
     old_name = config.CONVERSATION_MODELS.get(old_model, {}).get("name", old_model)
     new_is_external = bool(model.get("external_url"))
+    old_is_external = bool(config.CONVERSATION_MODELS.get(old_model, {}).get("external_url"))
 
     if model_id == old_model:
-        # Same model -- only re-probe health for spawnable entries; external
-        # URLs are managed by their own systemd unit (qwen36-server) and a
-        # no-op suffices.
         if new_is_external:
             await _broadcast_status(f"{model['name']} is already selected")
             return {"success": True, "model": model_id}
@@ -285,48 +318,56 @@ async def switch_conversation_model(model_id: str) -> dict:
             await _broadcast_status(f"{model['name']} is already loaded")
             return {"success": True, "model": model_id, "health": health}
 
-    await _broadcast_status(f"Switching conversation LLM: {old_name} -> {model['name']}...")
-
-    if new_is_external:
-        # 2026-05-14 Qwen3.6 conversation-tier path: stop the local llama-3b
-        # server (frees ~2 GB GPU), write the URL override into LT-side
-        # runtime_toggles so llm.client.stream_conversation routes at the
-        # brain on the next call. No LT restart needed: the URL lookup is
-        # per-call.
-        await kill_service("conversation_llm")
-        await asyncio.sleep(1)
-        try:
-            from persistence import runtime_toggles
-            runtime_toggles.set("conversation_url_override", model["external_url"])
-        except Exception as e:
-            await _broadcast_status(
-                f"Failed to set conversation override: {e}", "error")
-            return {"success": False, "model": model_id, "error": str(e)}
-        config.current_conversation_model = model_id
-        config.SERVICES["conversation_llm"]["name"] = model["name"]
-        await _broadcast_status(
-            f"Conversation LLM routed to {model['name']} (no local server spawned)")
-        return {"success": True, "model": model_id, "external": True}
-
-    # Switching FROM an external-url model back to a spawnable one: clear
-    # the override before spawning so the next LT request reads the static
-    # default URL (Llama 3B :8081 or whichever spawn target).
-    if config.CONVERSATION_MODELS.get(old_model, {}).get("external_url"):
-        try:
-            from persistence import runtime_toggles
-            runtime_toggles.set("conversation_url_override", "")
-        except Exception as e:
-            log.warning("failed to clear conversation override: %s", e)
-
-    await kill_service("conversation_llm")
-    await asyncio.sleep(1)
-
+    # Persist BEFORE broadcasting / killing anything. If the WS client
+    # disconnects mid-flow (which crashes the broadcast helper), the
+    # durable state is at least coherent on disk for the next LT-OS
+    # startup to restore.
+    _persist_model_choice(model_id, model.get("external_url") if new_is_external else None)
     config.current_conversation_model = model_id
     config.SERVICES["conversation_llm"]["name"] = model["name"]
 
-    success = await launch_service("conversation_llm")
-    health = await check_health("conversation_llm")
+    await _broadcast_status(f"Switching conversation LLM: {old_name} -> {model['name']}...")
 
+    if new_is_external:
+        # External path: stop the llama-3b systemd unit (NOT just kill the
+        # process -- Restart=on-failure would respawn it). LT picks up the
+        # URL override on next conversation call; no LT restart needed.
+        ok = await _systemctl("stop", _LLAMA_3B_UNIT)
+        if ok:
+            await _broadcast_status(
+                f"Conversation LLM routed to {model['name']} ({_LLAMA_3B_UNIT} stopped, no local server spawned)")
+        else:
+            await _broadcast_status(
+                f"Conversation override set, but {_LLAMA_3B_UNIT} stop failed -- check sudoers", "warning")
+        return {"success": True, "model": model_id, "external": True}
+
+    # Switching FROM external -> spawnable: also ensure llama-3b systemd
+    # unit is running so the existing kill_service / launch_service flow
+    # below can take over for non-default models. For the default model_id
+    # (llama3.2-3b) systemctl start is the right answer.
+    if old_is_external:
+        await _systemctl("start", _LLAMA_3B_UNIT)
+        await asyncio.sleep(2)  # let the unit bind to :8081
+
+    # Existing spawnable -> spawnable (or systemd-managed default) flow:
+    # kill whatever is on :8081 then launch the new model_id via the
+    # SERVICES dict start_cmd. The kill is via fuser-k (kill_service);
+    # since the new launch uses the same port the restart-on-failure of
+    # llama-3b-server.service is benign here -- the launched llama-server
+    # will reclaim the port either way.
+    if model_id != "llama3.2-3b":
+        # For non-default models we override the systemd-managed Llama 3B.
+        # Stop the unit first to avoid contention, then spawn manually.
+        await _systemctl("stop", _LLAMA_3B_UNIT)
+        await asyncio.sleep(1)
+        success = await launch_service("conversation_llm")
+    else:
+        # Default model -- llama-3b-server.service is the canonical owner.
+        # Make sure the unit is running (no-op if already started above).
+        success = await _systemctl("start", _LLAMA_3B_UNIT)
+        await asyncio.sleep(2)
+
+    health = await check_health("conversation_llm")
     if success:
         await _broadcast_status(f"Conversation LLM switched to {model['name']}")
     else:
