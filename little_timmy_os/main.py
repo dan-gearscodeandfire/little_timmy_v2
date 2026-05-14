@@ -198,6 +198,25 @@ async def get_host_metrics():
             load1, load5, load15 = os.getloadavg()
         except (AttributeError, OSError):
             load1 = load5 = load15 = None
+        # AMD GPU (Strix Halo) via amdgpu sysfs. card1 on okdemerzel.
+        # mem_info_vram_* reports bytes; gpu_busy_percent reports 0-100.
+        vram_used_gb = vram_total_gb = vram_percent = gpu_busy = None
+        try:
+            with open('/sys/class/drm/card1/device/mem_info_vram_used') as f:
+                vram_used = int(f.read().strip())
+            with open('/sys/class/drm/card1/device/mem_info_vram_total') as f:
+                vram_total = int(f.read().strip())
+            if vram_total > 0:
+                vram_used_gb = round(vram_used / (1024 ** 3), 2)
+                vram_total_gb = round(vram_total / (1024 ** 3), 2)
+                vram_percent = round(100 * vram_used / vram_total, 1)
+        except (FileNotFoundError, PermissionError, ValueError):
+            pass
+        try:
+            with open('/sys/class/drm/card1/device/gpu_busy_percent') as f:
+                gpu_busy = int(f.read().strip())
+        except (FileNotFoundError, PermissionError, ValueError):
+            pass
         return {
             "available": True,
             "cpu_percent": round(cpu_pct, 1),
@@ -211,6 +230,10 @@ async def get_host_metrics():
             "load_1m": round(load1, 2) if load1 is not None else None,
             "load_5m": round(load5, 2) if load5 is not None else None,
             "load_15m": round(load15, 2) if load15 is not None else None,
+            "vram_used_gb": vram_used_gb,
+            "vram_total_gb": vram_total_gb,
+            "vram_percent": vram_percent,
+            "gpu_busy_percent": gpu_busy,
         }
     except Exception as e:
         return {"available": False, "error": str(e)[:120]}
@@ -1104,7 +1127,9 @@ header .uptime {
         <div class="metric-row"><span class="label">RAM</span><span class="value" id="host-ram">--</span></div>
         <div class="metric-row"><span class="label">Disk /</span><span class="value" id="host-disk">--</span></div>
         <div class="metric-row"><span class="label">Load (1m / 5m / 15m)</span><span class="value" id="host-load">--</span></div>
-        <div style="font-size:10px; color:#484f58; margin-top:6px;">VRAM not shown — Strix Halo UMA partition needs separate tooling (radeontop / rocm-smi).</div>
+        <div class="metric-row"><span class="label">VRAM</span><span class="value" id="host-vram">--</span></div>
+        <div class="metric-row"><span class="label">GPU busy</span><span class="value" id="host-gpu">--</span></div>
+        <div style="font-size:10px; color:#484f58; margin-top:6px;">VRAM/GPU read from amdgpu sysfs (card1). Strix Halo UMA — VRAM is partitioned from system RAM at BIOS.</div>
       </div>
     </details>
     <details class="panel" open style="margin-top:16px">
@@ -2175,6 +2200,18 @@ async function pollHostMetrics() {
       const parts = [m.load_1m, m.load_5m, m.load_15m]
         .map(v => v == null ? '?' : v.toFixed(2));
       load.textContent = parts.join(' / ');
+    }
+    const vram = document.getElementById('host-vram');
+    const gpu = document.getElementById('host-gpu');
+    if (vram) {
+      vram.textContent = (m.vram_used_gb != null && m.vram_total_gb != null)
+        ? m.vram_used_gb + ' / ' + m.vram_total_gb + ' GB (' + m.vram_percent + '%)'
+        : 'unavailable';
+    }
+    if (gpu) {
+      gpu.textContent = (m.gpu_busy_percent != null)
+        ? m.gpu_busy_percent + '%'
+        : 'unavailable';
     }
   } catch(e) {}
 }
