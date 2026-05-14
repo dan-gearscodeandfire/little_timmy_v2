@@ -576,7 +576,7 @@ header .uptime {
 .main-content {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1.2fr 1fr;
+  grid-template-columns: 1.2fr 1fr;
   gap: 16px;
   padding: 16px 24px;
 }
@@ -653,6 +653,38 @@ header .uptime {
   font-size: 11px;
   color: #8b949e;
   margin-right: 12px;
+}
+
+/* M7: Services panel as horizontal strip across the top.
+   The first column of .main-content (Services + streamerpi-controls +
+   conversation LLM selector) spans the whole row, and service cards
+   inside lay out as a flex-wrap of compact chips. */
+.main-content > div:first-child {
+  grid-column: 1 / -1;
+}
+.main-content > div:first-child #services,
+.main-content > div:first-child #streamerpi-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+}
+.main-content > div:first-child #streamerpi-controls > div:first-child {
+  flex: 0 0 100%;
+}
+.main-content > div:first-child .service-card {
+  flex: 0 1 240px;
+  margin: 0;
+  min-width: 0;
+}
+.main-content > div:first-child .service-card .service-name {
+  font-size: 12px;
+}
+.main-content > div:first-child .service-card .service-detail {
+  font-size: 10px;
+}
+.main-content > div:first-child #model-selector {
+  margin-top: 12px;
 }
 
 /* Toggle switch */
