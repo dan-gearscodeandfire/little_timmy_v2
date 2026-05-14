@@ -19,7 +19,6 @@ WEB_PORT = 8893
 
 # --- Models ---
 EMBEDDING_MODEL = "nomic-embed-text"
-EMBEDDING_DIM = 768
 PIPER_MODEL = os.getenv(
     "TIMMY_PIPER_MODEL",
     os.path.expanduser("~/little_timmy/models/tts/skeletor_v1.onnx"),
@@ -33,7 +32,6 @@ TTS_LENGTH_SCALE = 0.6  # speech speed (lower = faster, default 1.0)
 
 # --- Audio ---
 SAMPLE_RATE = 16000
-AUDIO_CHANNELS = 1
 CHUNK_FRAMES = 4096  # ~256ms at 16kHz
 VAD_THRESHOLD = 0.4
 PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
@@ -43,10 +41,8 @@ SILENCE_CHUNKS_COMPLETE = 5    # ~0.3s — finalize quickly if sentence looks co
 SILENCE_CHUNKS_INCOMPLETE = 25  # ~1.5s — wait longer if mid-sentence
 
 # --- Conversation ---
-HOT_WINDOW_SECONDS = 300       # 5 min — raw turns kept verbatim
 HOT_MAX_TOKENS = 2500          # token budget for hot tier
 WARM_MAX_SUMMARIES = 3         # max warm summaries in prompt
-WARM_MAX_TOKENS = 200          # token budget for warm tier
 ROLLUP_AGE_SECONDS = 600       # 10 min — trigger rollup for old turns
 
 # --- Retrieval ---
@@ -92,7 +88,6 @@ STREAMERPI_EYE_LED_URL = os.getenv(
 )
 LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8084")  # dedicated vision server (mmproj-BF16); :8083 is the brain without mmproj
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
-VISION_MIN_CAPTURE_GAP = 3.0     # minimum seconds between any captures
 VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this
 
 # Trigger 3 - continuous self-improvement of voiceprints. When True, every
@@ -105,12 +100,10 @@ SPEAKER_DRIFT_LEARNING = False
 
 # --- Presence (face + voice fusion, room ledger) ---
 PRESENCE_ENABLED = os.getenv("TIMMY_PRESENCE_ENABLED", "true").lower() == "true"
-FACE_RECOGNIZE_URL = os.getenv("TIMMY_FACE_URL", "http://localhost:8895")
 STREAMERPI_BEHAVIOR_URL = os.getenv(
     "TIMMY_BEHAVIOR_URL", "https://192.168.1.110:8080/behavior/status"
 )
 FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
-FACE_MIN_RECOGNIZE_CONF = float(os.getenv("TIMMY_FACE_MIN_RECOGNIZE_CONF", "0.45"))
 HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
 PRESENCE_TTL_SEC = int(os.getenv("TIMMY_PRESENCE_TTL_SEC", "900"))
 UNKNOWN_VOICE_TTL_SEC = int(os.getenv("TIMMY_UNKNOWN_VOICE_TTL_SEC", "120"))
