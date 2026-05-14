@@ -4,8 +4,14 @@ import os
 
 # --- Network ---
 WHISPER_URL = os.getenv("TIMMY_WHISPER_URL", "http://localhost:8891")
-LLM_CONVERSATION_URL = os.getenv("TIMMY_LLM_URL", "http://localhost:8081")
-LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8083")
+# L5 2026-05-14: TIMMY_CONVERSATION_URL is the canonical name; the
+# old TIMMY_LLM_URL is kept as a fallback for operators who have it set
+# in their shell rc / systemd override file already.
+LLM_CONVERSATION_URL = os.getenv("TIMMY_CONVERSATION_URL", os.getenv("TIMMY_LLM_URL", "http://localhost:8081"))
+# L5 2026-05-14: TIMMY_MEMORY_URL is the canonical name (drops the
+# redundant "LLM" to match TIMMY_CONVERSATION_URL / TIMMY_VISION_URL).
+# Old TIMMY_MEMORY_LLM_URL kept as fallback.
+LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_URL", os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8083"))
 LLM_BRAIN_MODEL = os.getenv("TIMMY_BRAIN_MODEL", "qwen3.6")
 OLLAMA_URL = os.getenv("TIMMY_OLLAMA_URL", "http://localhost:11434")
 WEB_HOST = "0.0.0.0"
