@@ -132,7 +132,8 @@ class SpeakerIdentifier:
             return {}
         try:
             import json as _json
-            return {k.lower(): int(v) for k, v in _json.load(open(path)).items()}
+            with open(path) as f:
+                return {k.lower(): int(v) for k, v in _json.load(f).items()}
         except Exception as e:
             log.warning("Failed to read %s: %s; treating as empty", path.name, e)
             return {}

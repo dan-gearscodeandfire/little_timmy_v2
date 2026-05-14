@@ -145,9 +145,14 @@ class BehaviorSupervisor:
             self._last_people_time = time.time()
 
         if not had_people and self._people_visible:
-            # Someone appeared — look at them
-            log.info("[SUPERVISOR] Person appeared: %s → track", people)
-            await self._send_event("face_detected", pan=0, tilt=0)
+            # Someone appeared -- log only, do not push a face_detected
+            # event with hardcoded pan=0/tilt=0. Streamerpi's own YuNet
+            # tracking thread is the authoritative pan/tilt source and
+            # already calls behavior_machine.on_face_detected(pan, tilt)
+            # with real coords; piping fake 0,0 from here was wrong and
+            # could poison the face-lost-pan/tilt tracker on subsequent
+            # search. Audit fix 2026-05-14.
+            log.info("[SUPERVISOR] Person appeared: %s -> track", people)
             if not self._in_conversation:
                 await self._send_command("track", priority="high", timeout_ms=15000)
 
@@ -193,7 +198,11 @@ class BehaviorSupervisor:
                             timeout_ms: int = 0, params: dict = None):
         """Send a mode command to the Pi's behavioral state machine."""
         now = time.time()
-        if now - self._last_command_time < self._min_command_interval:
+        # Audit fix 2026-05-14: skip the rate-limiter for critical-priority
+        # commands. Startup wake (idle) and shutdown sleep are both critical
+        # and were being silently dropped if anything fired within 1s.
+        if (priority != "critical"
+                and now - self._last_command_time < self._min_command_interval):
             return  # throttle
 
         if not self._client:
