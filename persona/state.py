@@ -147,6 +147,23 @@ def _step(buf: deque, current: int) -> int:
     return current
 
 
+# Per-axis instrumentation log (Bundle C / supervisor_issues.md 2026-05-14 00:42).
+# Zero behavior change -- just captures every update() input + decision so we
+# can see why each axis's ratchet stays stuck. Tail with:
+#   tail -F ~/little_timmy/data/mood_debug.jsonl | jq .
+DEBUG_LOG_PATH = Path.home() / "little_timmy" / "data" / "mood_debug.jsonl"
+
+
+def _debug_log(record: dict) -> None:
+    """Append one JSON line to the mood-debug log. Best effort; never raises."""
+    try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except Exception as e:
+        log.debug("mood_debug log append failed: %s", e)
+
+
 def update(x_signal: float, y_signal: float) -> dict:
     """Feed one turn's signals; transition state if persistence+threshold met.
 
@@ -159,6 +176,8 @@ def update(x_signal: float, y_signal: float) -> dict:
         sy = _classify_sign(y_signal, s.y)
         s.x_signals.append(sx)
         s.y_signals.append(sy)
+        x_buf_after = list(s.x_signals)
+        y_buf_after = list(s.y_signals)
         s.x = _step(s.x_signals, s.x)
         s.y = _step(s.y_signals, s.y)
         s.last_update_ts = time.time()
@@ -172,11 +191,36 @@ def update(x_signal: float, y_signal: float) -> dict:
             s.y_signals.clear()
         _save(s)
         globals()["_state"] = s
+        moved_x = s.x - prev_x
+        moved_y = s.y - prev_y
+        # Per-axis ratchet instrumentation. Includes the hysteresis-aware
+        # classified signs and the persistence buffer contents so we can see
+        # whether the ratchet is stuck because (a) raw signals never cross
+        # the return threshold, (b) classification flips happen but the
+        # persistence buffer keeps getting mixed signs, or (c) something else.
+        _debug_log({
+            "ts": s.last_update_ts,
+            "raw_x": float(x_signal),
+            "raw_y": float(y_signal),
+            "classified_sx": sx,
+            "classified_sy": sy,
+            "x_buf_after": x_buf_after,
+            "y_buf_after": y_buf_after,
+            "prev_x": prev_x,
+            "prev_y": prev_y,
+            "new_x": s.x,
+            "new_y": s.y,
+            "moved_x": moved_x,
+            "moved_y": moved_y,
+            "move_thresh": MOVE_THRESH,
+            "return_thresh": RETURN_THRESH,
+            "persistence": PERSISTENCE,
+        })
         return {
             "x": s.x,
             "y": s.y,
-            "moved_x": s.x - prev_x,
-            "moved_y": s.y - prev_y,
+            "moved_x": moved_x,
+            "moved_y": moved_y,
             "x_signal": x_signal,
             "y_signal": y_signal,
         }
