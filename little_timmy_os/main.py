@@ -1853,6 +1853,13 @@ const FACE_PIPELINE_LAYERS = {
   motors:    { detail: 'pan/tilt actuation (audio/jaw unaffected)' },
 };
 const facePipelineState = { detection: null, tracking: null, motors: null };
+// Detection-layer wedge signal: streamerpi /face_pipeline/status now
+// returns detection_alive (data-age honest) + data_age_s. When detection
+// is enabled but data is stale, the card flips to amber + WEDGED label
+// so the operator doesn't trust a frozen pipeline (2026-05-12 incident:
+// 2 h stale while the old detection_alive lied True).
+let detectionAlive = null;
+let detectionDataAgeS = null;
 const facePipelineBusy  = { detection: false, tracking: false, motors: false };
 
 async function pollFaceTracking() {  // kept the function name so existing setInterval still wires up
@@ -1862,6 +1869,8 @@ async function pollFaceTracking() {  // kept the function name so existing setIn
     facePipelineState.detection = !!data.detection_enabled;
     facePipelineState.tracking  = !!data.tracking_enabled;
     facePipelineState.motors    = !!data.motors_enabled;
+    detectionAlive     = (typeof data.detection_alive === 'boolean') ? data.detection_alive : null;
+    detectionDataAgeS  = (typeof data.data_age_s === 'number') ? data.data_age_s : null;
     for (const layer of Object.keys(FACE_PIPELINE_LAYERS)) updateFacePipelineUI(layer);
   } catch(e) {}
 }
@@ -1873,12 +1882,23 @@ function updateFacePipelineUI(layer) {
   const toggle  = document.querySelector('#' + layer + '-toggle input');
   const tlabel  = document.getElementById(layer + '-toggle');
   const detail  = document.getElementById(layer + '-detail');
-  if (card)   card.style.borderLeftColor = enabled ? '#3fb950' : '#484f58';
+  // Wedge state only applies to the detection layer (the only one whose
+  // health we can verify by data-age on streamerpi). enabled+alive=false
+  // means the YuNet thread is up but the inference loop has stopped
+  // publishing -- exactly the failure mode that hid for 2 h on 2026-05-12.
+  const wedged = (layer === 'detection') && enabled && (detectionAlive === false);
+  if (card)   card.style.borderLeftColor = wedged ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
   if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
   if (detail) {
     if (busy)                  detail.textContent = 'Toggling...';
     else if (enabled === null) detail.textContent = 'Checking...';
+    else if (wedged) {
+      const ageStr = (typeof detectionDataAgeS === 'number')
+        ? `${detectionDataAgeS.toFixed(1)}s stale`
+        : 'no data';
+      detail.textContent = `WEDGED -- ${ageStr} (motor service may need restart)`;
+    }
     else if (enabled)          detail.textContent = FACE_PIPELINE_LAYERS[layer].detail;
     else                       detail.textContent = 'Disabled';
   }
