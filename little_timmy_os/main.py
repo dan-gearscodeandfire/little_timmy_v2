@@ -1087,7 +1087,7 @@ header .uptime {
         </div>
       </div>
       <div style="margin-top:10px; padding-top:8px; border-top:1px solid #21262d;">
-        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Recent transitions <span style="color:#484f58; text-transform:none; letter-spacing:0;">(client-observed; cause-tagging pending streamerpi follow-up)</span></div>
+        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Recent transitions <span style="color:#484f58; text-transform:none; letter-spacing:0;">(server-published with cause attribution)</span></div>
         <div id="behavior-transitions" style="font-size:11px; color:#8b949e; font-family:monospace; max-height:90px; overflow-y:auto;">
           <span style="color:#484f58; font-style:italic;">no transitions observed yet</span>
         </div>
@@ -1895,39 +1895,33 @@ async function pollBehavior() {
         ' | Faces lost: ' + b.stats.faces_lost;
     }
 
-    // Bundle A 00:51: client-side recent-transitions tracker. We don't yet
-    // have streamerpi publishing trigger reasons (deferred follow-up), so
-    // for now we just observe mode changes via the poll and render the
-    // last few with timestamps. When the backend gains cause-tagging, the
-    // detail string can be extended to include "(why: ...)".
-    if (typeof _behaviorTransitions === "undefined") {
-      window._behaviorTransitions = [];
-      window._behaviorLastMode = null;
-    }
-    if (window._behaviorLastMode == null) {
-      window._behaviorLastMode = b.mode;
-    } else if (b.mode !== window._behaviorLastMode) {
-      const ts = new Date();
-      const hh = String(ts.getHours()).padStart(2,"0");
-      const mm = String(ts.getMinutes()).padStart(2,"0");
-      const ss = String(ts.getSeconds()).padStart(2,"0");
-      window._behaviorTransitions.unshift({
-        time: hh + ":" + mm + ":" + ss,
-        from: window._behaviorLastMode,
-        to: b.mode,
-      });
-      while (window._behaviorTransitions.length > 5) window._behaviorTransitions.pop();
-      window._behaviorLastMode = b.mode;
+    // Bundle A 00:51 follow-up: render server-side recent_transitions
+    // from streamerpi (one entry per actual flip, with WHY tag). Replaces
+    // the earlier client-side poll-based observer; that one had no cause
+    // attribution and could miss flips that landed between poll ticks.
+    if (Array.isArray(b.recent_transitions)) {
       const trEl = document.getElementById("behavior-transitions");
       if (trEl) {
-        trEl.innerHTML = window._behaviorTransitions.map(t =>
-          '<div>' +
-            '<span style="color:#484f58;">' + t.time + '</span> ' +
-            '<span>' + t.from.toUpperCase() + '</span>' +
-            ' <span style="color:#bc8cff;">&rarr;</span> ' +
-            '<span style="color:#3fb950;">' + t.to.toUpperCase() + '</span>' +
-          '</div>'
-        ).join("");
+        if (b.recent_transitions.length === 0) {
+          trEl.innerHTML = '<span style="color:#484f58; font-style:italic;">no transitions observed yet</span>';
+        } else {
+          // Server returns oldest-first; reverse for newest-on-top display.
+          const ordered = b.recent_transitions.slice().reverse();
+          trEl.innerHTML = ordered.map(t => {
+            const d = new Date(t.ts * 1000);
+            const hh = String(d.getHours()).padStart(2,"0");
+            const mm = String(d.getMinutes()).padStart(2,"0");
+            const ss = String(d.getSeconds()).padStart(2,"0");
+            const reason = (t.reason && t.reason.trim()) ? t.reason : "(no reason)";
+            return '<div>' +
+              '<span style="color:#484f58;">' + hh + ':' + mm + ':' + ss + '</span> ' +
+              '<span>' + String(t.from || '?').toUpperCase() + '</span>' +
+              ' <span style="color:#bc8cff;">&rarr;</span> ' +
+              '<span style="color:#3fb950;">' + String(t.to || '?').toUpperCase() + '</span>' +
+              ' <span style="color:#8b949e;">(why: ' + reason + ')</span>' +
+            '</div>';
+          }).join("");
+        }
       }
     }
   } catch(e) {}
