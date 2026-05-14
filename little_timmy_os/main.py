@@ -1072,15 +1072,24 @@ header .uptime {
   <div>
     <details class="panel" open>
       <summary><h2>Body Behavior</h2></summary>
+      <!-- Bundle A 00:51: BodyBehavior reformatted. Speaker badge + Face
+           label moved to the Who's-in-Room panel per Dan's 2026-05-14
+           00:51 ask. This panel now focuses on what the SKULL is doing,
+           with a recent-transitions log so operators can answer the
+           "why did it just flip track->scan" question at a glance.
+           Cause-attribution per transition is a follow-up: needs
+           streamerpi behavior.py to publish trigger reasons. -->
       <div id="behavior-panel" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
         <div id="behavior-mode" style="font-size:28px; font-weight:bold; color:#e94560;">--</div>
-        <div class="speaker-badge-wrap" title="Most recent user-turn speaker-ID — green = known voice-print, orange = transient unknown_N">
-          <div class="speaker-badge-label">Speaker</div>
-          <div id="speaker-badge" class="speaker-badge speaker-unknown">--</div>
-        </div>
         <div style="flex:1; min-width:150px;">
           <div id="behavior-info" style="font-size:11px; margin-bottom:4px;"></div>
           <div id="behavior-stats" style="font-size:10px; color:#484f58;"></div>
+        </div>
+      </div>
+      <div style="margin-top:10px; padding-top:8px; border-top:1px solid #21262d;">
+        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Recent transitions <span style="color:#484f58; text-transform:none; letter-spacing:0;">(client-observed; cause-tagging pending streamerpi follow-up)</span></div>
+        <div id="behavior-transitions" style="font-size:11px; color:#8b949e; font-family:monospace; max-height:90px; overflow-y:auto;">
+          <span style="color:#484f58; font-style:italic;">no transitions observed yet</span>
         </div>
       </div>
     </details>
@@ -1165,8 +1174,11 @@ header .uptime {
     </details>
   </div>
   <div>
+    <!-- Bundle A 00:37: Latency split. Current-turn metrics + last-turn
+         context live in their own card now; Rolling history is a sibling
+         panel below so they can be collapsed / scanned independently. -->
     <details class="panel" open>
-      <summary><h2>Latency</h2></summary>
+      <summary><h2>Latency (current turn)</h2></summary>
       <div id="metrics">
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
@@ -1176,21 +1188,26 @@ header .uptime {
         <div class="metric-row"><span class="label">End-to-end</span><span class="value" id="m-e2e">--</span></div>
         <div class="metric-row"><span class="label">Turns</span><span class="value" id="m-turns">--</span></div>
       </div>
-      <div style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
-        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
-          <span>Rolling history</span>
-          <button id="latency-clear-btn" type="button"
-                  title="Clear chart history"
-                  style="font-size:10px; padding:2px 8px; background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:3px; cursor:pointer;">
-            clear
-          </button>
-        </div>
-        <div style="position:relative; height:200px; max-width:360px;">
-          <canvas id="latency-chart"></canvas>
-        </div>
-        <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:6px 0;">
-          waiting for first turn…
-        </div>
+      <div id="latency-context" style="margin-top:10px; padding-top:8px; border-top:1px solid #21262d; font-size:11px; line-height:1.5;">
+        <div style="font-size:10px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Last token payload (the turn these numbers describe)</div>
+        <div><span style="color:#484f58;">user</span> <span id="latency-user-text" style="color:#c9d1d9;">(awaiting first turn)</span></div>
+        <div><span style="color:#484f58;">timmy</span> <span id="latency-asst-text" style="color:#bc8cff;">(awaiting first reply)</span></div>
+      </div>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Latency History</h2></summary>
+      <div style="display:flex; justify-content:flex-end; align-items:center; margin-bottom:4px;">
+        <button id="latency-clear-btn" type="button"
+                title="Clear chart history"
+                style="font-size:10px; padding:2px 8px; background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:3px; cursor:pointer;">
+          clear
+        </button>
+      </div>
+      <div style="position:relative; height:200px; max-width:360px;">
+        <canvas id="latency-chart"></canvas>
+      </div>
+      <div id="latency-chart-empty" style="color:#484f58; font-size:11px; font-style:italic; text-align:center; padding:6px 0;">
+        waiting for first turn…
       </div>
     </details>
     <details class="panel" open style="margin-top:16px">
@@ -1291,6 +1308,14 @@ header .uptime {
       </button>
     </div>
     <div id="payload-meta" style="font-size:11px; color:#8b949e; margin-bottom:8px;"></div>
+    <!-- Bundle A 00:39: header box showing Timmy's last assistant utterance.
+         Sourced from the in-page conversation state (the last role=assistant
+         turn rendered into #conversation), so it reflects the reply that
+         followed the captured payload. -->
+    <div style="background:#161b22; border:1px solid #bc8cff; border-radius:4px; padding:8px 10px; margin-bottom:12px;">
+      <div style="font-size:10px; color:#bc8cff; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">Last Timmy utterance</div>
+      <div id="payload-last-asst" style="font-size:13px; color:#e0e0e0; white-space:pre-wrap; word-wrap:break-word;">(no reply yet)</div>
+    </div>
     <div style="display:flex; flex-direction:column; gap:10px; overflow-y:auto;">
       <div>
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; margin-bottom:4px;">User text</div>
@@ -1434,11 +1459,28 @@ function addTurn(role, content, speaker) {
       badge.classList.add(speakerClass);
     }
   }
+  // Bundle A 00:43: assistant content goes through normalizeForDebug on
+  // operator surfaces so trolling-ellipses don't clutter the debug view.
+  // User text stays raw so we see exactly what was heard.
+  const renderedContent = (role === "assistant")
+    ? normalizeForDebug(content)
+    : content;
   div.innerHTML =
     '<div class="role ' + speakerClass + '">' + label + '</div>' +
-    '<div class="content">' + escapeHtml(content) + '</div>';
+    '<div class="content">' + escapeHtml(renderedContent) + '</div>';
   conv.appendChild(div);
   conv.scrollTop = conv.scrollHeight;
+
+  // Bundle A 00:37 / 00:39: keep the latency-context strip + payload-modal
+  // header in sync with the most recent turn content.
+  if (role === "user") {
+    const el = document.getElementById("latency-user-text");
+    if (el) el.textContent = content || "(empty)";
+  } else if (role === "assistant") {
+    _setLastAssistantTurn(renderedContent);
+    const el = document.getElementById("latency-asst-text");
+    if (el) el.textContent = renderedContent || "(empty)";
+  }
 }
 
 function escapeHtml(text) {
@@ -1446,6 +1488,27 @@ function escapeHtml(text) {
   d.textContent = text;
   return d.innerHTML;
 }
+
+// Bundle A 00:43: normalize trailing/embedded ellipses out of ASSISTANT text
+// for operator-debug surfaces only (conversation panel, payload modal,
+// last-turn-context strip). The model still emits whatever it likes to the
+// user-facing visitor.html + TTS path; this only collapses the rendering on
+// dashboards Dan reads for debugging. Distinct from suppressing the persona
+// behavior (which Dan said "was good, it was good" — funny + on-character).
+function normalizeForDebug(text) {
+  if (text == null) return "";
+  // Collapse Unicode ellipsis, ASCII triplet, and spaced variants into a
+  // single space (so words on either side don't fuse), then trim trailing.
+  return String(text)
+    .replace(/(\u2026|\.{3,}|\.\s\.\s\.)/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// Bundle A 00:39 prerequisite: track the most recent assistant utterance so
+// the payload-modal opener can surface it in the header box.
+let _lastAssistantTurn = "";
+function _setLastAssistantTurn(text) { _lastAssistantTurn = text || ""; }
 
 function updateMetricsFromWS(msg) {
   document.getElementById("m-stt").textContent = msg.stt_ms != null ? msg.stt_ms + "ms" : "--";
@@ -1819,23 +1882,52 @@ async function pollBehavior() {
 
     const elapsed = (b.elapsed_ms / 1000).toFixed(0);
     const timeout = b.timeout_ms > 0 ? ' / timeout ' + (b.timeout_ms / 1000).toFixed(0) + 's' : '';
-    const faceId = b.params && b.params.face_identity ? b.params.face_identity : null;
-    const faceLabel = b.face_visible
-      ? (faceId && faceId !== 'unknown'
-        ? ' | Face: <span style="color:#58a6ff;font-weight:bold">' + faceId.toUpperCase() + '</span>'
-        : ' | Face: YES')
-      : '';
-    const face = faceLabel;
+    // Bundle A 00:51: face label removed -- now lives in Who's-in-Room.
     const prev = b.previous_mode ? ' | Prev: ' + b.previous_mode : '';
     infoEl.innerHTML =
       '<span style="color:#8b949e">Elapsed: ' + elapsed + 's' + timeout + '</span>' +
-      '<span style="color:' + (b.face_visible ? '#3fb950' : '#484f58') + '">' + face + '</span>' +
       '<span style="color:#484f58">' + prev + '</span>';
 
     if (b.stats) {
       statsEl.textContent = 'Transitions: ' + b.stats.transitions +
         ' | Faces found: ' + b.stats.faces_found +
         ' | Faces lost: ' + b.stats.faces_lost;
+    }
+
+    // Bundle A 00:51: client-side recent-transitions tracker. We don't yet
+    // have streamerpi publishing trigger reasons (deferred follow-up), so
+    // for now we just observe mode changes via the poll and render the
+    // last few with timestamps. When the backend gains cause-tagging, the
+    // detail string can be extended to include "(why: ...)".
+    if (typeof _behaviorTransitions === "undefined") {
+      window._behaviorTransitions = [];
+      window._behaviorLastMode = null;
+    }
+    if (window._behaviorLastMode == null) {
+      window._behaviorLastMode = b.mode;
+    } else if (b.mode !== window._behaviorLastMode) {
+      const ts = new Date();
+      const hh = String(ts.getHours()).padStart(2,"0");
+      const mm = String(ts.getMinutes()).padStart(2,"0");
+      const ss = String(ts.getSeconds()).padStart(2,"0");
+      window._behaviorTransitions.unshift({
+        time: hh + ":" + mm + ":" + ss,
+        from: window._behaviorLastMode,
+        to: b.mode,
+      });
+      while (window._behaviorTransitions.length > 5) window._behaviorTransitions.pop();
+      window._behaviorLastMode = b.mode;
+      const trEl = document.getElementById("behavior-transitions");
+      if (trEl) {
+        trEl.innerHTML = window._behaviorTransitions.map(t =>
+          '<div>' +
+            '<span style="color:#484f58;">' + t.time + '</span> ' +
+            '<span>' + t.from.toUpperCase() + '</span>' +
+            ' <span style="color:#bc8cff;">&rarr;</span> ' +
+            '<span style="color:#3fb950;">' + t.to.toUpperCase() + '</span>' +
+          '</div>'
+        ).join("");
+      }
     }
   } catch(e) {}
 }
@@ -2245,6 +2337,11 @@ async function showLastPayload() {
   document.getElementById("payload-user").textContent = "";
   document.getElementById("payload-ephemeral").textContent = "";
   document.getElementById("payload-messages").textContent = "";
+  // Bundle A 00:39: render the most recent assistant utterance in the new
+  // header box so the operator can see WHAT Timmy said before scrolling
+  // into the input payload that produced it.
+  const lastAsstEl = document.getElementById("payload-last-asst");
+  if (lastAsstEl) lastAsstEl.textContent = _lastAssistantTurn || "(no reply yet)";
   payloadModal.style.display = "flex";
   try {
     const r = await fetch("/api/timmy/last_payload");
@@ -2389,6 +2486,13 @@ async function pollPresence() {
       const m = Math.floor((s % 3600) / 60);
       return m ? (h + 'h' + String(m).padStart(2, '0') + 'm') : (h + 'h');
     };
+    // Bundle A 00:49: per-person face-ID + voice-print sub-rows. The
+    // backend already returns last_seen_face_age_s and last_seen_voice_age_s
+    // separately on each presence entry; previously the render collapsed
+    // them into one fused timestamp (face preferred, voice as fallback),
+    // which hid which modality was actually grounding the belief. Two
+    // sub-rows make degraded-audio sessions (face fresh, voice drifting
+    // stale) instantly visible.
     const rows = data.present.filter(p => {
       const n = (p.name || '').toLowerCase();
       return n && !n.startsWith('unknown');
@@ -2396,21 +2500,39 @@ async function pollPresence() {
       const name = (p.name || '').replace(/^\w/, c => c.toUpperCase());
       const onCam = p.on_camera_now;
       const dot = onCam ? '●' : '○';
-      const colour = onCam ? '#3fb950' : '#8b949e';
+      const dotColour = onCam ? '#3fb950' : '#8b949e';
       const opacity = onCam ? '1' : '0.65';
-      const ageBits = [];
-      if (p.last_seen_face_age_s != null) ageBits.push('seen ' + fmtAge(p.last_seen_face_age_s) + ' ago');
-      else if (p.last_seen_voice_age_s != null) ageBits.push('heard ' + fmtAge(p.last_seen_voice_age_s) + ' ago');
       let poseStr = '';
       if (p.last_pose && p.last_pose.pan != null) {
-        poseStr = ' · pan ' + Math.round(p.last_pose.pan) + '° / tilt ' + Math.round(p.last_pose.tilt) + '°';
+        poseStr = ' pan ' + Math.round(p.last_pose.pan) + '° / tilt ' + Math.round(p.last_pose.tilt) + '°';
       }
-      const detail = onCam ? 'on camera' : ageBits.join(', ');
-      return '<div style="opacity:' + opacity + '; padding:3px 0;">'
-           + '<span style="color:' + colour + '; margin-right:6px;">' + dot + '</span>'
-           + '<strong>' + name + '</strong>'
-           + ' <span style="color:#8b949e;">' + detail + poseStr + '</span>'
-           + '</div>';
+      // Sub-row colour: green if signal fresh (<60s), amber if drifting
+      // (60s-5m), grey if cold (>5m or never).
+      const ageColour = (age) => {
+        if (age == null) return '#484f58';
+        if (age < 60) return '#3fb950';
+        if (age < 300) return '#d29922';
+        return '#8b949e';
+      };
+      const faceAge = p.last_seen_face_age_s;
+      const voiceAge = p.last_seen_voice_age_s;
+      const faceLabel = (faceAge != null) ? (onCam ? 'on camera' : ('seen ' + fmtAge(faceAge) + ' ago')) : 'never';
+      const voiceLabel = (voiceAge != null) ? ('heard ' + fmtAge(voiceAge) + ' ago') : 'never';
+      return ''
+        + '<div style="opacity:' + opacity + '; padding:4px 0 4px 0; border-bottom:1px solid #161b22;">'
+          + '<div>'
+            + '<span style="color:' + dotColour + '; margin-right:6px;">' + dot + '</span>'
+            + '<strong>' + name + '</strong>'
+            + (poseStr ? '<span style="color:#484f58; font-size:10px; margin-left:8px;">' + poseStr + '</span>' : '')
+          + '</div>'
+          + '<div style="font-size:10px; padding-left:14px; line-height:1.5;">'
+            + '<span style="color:#484f58;">face</span> '
+            + '<span style="color:' + ageColour(faceAge) + ';">' + faceLabel + '</span>'
+            + '<span style="color:#484f58; margin:0 6px;">·</span>'
+            + '<span style="color:#484f58;">voice</span> '
+            + '<span style="color:' + ageColour(voiceAge) + ';">' + voiceLabel + '</span>'
+          + '</div>'
+        + '</div>';
     }).join('');
     panel.innerHTML = rows;
     meta.textContent = data.unknown_voices_recent ? ('Unknown voices recent: ' + data.unknown_voices_recent) : '';
