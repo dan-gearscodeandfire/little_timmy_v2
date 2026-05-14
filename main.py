@@ -261,7 +261,6 @@ class Orchestrator:
             return
         try:
             from presence.types import FacePrediction, FaceObservation
-            from presence.face_client import _embedding_hash
             preds = []
             for r in results:
                 name = r.get("name", "")
