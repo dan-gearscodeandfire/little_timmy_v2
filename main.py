@@ -25,7 +25,13 @@ from tts.engine import TTSEngine
 from llm.client import stream_conversation, set_reasoning_tap
 from llm.prompt_builder import build_ephemeral_block, build_messages
 from memory.retrieval import retrieve
-from memory.facts import get_all_facts_for_prompt, resolve_entity
+from memory.facts import get_all_facts_for_prompt, get_facts_about_speaker, resolve_entity
+
+
+async def _empty_facts():
+    """Awaitable that resolves to an empty fact list; used when there are no
+    non-speaker 'my X' subjects to query so asyncio.gather still has a slot."""
+    return []
 from memory.extraction import extract_and_store
 from feedback.detector import maybe_capture_feedback
 from speaker.voice_commands import detect_reenroll_intent
@@ -598,19 +604,35 @@ class Orchestrator:
         for i, w in enumerate(words):
             if w == "my" and i + 1 < len(words):
                 subjects.append(f"my {words[i+1]}")
-        subjects.append(speaker_name if speaker_name != "timmy" else "dan")
+        # Note: speaker's own facts are fetched via get_facts_about_speaker
+        # below (which aliases subject across {speaker_name, user, i, me}),
+        # so don't add the speaker to `subjects` here -- it would double-count.
+        speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
 
         gather_args = [
             retrieve(user_text, top_k=config.RETRIEVAL_TOP_K),
-            get_all_facts_for_prompt(subjects, limit=5),
+            get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty_facts(),
+            get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         ]
         if self._presence_enabled:
             gather_args.append(self._fetch_face_safe())
 
         gathered = await asyncio.gather(*gather_args)
         retrieved_memories = gathered[0]
-        resolved_facts = gathered[1]
-        face_obs = gathered[2] if len(gathered) > 2 else None
+        # gather_args[1] = non-speaker subjects ("my X" patterns)
+        # gather_args[2] = speaker's own facts via alias-aware retrieval
+        # Merge, dedupe by fact id, prefer fresher (speaker-side is already
+        # learned_at-ordered).
+        _non_speaker_facts = gathered[1]
+        _speaker_facts = gathered[2]
+        _seen_fact_ids = set()
+        resolved_facts = []
+        for _f in (*_speaker_facts, *_non_speaker_facts):
+            if _f.id in _seen_fact_ids:
+                continue
+            _seen_fact_ids.add(_f.id)
+            resolved_facts.append(_f)
+        face_obs = gathered[3] if len(gathered) > 3 else None
 
         # --- Presence: voice + face fusion ---
         fusion_source = None
