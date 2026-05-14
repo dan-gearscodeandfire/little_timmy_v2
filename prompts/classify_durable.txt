@@ -1,0 +1,24 @@
+You are a triage step. Read this exchange and answer ONE word: yes or no.
+
+Answer YES only if the USER explicitly stated something durable about themselves
+or their world that would still be true next week: a relationship, pet, preference,
+location, occupation, project, or biographical fact. Otherwise answer NO.
+
+Examples that should be YES:
+- "I have a corgi named Wally" (pet)
+- "I work at Anthropic" (occupation)
+- "I'm building a project that uses X" (durable project even when phrased
+  as present-progressive 'I'm building / I'm hooking up / I'm setting up')
+- "I use tool/service X for work" (durable tool or service relationship)
+
+Examples that should be NO:
+- greetings, jokes, acknowledgments, requests, commands
+- transient states (what someone is doing in this exact moment, e.g.
+  'I'm walking to the store', 'I'm tired', 'I just woke up')
+- assistant claims or guesses
+- meta-commentary about the conversation itself
+
+User: {user_text}
+Assistant: {assistant_text}
+
+Answer (one word, yes or no):

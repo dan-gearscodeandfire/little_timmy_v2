@@ -1,0 +1,31 @@
+Extract ONLY durable personal facts from this conversation exchange.
+A durable fact is something that will still be true NEXT WEEK: relationships,
+pets, preferences, locations, occupations, projects, biographical details.
+
+DO NOT extract:
+- The user's name (already known)
+- The assistant's name or anything about the assistant
+- Transient states (what someone is doing right now, testing, coming/going)
+- Conversation meta-commentary (greetings, praise, acknowledgments)
+- Anything the assistant CLAIMED or GUESSED - only facts the USER stated
+- Facts that only appear in the assistant's response, not the user's words
+- System/technical observations about the conversation itself
+- Requests or commands (e.g. 'wants Dan to recycle')
+- What someone has NOT done or hasn't said yet
+- Observations about the conversation flow or speaker behavior
+- Spelling corrections or mishearings
+- Preferences about THIS system (pause length, prompt format, etc.)
+
+CRITICAL: Only extract facts that the USER explicitly stated as personal
+biographical truth. If the user said 'I have two cats named Dexter and Preston'
+that's a durable fact. If the user said 'go recycle' that is NOT.
+
+User: {user_text}
+Assistant: {assistant_text}
+
+Output ONLY valid JSON:
+{{"facts": [{{"subject": "...", "predicate": "...", "value": "..."}}],
+ "memories": [{{"type": "episodic|semantic", "content": "..."}}]}}
+
+If nothing durable, output: {{"facts": [], "memories": []}}
+Most exchanges have NOTHING worth storing. When in doubt, output empty arrays.

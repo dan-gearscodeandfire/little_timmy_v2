@@ -22,27 +22,15 @@ log = logging.getLogger(__name__)
 _extraction_running = False
 
 
-_CLASSIFIER_PROMPT = (
-    "You are a triage step. Read this exchange and answer ONE word: yes or no.\n\n"
-    "Answer YES only if the USER explicitly stated something durable about themselves\n"
-    "or their world that would still be true next week: a relationship, pet, preference,\n"
-    "location, occupation, project, or biographical fact. Otherwise answer NO.\n\n"
-    "Examples that should be YES:\n"
-    "- \"I have a corgi named Wally\" (pet)\n"
-    "- \"I work at Anthropic\" (occupation)\n"
-    "- \"I'm building a project that uses X\" (durable project even when phrased\n"
-    "  as present-progressive 'I'm building / I'm hooking up / I'm setting up')\n"
-    "- \"I use tool/service X for work\" (durable tool or service relationship)\n\n"
-    "Examples that should be NO:\n"
-    "- greetings, jokes, acknowledgments, requests, commands\n"
-    "- transient states (what someone is doing in this exact moment, e.g.\n"
-    "  'I'm walking to the store', 'I'm tired', 'I just woke up')\n"
-    "- assistant claims or guesses\n"
-    "- meta-commentary about the conversation itself\n\n"
-    "User: {user_text}\n"
-    "Assistant: {assistant_text}\n\n"
-    "Answer (one word, yes or no):"
-)
+# L7 2026-05-14: prompts are externalized so they version-control cleanly
+# and can be tweaked without code edits. Lives in
+# ~/little_timmy/prompts/{classify_durable,extract_facts}.txt. Loaded once
+# at module import; if a file is missing or unreadable LT fails loudly at
+# startup rather than silently misbehaving on the first turn.
+from pathlib import Path as _Path
+_PROMPTS_DIR = _Path(__file__).resolve().parent.parent / "prompts"
+_CLASSIFIER_PROMPT = (_PROMPTS_DIR / "classify_durable.txt").read_text(encoding="utf-8")
+_EXTRACTION_PROMPT = (_PROMPTS_DIR / "extract_facts.txt").read_text(encoding="utf-8")
 
 
 _SELF_REFERENCE_SUBJECTS = frozenset({"user", "i", "me", "myself"})
@@ -119,34 +107,11 @@ async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | 
             return
         log.info("Memory classifier said yes - running full extraction")
 
-        # Pass 2: thinking-ON structured extraction
-        prompt = (
-            "Extract ONLY durable personal facts from this conversation exchange.\n"
-            "A durable fact is something that will still be true NEXT WEEK: relationships,\n"
-            "pets, preferences, locations, occupations, projects, biographical details.\n\n"
-            "DO NOT extract:\n"
-            "- The user's name (already known)\n"
-            "- The assistant's name or anything about the assistant\n"
-            "- Transient states (what someone is doing right now, testing, coming/going)\n"
-            "- Conversation meta-commentary (greetings, praise, acknowledgments)\n"
-            "- Anything the assistant CLAIMED or GUESSED - only facts the USER stated\n"
-            "- Facts that only appear in the assistant's response, not the user's words\n"
-            "- System/technical observations about the conversation itself\n"
-            "- Requests or commands (e.g. 'wants Dan to recycle')\n"
-            "- What someone has NOT done or hasn't said yet\n"
-            "- Observations about the conversation flow or speaker behavior\n"
-            "- Spelling corrections or mishearings\n"
-            "- Preferences about THIS system (pause length, prompt format, etc.)\n\n"
-            "CRITICAL: Only extract facts that the USER explicitly stated as personal\n"
-            "biographical truth. If the user said 'I have two cats named Dexter and Preston'\n"
-            "that's a durable fact. If the user said 'go recycle' that is NOT.\n\n"
-            f"User: {user_text}\n"
-            f"Assistant: {assistant_text}\n\n"
-            'Output ONLY valid JSON:\n'
-            '{"facts": [{"subject": "...", "predicate": "...", "value": "..."}],\n'
-            ' "memories": [{"type": "episodic|semantic", "content": "..."}]}\n\n'
-            "If nothing durable, output: {\"facts\": [], \"memories\": []}\n"
-            "Most exchanges have NOTHING worth storing. When in doubt, output empty arrays."
+        # Pass 2: thinking-ON structured extraction. Prompt loaded from
+        # prompts/extract_facts.txt at module import; formatted with the
+        # turn-specific user/assistant text here.
+        prompt = _EXTRACTION_PROMPT.format(
+            user_text=user_text, assistant_text=assistant_text,
         )
 
         result = await generate_memory(prompt, thinking=True)
