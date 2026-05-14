@@ -81,6 +81,9 @@ STREAMERPI_FACES_URL = os.getenv(
 STREAMERPI_FACE_ENROLL_URL = os.getenv(
     "TIMMY_FACE_ENROLL_URL", "https://192.168.1.110:8080/face_db/enroll"
 )
+STREAMERPI_EYE_LED_URL = os.getenv(
+    "TIMMY_EYE_LED_URL", "https://192.168.1.110:8080/esp32/write"
+)
 LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8083")
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
 VISION_MIN_CAPTURE_GAP = 3.0     # minimum seconds between any captures

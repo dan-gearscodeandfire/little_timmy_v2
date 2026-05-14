@@ -14,6 +14,7 @@ import httpx
 import numpy as np
 
 import config
+import eye_led
 import json as _json
 from pathlib import Path
 from db import migrate
@@ -381,6 +382,9 @@ class Orchestrator:
                 self.speaker_id_module.undo_last_observation(speaker_result.name)
             log.debug("Empty transcription, skipping")
             return
+
+        # Eye LED: signal thinking state — eye flashes during LLM processing
+        asyncio.create_task(eye_led.notify("THINKING"))
 
         # Store transcribed text on unknown speaker for name solicitation prompt
         if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
@@ -769,6 +773,7 @@ class Orchestrator:
                     if first_tts_time is None:
                         first_tts_time = time.time()
                         asyncio.create_task(self.supervisor.on_tts_start())
+                        asyncio.create_task(eye_led.notify("SPEAKING"))
                     await self.tts.speak(sentence)
 
         if sentence_buffer.strip():
@@ -778,6 +783,8 @@ class Orchestrator:
 
         # Notify supervisor that TTS is done
         asyncio.create_task(self.supervisor.on_tts_end())
+        # Eye LED: return to listening / normal pulsing state
+        asyncio.create_task(eye_led.notify("AI_CONNECTED"))
 
         llm_first_token_ms = int((first_token_time - t2) * 1000) if first_token_time else 0
         llm_total_ms = int((time.time() - t2) * 1000)
