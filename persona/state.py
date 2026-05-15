@@ -25,11 +25,23 @@ STATE_PATH = Path.home() / "little_timmy" / "data" / "mood_state.json"
 # Thresholds. A signal in (MOVE_THRESH, +inf) counts as "+", in (-inf, -MOVE_THRESH) as "-",
 # else neutral (no contribution to persistence).
 MOVE_THRESH = 0.20
-# Hysteresis: when at +1, signal needs to be < -RETURN_THRESH (wider) to start
-# moving back to 0. Same on the negative side.
-RETURN_THRESH = 0.40
+# Bundle C phase 2 (2026-05-14): RETURN_THRESH was 0.40 -- one-way ratchet
+# that prevented return-to-center because Y-axis raw signal rarely sustains
+# >0.40 for two turns in a row. Now matches MOVE_THRESH so both directions
+# are equally easy to cross. The "stickiness" the original asymmetry was
+# trying to provide is preserved by PERSISTENCE (still needs 2 same-sign
+# signals to step) and by the new DECAY_TURNS gate below.
+RETURN_THRESH = 0.20
 
 PERSISTENCE = 2  # consecutive same-sign signals required to step
+
+# Bundle C phase 2: decay-to-center for an axis stuck at an extreme. After
+# this many consecutive turns of neutral-classified signal (raw signal
+# inside +/-MOVE_THRESH) at +/-1, force one step toward 0 even without an
+# opposing-direction signal. Mitigates the case where the X-axis signal
+# generator (which is ternary {-1,0,+1}) just doesn't produce a -1 for a
+# long stretch -- the axis would otherwise stay at +1 forever.
+DECAY_TURNS = 8
 
 _AXES = ("x", "y")
 _VALID = (-1, 0, 1)
@@ -44,6 +56,12 @@ class MoodState:
     last_update_ts: float = 0.0
     last_x_signal: float = 0.0
     last_y_signal: float = 0.0
+    # Bundle C phase 2: per-axis idle-counters used by the decay-to-center
+    # mechanism. Increment when at extreme + classified signal is 0; reset
+    # on any actual step OR on any non-zero classified signal (a real signal
+    # in any direction means the axis isn't being silently abandoned).
+    x_idle_turns: int = 0
+    y_idle_turns: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +72,8 @@ class MoodState:
             "last_update_ts": self.last_update_ts,
             "last_x_signal": self.last_x_signal,
             "last_y_signal": self.last_y_signal,
+            "x_idle_turns": self.x_idle_turns,
+            "y_idle_turns": self.y_idle_turns,
         }
 
     @classmethod
@@ -64,6 +84,8 @@ class MoodState:
             last_update_ts=float(d.get("last_update_ts", 0.0)),
             last_x_signal=float(d.get("last_x_signal", 0.0)),
             last_y_signal=float(d.get("last_y_signal", 0.0)),
+            x_idle_turns=int(d.get("x_idle_turns", 0)),
+            y_idle_turns=int(d.get("y_idle_turns", 0)),
         )
         for v in d.get("x_signals", [])[-PERSISTENCE:]:
             s.x_signals.append(float(v))
@@ -180,6 +202,39 @@ def update(x_signal: float, y_signal: float) -> dict:
         y_buf_after = list(s.y_signals)
         s.x = _step(s.x_signals, s.x)
         s.y = _step(s.y_signals, s.y)
+
+        # Bundle C phase 2: decay-to-center. Track consecutive turns where
+        # the axis is at an extreme AND the classified signal contributes
+        # nothing (sx/sy = 0). If we hit DECAY_TURNS in a row, force one
+        # step toward 0 even with no opposing-direction signal. Resets on
+        # any actual step (handled below) OR on any non-zero classified
+        # signal (the axis is still receiving real input).
+        decay_x = False
+        decay_y = False
+        if s.x != prev_x:
+            s.x_idle_turns = 0
+        elif s.x != 0 and sx == 0:
+            s.x_idle_turns += 1
+            if s.x_idle_turns >= DECAY_TURNS:
+                s.x = s.x - 1 if s.x > 0 else s.x + 1  # one step toward 0
+                s.x_idle_turns = 0
+                s.x_signals.clear()
+                decay_x = True
+        else:
+            # axis didnt move but signal is non-zero -- real input, no decay
+            s.x_idle_turns = 0
+        if s.y != prev_y:
+            s.y_idle_turns = 0
+        elif s.y != 0 and sy == 0:
+            s.y_idle_turns += 1
+            if s.y_idle_turns >= DECAY_TURNS:
+                s.y = s.y - 1 if s.y > 0 else s.y + 1
+                s.y_idle_turns = 0
+                s.y_signals.clear()
+                decay_y = True
+        else:
+            s.y_idle_turns = 0
+
         s.last_update_ts = time.time()
         s.last_x_signal = float(x_signal)
         s.last_y_signal = float(y_signal)
@@ -212,9 +267,14 @@ def update(x_signal: float, y_signal: float) -> dict:
             "new_y": s.y,
             "moved_x": moved_x,
             "moved_y": moved_y,
+            "x_idle_turns": s.x_idle_turns,
+            "y_idle_turns": s.y_idle_turns,
+            "decay_x": decay_x,
+            "decay_y": decay_y,
             "move_thresh": MOVE_THRESH,
             "return_thresh": RETURN_THRESH,
             "persistence": PERSISTENCE,
+            "decay_turns": DECAY_TURNS,
         })
         return {
             "x": s.x,
