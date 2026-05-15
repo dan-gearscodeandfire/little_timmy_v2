@@ -42,9 +42,16 @@ def _synthesize_raw(text: str, model_path: str) -> tuple[np.ndarray, int]:
 class TTSEngine:
     def __init__(self, model_path: str):
         self.model_path = model_path
-        self._playback_queue: asyncio.Queue[tuple[np.ndarray, int] | None] = asyncio.Queue()
+        # Queue items are (audio, sample_rate, post_cooldown_s). real speak()
+        # calls use 0.5 s reverb-die-down; filler calls use 0.0 so the next
+        # real sentence plays back-to-back against the filler (no extra pause).
+        self._playback_queue: asyncio.Queue[tuple[np.ndarray, int, float] | None] = asyncio.Queue()
         self._capture = None  # set by orchestrator for TTS suppression
         self._playback_task: asyncio.Task | None = None
+        # Pre-rendered filler audio cache, keyed by text. Populated by
+        # prewarm_fillers() at startup; speak_filler() consults this before
+        # falling back to live Piper synthesis.
+        self._filler_cache: dict[str, tuple[np.ndarray, int]] = {}
 
     async def start(self):
         """Pre-load the model and start the playback loop."""
@@ -60,7 +67,37 @@ class TTSEngine:
             return
         audio, sr = await asyncio.to_thread(_synthesize_raw, text, self.model_path)
         if len(audio) > 0:
-            await self._playback_queue.put((audio, sr))
+            await self._playback_queue.put((audio, sr, 0.5))
+
+    async def prewarm_fillers(self, texts) -> None:
+        """Synthesize each filler once and stash in _filler_cache.
+
+        Run this at startup so the first conversational turn doesn't pay a
+        Piper-inference cost for the filler. ~10 calls * ~200 ms each on
+        boot; LT process is long-lived so it amortizes to zero across the
+        session.
+        """
+        for text in texts:
+            if text in self._filler_cache:
+                continue
+            audio, sr = await asyncio.to_thread(_synthesize_raw, text, self.model_path)
+            if len(audio) > 0:
+                self._filler_cache[text] = (audio, sr)
+        log.info("TTS filler cache prewarmed (%d entries)", len(self._filler_cache))
+
+    async def speak_filler(self, text: str) -> None:
+        """Queue a pre-rendered filler. Falls through to speak() on miss.
+
+        Queued with cooldown=0.0 so the next real sentence plays back-to-back
+        against the filler — the filler is meant to MASK the LLM warm-up gap,
+        not add an extra reverb pause after it.
+        """
+        cached = self._filler_cache.get(text)
+        if cached is None:
+            await self.speak(text)
+            return
+        audio, sr = cached
+        await self._playback_queue.put((audio, sr, 0.0))
 
     async def _playback_loop(self):
         """Continuously play queued raw PCM audio."""
@@ -79,13 +116,19 @@ class TTSEngine:
             if item is None:
                 break
             try:
-                audio, sr = item
+                # Tuple shape evolved 2026-05-14 to include per-item cooldown.
+                # Tolerate any stragglers still using the 2-tuple form.
+                if len(item) == 3:
+                    audio, sr, cooldown_s = item
+                else:
+                    audio, sr = item
+                    cooldown_s = 0.5
                 if self._capture:
                     self._capture.suppressed = True
                 await asyncio.to_thread(sd.play, audio, sr)
                 await asyncio.to_thread(sd.wait)
-                # Brief cooldown for room reverb to die down
-                await asyncio.sleep(0.5)
+                if cooldown_s > 0:
+                    await asyncio.sleep(cooldown_s)
                 if self._capture:
                     self._capture.suppressed = False
             except Exception as e:

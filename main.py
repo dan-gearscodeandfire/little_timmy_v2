@@ -22,6 +22,7 @@ from db.connection import get_pool, close_pool
 from audio.capture import AudioCapture
 from stt.client import transcribe
 from tts.engine import TTSEngine
+from audio import fillers as audio_fillers
 from llm.client import stream_conversation, set_reasoning_tap
 from llm.prompt_builder import build_ephemeral_block, build_messages
 from memory.retrieval import retrieve
@@ -806,6 +807,15 @@ class Orchestrator:
         # narration is still impossible.
         cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(user_text) else None
 
+        # Filler-word gate. 50% on non-curt prompts: queue a short
+        # pre-rendered filler ahead of the real reply so the user
+        # hears Timmy starting to speak immediately instead of waiting
+        # for first-sentence-ready (~190 ms median on Llama 3B). Plays
+        # via the same TTS playback loop so it queues naturally ahead
+        # of the first real sentence; cooldown=0 between them.
+        if audio_fillers.should_fire(user_text):
+            asyncio.create_task(self.tts.speak_filler(audio_fillers.pick()))
+
         async def _on_first_sentence():
             # Eye LED + supervisor side effects fire the moment the first
             # sentence is about to hit TTS. Both are fire-and-forget so they
@@ -1082,6 +1092,12 @@ async def main():
 
     # Start TTS engine
     await orch.tts.start()
+    # Fire-and-forget prewarm of the filler-word cache. ~10 calls to
+    # Piper at ~200 ms each, off the hot path. The first conversational
+    # turn might race the cache and fall through to live synthesis
+    # (still works; just slightly slower for that one filler).
+    import asyncio as _asyncio
+    _asyncio.create_task(orch.tts.prewarm_fillers(audio_fillers.FILLERS))
     log.info("TTS engine ready")
 
     # Start audio capture
