@@ -120,13 +120,13 @@ async def lt_ws_subscriber() -> None:
 
 
 async def streamerpi_poller() -> None:
-    """Poll streamerpi /faces (2Hz) and /behavior/status (1Hz)."""
+    """Poll streamerpi /faces (10Hz) and /behavior/status (1Hz)."""
     async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
         tick = 0
         while True:
             tick += 1
             t0 = time.time()
-            # /faces every tick (2Hz when interval=0.5)
+            # /faces every tick (10Hz at interval=0.1, M1 fix 2026-05-14 to cut visible bbox lag from ~700ms to ~300ms)
             try:
                 r = await client.get(f"{STREAMERPI}/faces")
                 if r.status_code == 200:
@@ -139,8 +139,8 @@ async def streamerpi_poller() -> None:
                 if _last_state["streamerpi_up"]:
                     log.warning("[streamerpi] /faces error: %s", e)
                 _last_state["streamerpi_up"] = False
-            # /behavior/status every other tick (1Hz)
-            if tick % 2 == 0:
+            # /behavior/status preserved at 1Hz across the M1 cadence bump
+            if tick % 10 == 0:
                 try:
                     r = await client.get(f"{STREAMERPI}/behavior/status")
                     if r.status_code == 200:
@@ -150,10 +150,10 @@ async def streamerpi_poller() -> None:
                             await broadcast("behavior", {"data": data})
                 except Exception:
                     pass
-            # /face_pipeline/status every 6 ticks (~3s) — three orthogonal
-            # flags change rarely, but we want the visitor badge to flip
-            # within a couple seconds of any operator toggle. (H1/H8-ext)
-            if tick % 6 == 0:
+            # /face_pipeline/status preserved at ~0.33Hz (~3s) across the M1 bump.
+            # Three orthogonal flags change rarely, but we want the visitor
+            # badge to flip within a couple seconds of any operator toggle.
+            if tick % 30 == 0:
                 try:
                     r = await client.get(f"{STREAMERPI}/face_pipeline/status")
                     if r.status_code == 200:
@@ -169,7 +169,9 @@ async def streamerpi_poller() -> None:
                 except Exception:
                     pass
             elapsed = time.time() - t0
-            await asyncio.sleep(max(0.0, 0.5 - elapsed))
+            # M1 2026-05-14: bumped from 0.5s -> 0.1s. /behavior + /face_pipeline
+            # modulos adjusted above so their effective rate is unchanged.
+            await asyncio.sleep(max(0.0, 0.1 - elapsed))
 
 
 def _strip_for_broadcast(key: str, data):
