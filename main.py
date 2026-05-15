@@ -901,6 +901,17 @@ class Orchestrator:
                  "timestamp": t.timestamp}
                 for t in self.conversation.hot_turns
             ],
+            # 2026-05-15: full LLM payload for LoRA tuning. messages is the
+            # exact list sent to llm-server (history + system + current user);
+            # hyperparameters carries the model URL + sampling config so a
+            # training pipeline can reproduce / replay the call.
+            "messages": list(messages),
+            "hyperparameters": {
+                "conversation_url": config.LLM_CONVERSATION_URL,
+                "temperature": config.CONVERSATION_TEMPERATURE,
+                "max_tokens": cap if cap else config.CONVERSATION_MAX_TOKENS,
+                "model_id_hint": "llama3.2-3b",
+            },
         }
         asyncio.create_task(
             maybe_capture_feedback(user_text, full_response, messages, speaker_name, ephemeral)
@@ -969,6 +980,16 @@ class Orchestrator:
             "system_prompt": ephemeral,
             "compliment": user_text,
             "response": response,
+            # 2026-05-15: full LLM payload for LoRA. messages is the exact
+            # input list the LLM saw; hyperparameters records temperature,
+            # max_tokens, model_id, URL for reproducibility.
+            "messages": list(messages),
+            "hyperparameters": {
+                "conversation_url": config.LLM_CONVERSATION_URL,
+                "temperature": config.CONVERSATION_TEMPERATURE,
+                "max_tokens": config.CONVERSATION_MAX_TOKENS,
+                "model_id_hint": "llama3.2-3b",
+            },
         }
 
         filename = log_dir / f"example_{int(time.time())}.json"

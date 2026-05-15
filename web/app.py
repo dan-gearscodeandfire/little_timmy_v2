@@ -216,6 +216,14 @@ async def manual_flag(payload: dict | None = None):
     }
     if kind == "good":
         persona_entry["compliment"] = reason
+        # 2026-05-15: positive feedback also saves the full LLM payload
+        # for LoRA tuning. Pulled from the snapshot the orchestrator wrote
+        # at finalize-time so it's still the exact prompt the LLM saw,
+        # even if hot_turns have rolled since.
+        if "messages" in snap:
+            persona_entry["messages"] = snap["messages"]
+        if "hyperparameters" in snap:
+            persona_entry["hyperparameters"] = snap["hyperparameters"]
     else:
         persona_entry["flag_reason"] = reason
     try:
