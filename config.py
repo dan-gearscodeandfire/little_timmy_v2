@@ -43,7 +43,8 @@ SILENCE_CHUNKS_INCOMPLETE = 25  # ~1.5s — wait longer if mid-sentence
 # --- Conversation ---
 HOT_MAX_TOKENS = 2500          # token budget for hot tier
 WARM_MAX_SUMMARIES = 3         # max warm summaries in prompt
-ROLLUP_AGE_SECONDS = 600       # 10 min — trigger rollup for old turns
+ROLLUP_AGE_SECONDS = 1800      # 30 min — trigger rollup for old turns (was 600; bumped for Qwen 3.6 KV-cache reuse)
+ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing rollup; prevents priority-gate starvation when conversation is active
 
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
@@ -51,7 +52,7 @@ RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
 
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
-CONVERSATION_TEMPERATURE = 0.7
+CONVERSATION_TEMPERATURE = 0.85  # bumped from 0.7 2026-05-15 to break the identical-back-to-back-reply pattern observed with the new Qwen 3.6 payload
 MEMORY_MAX_TOKENS = 3072  # bumped from 1024 for Qwen3.6 thinking=True (probed: 1436 tokens for a typical extraction; 3072 gives ~2x headroom)
 MEMORY_TEMPERATURE = 0.3
 

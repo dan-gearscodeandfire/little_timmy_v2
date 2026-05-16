@@ -141,6 +141,21 @@ SERVICES = {
         "start_cwd": "/home/gearscodeandfire/little_timmy",
         "description": "Voice assistant orchestrator",
     },
+    "booth_mockup": {
+        "name": "Booth Display (:8090)",
+        "port": 8090,
+        # TCP-only check: aiohttp serves over self-signed TLS, so a stock
+        # httpx /health probe would noisy-fail TLS verify. Port-open is
+        # the right semantic here — "is the display up for visitors".
+        "health_url": None,
+        "systemd": "booth-mockup.service",
+        "start_cmd": None,
+        "description": (
+            "Concept B visitor overlay, HTTPS on :8090. Serves the full-"
+            "bleed WebRTC feed from streamerpi with the live face-id "
+            "annotations. Off by default; flip on for booth demos."
+        ),
+    },
 }
 
 

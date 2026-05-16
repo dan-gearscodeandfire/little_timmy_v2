@@ -88,16 +88,21 @@ class TTSEngine:
     async def speak_filler(self, text: str) -> None:
         """Queue a pre-rendered filler. Falls through to speak() on miss.
 
-        Queued with cooldown=0.0 so the next real sentence plays back-to-back
-        against the filler — the filler is meant to MASK the LLM warm-up gap,
-        not add an extra reverb pause after it.
+        2026-05-15: cooldown bumped 0.0 → 0.4 s to cover the reverb tail of
+        the filler word. With cooldown=0.0, mic suppression released the
+        moment `sd.wait()` returned, but the speaker's reverb still hit the
+        mic ~50–200 ms later. Whisper then transcribed the echo as a user
+        turn (observed: phantom `[Dan]: Wow.` and `[Dan]: my name.` during
+        the 2026-05-15 session). 0.4 s is shorter than the main-speech
+        cooldown (0.5 s) so the back-to-back-with-main-TTS goal is mostly
+        preserved; LLM warm-up usually covers the small gap anyway.
         """
         cached = self._filler_cache.get(text)
         if cached is None:
             await self.speak(text)
             return
         audio, sr = cached
-        await self._playback_queue.put((audio, sr, 0.0))
+        await self._playback_queue.put((audio, sr, 0.4))
 
     async def _playback_loop(self):
         """Continuously play queued raw PCM audio."""

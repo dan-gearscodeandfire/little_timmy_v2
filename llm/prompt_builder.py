@@ -1,14 +1,21 @@
-"""Ephemeral system prompt assembly.
+"""Qwen-friendly prompt assembly.
 
-Prompt structure (for KV cache efficiency):
-  [conversation history]  <-- stable prefix, KV cached
-  [ephemeral system block] <-- rebuilt each turn (~300 tokens)
-  [user message]
-  [assistant]              <-- generation starts here
+Layout per turn:
+  [0] system    = static persona + protocol clause (KV-cached forever)
+  [1..M-1]      = history (synthetic summary user/assistant pair if any, then hot turns raw)
+  [M] user      = "[CONTEXT]\\n...\\n[/CONTEXT]\\n[UTTERANCE]\\n<speech>\\n[/UTTERANCE]"
 
-The ephemeral block is injected as a system message right before the user's
-current turn. This exploits LLM recency bias (instructions closer to
-generation = stronger adherence) while keeping history as a cacheable prefix.
+Only the tail at [M] changes per normal turn. The synthetic summary pair at [1]
+mutates only on rollup (~30min cadence). system[0] is stable across the session.
+
+History storage discipline: hot_turns persist ONLY raw utterances. The
+[CONTEXT]/[UTTERANCE] wrap is render-time decoration; record_turn() in
+conversation/manager asserts the wrapper never gets stored.
+
+Why this shape: Qwen 3.6's Jinja template positions system at chat-start.
+The prior ephemeral-system-at-tail pattern works on Llama 3 templates but
+gets reordered or fails on Qwen, killing KV cache reuse. See plan file
+the-current-conversational-engine-majestic-liskov.md for full rationale.
 """
 
 import logging
@@ -18,9 +25,20 @@ from memory.facts import Fact
 import config
 
 
-# Most-recent payload sent to the LLM. Updated on every build_messages call so
-# the dashboard can render an "inspect last prompt" view.
 _LAST_PAYLOAD: dict = {}
+
+
+PROTOCOL_CLAUSE = """
+Each user message you receive ends with two delimited sections.
+[CONTEXT]...[/CONTEXT] is out-of-band situational awareness from your
+sensors and memory. Treat it as YOUR OWN perception, not as something
+the user said. Never quote it back. Never acknowledge it as a message.
+[UTTERANCE]...[/UTTERANCE] is the actual speech from the human. Respond
+to the utterance, informed by the context.
+
+Inside [CONTEXT], the MOOD block describes your current emotional state -
+embody it, do not narrate it.
+""".strip()
 
 
 def get_last_payload() -> dict:
@@ -28,7 +46,6 @@ def get_last_payload() -> dict:
 
 
 def _format_relative_time(dt) -> str:
-    """Format a datetime as a human-readable relative time."""
     if dt is None:
         return "unknown time"
     now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
@@ -49,9 +66,7 @@ def _format_relative_time(dt) -> str:
         return dt.strftime("%B %d, %Y")
 
 
-
 def _fmt_age(age_s) -> str:
-    """Compact age formatter for presence annotations."""
     if age_s is None:
         return "?"
     if age_s < 60:
@@ -61,6 +76,15 @@ def _fmt_age(age_s) -> str:
     h = int(age_s / 3600)
     m = int((age_s % 3600) / 60)
     return f"{h}h{m:02d}m" if m else f"{h}h"
+
+
+def build_static_persona_system() -> str:
+    """Return the truly-static system[0] content: persona + protocol clause.
+
+    No clock, no mood, no per-turn signal. Stable across the session so
+    llama.cpp caches its tokens once and reuses forever. Mutates only on
+    persona edit (rare; restart-level event)."""
+    return config.PERSONA.strip() + "\n\n" + PROTOCOL_CLAUSE
 
 
 def build_ephemeral_block(
@@ -74,30 +98,38 @@ def build_ephemeral_block(
     fusion_source: str | None = None,
     face_hint_name: str | None = None,
 ) -> str:
-    """Build the ephemeral system context block."""
+    """Build the per-turn dynamic context block.
+
+    Goes inside [CONTEXT]...[/CONTEXT] in the wrapped user message via
+    wrap_user_message(). Returns the inner content only (no wrap).
+
+    Name kept as `build_ephemeral_block` to avoid touching main.py call sites;
+    semantically this is now the [CONTEXT] body. Persona and protocol clause
+    have moved into build_static_persona_system() -> system[0].
+    """
     if now is None:
         now = datetime.now()
 
-    parts = [config.PERSONA.strip()]
+    parts: list[str] = []
 
-    # Inject the active mood snippet (X/Y axis) — kept outside config.PERSONA
-    # so the prompt only carries the active cell of the 3x3 grid, not all 9.
+    # MOOD - active 3x3 cell only, embodied per the protocol clause in system[0]
     try:
         from persona import state as _mood_state
         from persona.render import render as _render_mood
-        parts.append("\n" + _render_mood(_mood_state.get()))
+        parts.append(_render_mood(_mood_state.get()))
     except Exception:
-        pass  # mood system optional; degrade gracefully
+        pass
 
-    parts.append(f"\nCurrent time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
+    # Minute granularity protects KV cache from second-by-second drift
+    # inside the (already-mutating) context block. Seconds would invalidate
+    # nothing extra in the new design since the block is part of the tail,
+    # but keeping minute resolution is friendly to any future caching of
+    # the block itself.
+    parts.append(f"Current time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
 
     if speaker_name and fusion_source == "face_hint" and face_hint_name:
-        # Only inject when speaker-ID is uncertain (voiceprint miss, face hint).
-        # The certain-match block was dropped 2026-05-06: redundant with
-        # GROUND TRUTH facts + WHO IS PRESENT + Dan-centric persona for the
-        # common case. Reintroduce if non-Dan speaker confusion shows up.
         parts.append(
-            f"\n[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
+            f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
             f"Face recognition strongly suggests this is {face_hint_name.title()} "
             f"(only visible person, head centered on them). "
             f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
@@ -125,41 +157,40 @@ def build_ephemeral_block(
                 present_lines.append(f"- {n_title} ({detail})")
         if present_lines:
             parts.append(
-                "\n[WHO IS PRESENT] People believed to be in the room "
+                "[WHO IS PRESENT] People believed to be in the room "
                 "(based on recent face recognition + voice). Use this for context "
-                "but do not infer who is speaking from this list:"
+                "but do not infer who is speaking from this list:\n"
+                + "\n".join(present_lines)
             )
-            parts.extend(present_lines)
 
     if facts:
-        parts.append(
-            "\nGROUND TRUTH \u2014 these facts are verified and must NEVER be contradicted. "
+        gt_lines = [
+            "GROUND TRUTH — these facts are verified and must NEVER be contradicted. "
             "If asked about any of these topics, use ONLY the information below:"
-        )
+        ]
         for f in facts:
-            parts.append(f"- {f.subject} {f.predicate} {f.value}")
+            gt_lines.append(f"- {f.subject} {f.predicate} {f.value}")
+        parts.append("\n".join(gt_lines))
 
     if memories:
-        parts.append("\nRelevant memories:")
+        mem_lines = ["Relevant memories:"]
         for m in memories:
             time_str = _format_relative_time(m.created_at)
-            # Truncate long memories
             content = m.content if len(m.content) <= 200 else m.content[:200] + "..."
-            parts.append(f"- ({time_str}) {content}")
+            mem_lines.append(f"- ({time_str}) {content}")
+        parts.append("\n".join(mem_lines))
 
     if vision_description:
         if visual_question:
-            # User asked a visual question — encourage answering with visual details
             parts.append(
-                "\n[WHAT YOU SEE]\n" + vision_description
+                "[WHAT YOU SEE]\n" + vision_description
                 + "\nThe user is asking about what you can see. "
                 + "Answer their question using the visual information above. "
                 + "Be specific and descriptive about what you observe."
             )
         else:
-            # Background awareness — don't volunteer visual details
             parts.append(
-                "\n[WHAT YOU SEE]\n" + vision_description
+                "[WHAT YOU SEE]\n" + vision_description
                 + "\nVISION RULES: This is background awareness. "
                 + "Do NOT describe what you see unless directly asked. "
                 + "Do NOT narrate the scene. Do NOT volunteer visual details. "
@@ -167,17 +198,30 @@ def build_ephemeral_block(
                 + "you CAN and SHOULD answer using this information."
             )
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
+
+
+def wrap_user_message(context_block: str, utterance: str) -> str:
+    """Render the per-turn context + raw speech as a single user message.
+
+    Pure render-time. The unwrapped utterance is what gets persisted to
+    hot_turns; record_turn() in conversation/manager asserts no wrap leaks in."""
+    return (
+        "[CONTEXT]\n"
+        + context_block
+        + "\n[/CONTEXT]\n"
+        + "[UTTERANCE]\n"
+        + utterance
+        + "\n[/UTTERANCE]"
+    )
 
 
 def _matches_current_user_turn(history_user_content: str, user_text: str) -> bool:
-    """True if the trailing user-turn content in history matches the current
-    user_text, tolerating the `[Name]: ` speaker prefix that
-    `ConversationManager.build_history_messages` prepends for speaker'd
-    turns. Bare-equals path covers the no-speaker case (e.g. text input)."""
+    """True if a trailing user-turn in history is the same speech as user_text,
+    tolerating the `[Name]: ` speaker prefix from
+    conversation/manager.build_history_messages."""
     if history_user_content == user_text:
         return True
-    # Speaker-prefixed shape: `[Dan]: hey timmy` → trailing part after `]: `
     if history_user_content.startswith("[") and "]: " in history_user_content:
         _, _, tail = history_user_content.partition("]: ")
         if tail == user_text:
@@ -186,10 +230,6 @@ def _matches_current_user_turn(history_user_content: str, user_text: str) -> boo
 
 
 def _warn_on_duplicate_adjacent_user_messages(messages: list[dict]) -> None:
-    """Loud-log if assembly produced two adjacent `user` messages with
-    identical raw content. The original regression went undetected for
-    days because the dup was structural-but-silent; this guard turns the
-    next regression into a visible WARNING in the LT log."""
     for i in range(1, len(messages)):
         prev, cur = messages[i - 1], messages[i]
         if (
@@ -204,7 +244,7 @@ def _warn_on_duplicate_adjacent_user_messages(messages: list[dict]) -> None:
                 "positions %d, %d (content=%r) — dedup may have regressed",
                 i - 1, i, (prev.get("content") or "")[:80],
             )
-            break  # one warning per call is enough
+            break
 
 
 def build_messages(
@@ -212,44 +252,37 @@ def build_messages(
     ephemeral_block: str,
     user_text: str,
 ) -> list[dict]:
-    """Assemble the full message list for the LLM.
+    """Assemble the full Qwen-friendly message list.
 
-    Order: [history prefix] [ephemeral system] [current user turn]
+    Layout:
+      [0] system   = static persona + protocol clause
+      [1..M-1]    = history (synthetic summary pair if any, then hot turns raw)
+      [M]   user   = [CONTEXT]<ephemeral_block>[/CONTEXT][UTTERANCE]<user_text>[/UTTERANCE]
+
+    `ephemeral_block` is kept as the parameter name for backward call-site
+    compat; semantically it's the context block (build_ephemeral_block output).
     """
-    messages = list(history)  # copy -- this is the KV-cached prefix
+    messages: list[dict] = [
+        {"role": "system", "content": build_static_persona_system()}
+    ]
 
-    # Both call paths into _generate_response (voice in main.py:~215, text in
-    # process_text_input) call conversation.add_user_turn(user_text) *before*
-    # _generate_response runs. So by the time history is built here, the
-    # current user turn is already at the tail of hot_turns. Without this
-    # strip, build_messages then appends user_text AGAIN below, producing:
-    #   [..., user_n, system_ephemeral, user_n]
-    # i.e. the user message duplicated with the system block sandwiched
-    # between, which wastes tokens every turn and confuses Llama 3B's chat
-    # template (two consecutive user turns separated by system).
-    # Detected 2026-05-06 via the new /api/last_payload modal — first time
-    # the full messages array was inspectable.
-    #
-    # 2026-05-12 regression note: the dedup originally checked
-    #   messages[-1].content == user_text
-    # but `conversation/manager.py:build_history_messages` rewrites user-turn
-    # content as `f"[{speaker.title()}]: {content}"` when a speaker is set
-    # (which is *always* on the voice path). So the equality check fell
-    # through silently and duplication came back. The fixed check tolerates
-    # the speaker prefix.
+    history_copy = list(history)
+    # hot_turns already contains the just-added user turn (add_user_turn runs
+    # before _generate_response in main.py), so the history tail will be a
+    # user message matching user_text. Strip it so we don't append a duplicate
+    # when we add the wrapped version below. Speaker-prefix tolerant.
     if (
-        messages
-        and messages[-1].get("role") == "user"
-        and _matches_current_user_turn(messages[-1].get("content", ""), user_text)
+        history_copy
+        and history_copy[-1].get("role") == "user"
+        and _matches_current_user_turn(history_copy[-1].get("content", ""), user_text)
     ):
-        messages = messages[:-1]
+        history_copy = history_copy[:-1]
 
-    messages.append({"role": "system", "content": ephemeral_block})
-    messages.append({"role": "user", "content": user_text})
+    messages.extend(history_copy)
+    messages.append(
+        {"role": "user", "content": wrap_user_message(ephemeral_block, user_text)}
+    )
 
-    # Permanent guard: if two adjacent `user` messages with identical raw
-    # content slipped through, log loudly so the next regression isn't
-    # silent. The earlier silent regression went undetected for ~6 days.
     _warn_on_duplicate_adjacent_user_messages(messages)
 
     mood_dict = None
@@ -262,15 +295,12 @@ def build_messages(
     except Exception:
         pass
 
-    # history_turn_count reports the actual prefix attached to this payload
-    # (post-strip), not the raw input length, so dashboards reflect what the
-    # LLM saw. `len(messages) - 2` peels off the trailing system + user pair.
     global _LAST_PAYLOAD
     _LAST_PAYLOAD = {
         "timestamp": datetime.now().isoformat(),
         "user_text": user_text,
         "ephemeral_block": ephemeral_block,
-        "history_turn_count": max(0, len(messages) - 2),
+        "history_turn_count": max(0, len(messages) - 2),  # peel system[0] + wrapped tail
         "messages": messages,
         "mood": mood_dict,
     }

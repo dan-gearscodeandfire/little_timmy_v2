@@ -13,11 +13,7 @@ import random
 # sardonic-set extras like "Yeah, no" / "Riiight" deferred to a later pass
 # so the first version doesn't front-load too much attitude.
 FILLERS: tuple[str, ...] = (
-    "Hmm.",
     "Eh.",
-    "Mm.",
-    "Tch.",
-    "Pft.",
     "Heh.",
     "Huh.",
     "Right.",

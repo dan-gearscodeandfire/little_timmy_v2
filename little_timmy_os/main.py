@@ -1354,7 +1354,7 @@ header .uptime {
 </div>
 
 <script>
-const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "conversation_llm", "whisper", "little_timmy"];
+const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "conversation_llm", "whisper", "little_timmy", "booth_mockup"];
 let serviceState = {};
 let busyServices = new Set();
 let modelSwitching = false;
@@ -1687,7 +1687,7 @@ function renderServices() {
     if (!svc) return "";
     const connected = svc.status === "connected";
     const busy = busyServices.has(sid);
-    const port = svc.id === "conversation_llm" ? 8081 : getPort(sid);
+    const port = svc.port || getPort(sid);
     return '<div class="service-card ' + (connected ? 'connected' : 'disconnected') + '">' +
       '<div class="service-info">' +
         '<div class="service-name">' + svc.name + '</div>' +

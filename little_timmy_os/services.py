@@ -51,12 +51,27 @@ async def check_health(svc_id: str) -> dict:
     svc = config.SERVICES[svc_id]
     result = {"id": svc_id, "name": svc["name"], "status": "unknown", "detail": ""}
 
+    health_url = svc.get("health_url")
+    port_for_display = svc.get("port")
+
     if svc_id == "conversation_llm":
         model = config.CONVERSATION_MODELS.get(config.current_conversation_model, {})
         result["model"] = config.current_conversation_model
         result["model_name"] = model.get("name", "Unknown")
+        # Shared-model entries (external_url) route the conversation tier
+        # to an already-running server (e.g. Qwen3.6 brain @ :8083) instead
+        # of spawning a duplicate on :8081. Override the static probe so the
+        # dashboard reflects the real backing port + reachability.
+        if model.get("external_url"):
+            from urllib.parse import urlparse
+            ext = model["external_url"].rstrip("/")
+            health_url = ext + "/health"
+            try:
+                port_for_display = urlparse(ext).port or port_for_display
+            except Exception:
+                pass
 
-    health_url = svc.get("health_url")
+    result["port"] = port_for_display
 
     if health_url:
         try:

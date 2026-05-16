@@ -127,6 +127,23 @@ def _looks_like_narration(buf: str) -> bool:
     return any(head.startswith(p) for p in _NARRATION_PREFIXES)
 
 
+def _trim_at_nth_terminator(s: str, n: int) -> str:
+    """Return prefix of `s` up to and including the nth `.!?` occurrence.
+    Returns the full string unchanged if there are fewer than n terminators,
+    or empty string if n<=0. Used by filtered_assistant_stream to truncate
+    cleanly at the cap-th sentence boundary instead of yielding the entire
+    cap-crossing token and leaking the start of sentence N+1 downstream."""
+    if n <= 0:
+        return ""
+    seen = 0
+    for i, ch in enumerate(s):
+        if ch in ".!?":
+            seen += 1
+            if seen == n:
+                return s[: i + 1]
+    return s
+
+
 async def filtered_assistant_stream(token_iter, max_sentences: int | None = None):
     """Post-filter the conversation-tier token stream before TTS sees it.
 
@@ -175,20 +192,38 @@ async def filtered_assistant_stream(token_iter, max_sentences: int | None = None
                 continue
             # Safe prefix — flush the buffer in one chunk and resume
             # streaming. Sentence counting catches up on the buffered text.
-            sentence_count += sum(1 for ch in buffered if ch in ".!?")
+            # 2026-05-15: if the buffer already crosses the cap, trim it at
+            # the cap-th terminator so we don't leak the start of sentence
+            # N+1 into TTS / hot_turns. Previously the entire buffered
+            # prefix was yielded and the leaked partial got picked up by
+            # the end-of-stream flush in _stream_to_tts, producing audible
+            # mid-sentence cutoffs (e.g. "Fine. Dexter and Preston. I'll").
+            buf_terminators = sum(1 for ch in buffered if ch in ".!?")
+            if sentence_count + buf_terminators >= cap:
+                trimmed = _trim_at_nth_terminator(buffered, cap - sentence_count)
+                yield trimmed
+                log.info("[POST-FILTER] capped reply at %d sentences (trimmed in narration-flush; dropped %d chars)",
+                         cap, len(buffered) - len(trimmed))
+                sentence_count = cap
+                buffered = ""
+                drained = True
+                continue
+            sentence_count += buf_terminators
             yield buffered
             buffered = ""
-            if sentence_count >= cap:
-                log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
-                         cap, len(accum))
-                drained = True
             continue
-        sentence_count += sum(1 for ch in token if ch in ".!?")
-        yield token
-        if sentence_count >= cap:
-            log.info("[POST-FILTER] capped reply at %d sentences (%d chars)",
-                     cap, len(accum))
+        # Token branch: same trim-at-cap discipline as the narration flush.
+        tok_terminators = sum(1 for ch in token if ch in ".!?")
+        if sentence_count + tok_terminators >= cap:
+            trimmed = _trim_at_nth_terminator(token, cap - sentence_count)
+            yield trimmed
+            log.info("[POST-FILTER] capped reply at %d sentences (trimmed mid-token; dropped %d chars)",
+                     cap, len(token) - len(trimmed))
+            sentence_count = cap
             drained = True
+            continue
+        sentence_count += tok_terminators
+        yield token
     # End-of-stream flush: a reply shorter than the prefix-check window
     # never triggered the narration check. Every entry in _NARRATION_PREFIXES
     # is <30 chars, so a reply that is exactly "the room is" (15 chars) and
@@ -200,12 +235,16 @@ async def filtered_assistant_stream(token_iter, max_sentences: int | None = None
             log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
             yield _REPLY_VETO_FALLBACK
         else:
-            terminator_positions = [i for i, ch in enumerate(buffered) if ch in ".!?"]
-            if len(terminator_positions) > cap:
-                cutoff = terminator_positions[cap - 1] + 1
-                log.info("[POST-FILTER] capped short reply at %d sentences (%d chars)",
-                         cap, cutoff)
-                buffered = buffered[:cutoff]
+            # Trim to the cap-th terminator if the buffer has ≥cap terminators
+            # AND any trailing content after the cap-th. Catches both
+            # "A. B. C." (3 terminators, cap=2) and "A. B. C" (2 terminators
+            # + partial third sentence) — both previously fell through as
+            # incomplete-trailing-sentence cutoffs.
+            trimmed = _trim_at_nth_terminator(buffered, cap)
+            if 0 < len(trimmed) < len(buffered):
+                log.info("[POST-FILTER] capped short reply at %d sentences (dropped %d chars)",
+                         cap, len(buffered) - len(trimmed))
+                buffered = trimmed
             yield buffered
 
 
