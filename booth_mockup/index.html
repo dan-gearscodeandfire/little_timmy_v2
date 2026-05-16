@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Little Timmy — Visitor Overlay (Concept B)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=Inter:wght@200;300;400&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bone: 248, 244, 234;
+    --bone-strong: rgba(248, 244, 234, 0.96);
+    --bone-mid:    rgba(248, 244, 234, 0.78);
+    --bone-faint:  rgba(248, 244, 234, 0.55);
+    --bone-ghost:  rgba(248, 244, 234, 0.38);
+    --signal: rgba(232, 158, 122, 0.95);
+    --shadow-strong: 0 1px 4px rgba(0,0,0,0.85), 0 0 10px rgba(0,0,0,0.55);
+    --shadow-light:  0 1px 3px rgba(0,0,0,0.75);
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #08080a;
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--bone-strong);
+  }
+
+  .stage {
+    position: fixed; inset: 0;
+    overflow: hidden;
+  }
+
+  /* WebRTC feed slot — falls back to ambient placeholder */
+  #feed, video.feed {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  #feed {
+    background:
+      radial-gradient(ellipse 60% 50% at 35% 38%, #1c1c1a 0%, #0a0a08 70%),
+      linear-gradient(180deg, #0e0e0c 0%, #050506 100%);
+  }
+  /* film grain */
+  #feed::after {
+    content: ''; position: absolute; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/></filter><rect width='200' height='200' filter='url(%23n)' opacity='0.55'/></svg>");
+    opacity: 0.35;
+    mix-blend-mode: overlay;
+    pointer-events: none;
+  }
+
+  /* SVG leader-line layer */
+  svg.overlay-svg {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  svg.overlay-svg .leader {
+    stroke: var(--bone-mid);
+    stroke-width: 1.5;
+    fill: none;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.7));
+    stroke-dasharray: 200;
+    stroke-dashoffset: 200;
+    animation: draw 1.8s ease-out forwards;
+  }
+  svg.overlay-svg .leader.delay { animation-delay: 0.6s; }
+  @keyframes draw {
+    to { stroke-dashoffset: 0; }
+  }
+
+  /* HTML overlay layer */
+  .overlay {
+    position: absolute; inset: 0;
+    pointer-events: none;
+  }
+
+  /* face annotation: caret + caption */
+  .caret {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 400;
+    font-size: 34px;
+    line-height: 1;
+    color: var(--bone-strong);
+    text-shadow: var(--shadow-strong);
+    opacity: 0;
+    animation: caret-in 1.2s ease-out forwards, caret-breathe 5s ease-in-out 1.2s infinite;
+  }
+  @keyframes caret-in {
+    from { opacity: 0; transform: translate(-50%, -90%); }
+    to   { opacity: 0.78; transform: translate(-50%, -100%); }
+  }
+  @keyframes caret-breathe {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 0.9; }
+  }
+
+  .caption {
+    position: absolute;
+    max-width: 320px;
+    opacity: 0;
+    animation: cap-in 1.6s ease-out 1.0s forwards;
+  }
+  .caption.delay { animation-delay: 1.8s; }
+  @keyframes cap-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .caption .label {
+    display: block;
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--bone-mid);
+    text-shadow: var(--shadow-light);
+    margin-bottom: 8px;
+  }
+  .caption .desc {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 26px;
+    line-height: 1.35;
+    letter-spacing: 0.005em;
+    color: var(--bone-strong);
+    text-shadow: var(--shadow-strong);
+  }
+  .caption {
+    max-width: 380px;
+  }
+
+  /* drifting memory column, right edge */
+  .memories {
+    position: absolute;
+    top: 80px;
+    right: 36px;
+    bottom: 110px;
+    width: 260px;
+    overflow: hidden;
+    mask-image: linear-gradient(180deg, transparent 0%, black 22%, black 72%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 22%, black 72%, transparent 100%);
+  }
+  .memories ul {
+    list-style: none;
+    position: absolute;
+    bottom: 0; right: 0;
+    width: 100%;
+    animation: drift 95s linear infinite;
+    animation-delay: -55s;
+  }
+  .memories li {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 18px;
+    line-height: 1.55;
+    letter-spacing: 0.015em;
+    text-align: right;
+    color: var(--bone-ghost);
+    text-shadow: var(--shadow-light);
+    margin-bottom: 18px;
+  }
+  @keyframes drift {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(-100%); }
+  }
+
+  /* top-right plate stamp */
+  .stamp {
+    position: absolute;
+    top: 30px; right: 36px;
+    text-align: right;
+    font-family: 'Inter', sans-serif;
+  }
+  .stamp .pl {
+    font-size: 14px;
+    letter-spacing: 0.34em;
+    color: var(--bone-strong);
+    text-shadow: var(--shadow-light);
+    margin-bottom: 5px;
+  }
+  .stamp .when {
+    font-size: 12px;
+    letter-spacing: 0.24em;
+    color: var(--bone-mid);
+    text-shadow: var(--shadow-light);
+    text-transform: uppercase;
+  }
+
+  /* top-left tiny identity */
+  .corner-id {
+    position: absolute;
+    top: 30px; left: 36px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.30em;
+    color: var(--bone-strong);
+    text-shadow: var(--shadow-light);
+    text-transform: uppercase;
+  }
+  .corner-id .dot {
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--signal);
+    margin-right: 8px;
+    transform: translateY(-1px);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.45; }
+    50%      { opacity: 1; }
+  }
+
+  /* bottom horizon: pan rule + meta */
+  .horizon {
+    position: absolute;
+    left: 36px; right: 36px;
+    bottom: 40px;
+  }
+  .rule-wrap {
+    position: relative;
+    height: 14px;
+  }
+  .rule {
+    position: absolute;
+    top: 7px; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      var(--bone-mid) 6%,
+      var(--bone-mid) 94%,
+      transparent 100%);
+  }
+  .ticks {
+    position: absolute;
+    top: 4px; left: 0; right: 0;
+    height: 7px;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 2%;
+  }
+  .ticks span {
+    display: block;
+    width: 1px; height: 4px;
+    background: var(--bone-faint);
+  }
+  .ticks span.major { height: 7px; background: var(--bone-mid); }
+  .needle {
+    position: absolute;
+    top: 0;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 8px solid var(--bone-strong);
+    transform: translateX(-50%);
+    transition: left 1.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .meta {
+    margin-top: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.26em;
+    text-transform: uppercase;
+    text-shadow: var(--shadow-light);
+  }
+  .meta .l, .meta .c, .meta .r {
+    display: flex;
+    gap: 22px;
+    align-items: baseline;
+  }
+  .meta .l { color: var(--bone-strong); }
+  .meta .c { color: var(--bone-mid); }
+  .meta .r { color: var(--bone-faint); }
+  .meta .sep::before {
+    content: '·';
+    margin-right: 22px;
+    color: var(--bone-faint);
+  }
+  .meta .val {
+    font-feature-settings: 'tnum';
+    margin-left: 8px;
+    color: var(--bone-strong);
+    letter-spacing: 0.12em;
+  }
+
+  /* a vertical hairline graticule at center, very low opacity */
+  .center-hair {
+    position: absolute;
+    left: 50%; top: 22%;
+    width: 1px; height: 56%;
+    background: linear-gradient(180deg,
+      transparent,
+      rgba(var(--bone), 0.08) 20%,
+      rgba(var(--bone), 0.08) 80%,
+      transparent);
+    transform: translateX(-0.5px);
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div id="feed"></div>
+
+    <!-- center hairline -->
+    <div class="center-hair"></div>
+
+    <!-- live leader lines (populated by face poll) -->
+    <svg class="overlay-svg" id="leaders" preserveAspectRatio="none" viewBox="0 0 100 100"></svg>
+
+    <!-- live face annotations container (populated by face poll) -->
+    <div class="overlay" id="face-annotations"></div>
+
+    <div class="overlay">
+
+      <!-- corner id -->
+      <div class="corner-id"><span class="dot"></span>observing</div>
+
+      <!-- top-right stamp -->
+      <div class="stamp">
+        <div class="pl">PL. 011</div>
+        <div class="when" id="ts">17:42 EDT</div>
+      </div>
+
+      <!-- drifting memories -->
+      <div class="memories" aria-hidden="true">
+        <ul id="memlist">
+          <li>dan prefers terse responses</li>
+          <li>little timmy is a marionette built around a strix halo brain</li>
+          <li>warmth axis biases short replies to feel attentive</li>
+          <li>recall before any non-trivial task</li>
+          <li>this is the booth display for open sauce twenty twenty-six</li>
+          <li>the visitor is not necessarily dan</li>
+          <li>pan-tilt servos route through the serial wombat</li>
+          <li>conversation tier runs llama three-b on eight zero eight one</li>
+          <li>tabs may be refreshed freely when state is stale</li>
+          <li>charm and unease are not mutually exclusive</li>
+          <li>no real names appear in test prompts</li>
+        </ul>
+      </div>
+
+      <!-- bottom horizon -->
+      <div class="horizon">
+        <div class="rule-wrap">
+          <div class="rule"></div>
+          <div class="ticks">
+            <span class="major"></span>
+            <span></span><span></span><span></span><span></span>
+            <span class="major"></span>
+            <span></span><span></span><span></span><span></span>
+            <span class="major"></span>
+            <span></span><span></span><span></span><span></span>
+            <span class="major"></span>
+          </div>
+          <div class="needle" id="needle" style="left: 50%;"></div>
+        </div>
+        <div class="meta">
+          <div class="l">
+            <span>listening</span>
+            <span class="sep">chat</span>
+          </div>
+          <div class="c">
+            <span>pan<span class="val" id="panv">+04°</span></span>
+            <span>tilt<span class="val" id="tiltv">−02°</span></span>
+          </div>
+          <div class="r">
+            <span>qwen 3.6 · think off</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    // Pan/tilt updates come over the WebRTC data channel created in startWebRTC().
+    // streamerpi's send_status_updates_task pushes `{type:"position_update",
+    // position:{horizontal, vertical}}` every 500ms to every client_data_channels
+    // entry. Ranges are not in the payload, so we hardcode streamerpi's UI-coord
+    // limits (matches /servo/status `ranges` returned from the same server).
+    const needle = document.getElementById('needle');
+    const panv = document.getElementById('panv');
+    const tiltv = document.getElementById('tiltv');
+    const PAN_RANGE  = { min: -90, max:  90 };
+    const TILT_RANGE = { min: -56, max:  44 };
+    function fmtDeg(v) {
+      const sign = v >= 0 ? '+' : '−';
+      return sign + Math.abs(Math.round(v)).toString().padStart(2, '0') + '°';
+    }
+    function applyServoUpdate(pos) {
+      if (!pos) return;
+      const pan  = Number(pos.horizontal);
+      const tilt = Number(pos.vertical);
+      if (!Number.isFinite(pan) || !Number.isFinite(tilt)) return;
+      const pct = ((pan - PAN_RANGE.min) / (PAN_RANGE.max - PAN_RANGE.min)) * 100;
+      needle.style.left = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+      panv.textContent  = fmtDeg(pan);
+      tiltv.textContent = fmtDeg(tilt);
+    }
+
+    // tick the timestamp
+    const ts = document.getElementById('ts');
+    function tickTime() {
+      const d = new Date();
+      const hh = String(d.getHours()).padStart(2,'0');
+      const mm = String(d.getMinutes()).padStart(2,'0');
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().slice(0,3).toUpperCase();
+      ts.textContent = `${hh}:${mm} ${tz}`;
+    }
+    tickTime();
+    setInterval(tickTime, 30000);
+
+    // ----- WebRTC client: pull the live streamerpi feed via /streamerpi/offer -----
+    // Same-origin proxy means we negotiate against our own HTTPS server,
+    // which forwards to https://streamerpi.local:8080/offer (self-signed,
+    // verify off). Single-client lock on streamerpi: if 409, retry with
+    // force=true after a short pause so this tab wins.
+    function genClientId() {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+      return 'tab-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+    }
+    let CLIENT_ID = null;
+    try { CLIENT_ID = sessionStorage.getItem('lt_visitor_client_id'); } catch {}
+    if (!CLIENT_ID) {
+      CLIENT_ID = genClientId();
+      try { sessionStorage.setItem('lt_visitor_client_id', CLIENT_ID); } catch {}
+    }
+
+    let pc = null;
+    let disconnectGraceTimer = null;
+    const DISCONNECT_GRACE_MS = 5000;
+
+    function attachStream(stream) {
+      let v = document.querySelector('video.feed');
+      if (!v) {
+        const placeholder = document.getElementById('feed');
+        v = document.createElement('video');
+        v.autoplay = true; v.muted = true; v.playsInline = true;
+        v.className = 'feed';
+        v.id = 'feed';
+        if (placeholder) placeholder.replaceWith(v);
+        else document.querySelector('.stage').prepend(v);
+      }
+      v.srcObject = stream;
+    }
+
+    async function startWebRTC(opts = {}) {
+      const force = !!opts.force;
+      if (disconnectGraceTimer) { clearTimeout(disconnectGraceTimer); disconnectGraceTimer = null; }
+      if (pc) { try { pc.close(); } catch {} pc = null; }
+      const thisPc = new RTCPeerConnection();
+      pc = thisPc;
+      thisPc.addTransceiver('video', { direction: 'recvonly' });
+      // Open a data channel so streamerpi's send_status_updates_task can push
+      // position_update + face_status every 500ms. streamerpi registers it via
+      // @pc.on("datachannel") at webrtc.py:294. Must be created BEFORE
+      // createOffer so the data-channel m-line lands in the SDP.
+      const ctrlCh = thisPc.createDataChannel('control', { ordered: true });
+      ctrlCh.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === 'position_update') applyServoUpdate(m.position);
+        } catch (_) { /* malformed payload — ignore */ }
+      };
+      thisPc.ontrack = (e) => attachStream(e.streams[0]);
+      thisPc.onconnectionstatechange = () => {
+        if (pc !== thisPc) return;
+        const st = thisPc.connectionState;
+        if (st === 'failed' || st === 'closed') {
+          setTimeout(startWebRTC, 3000);
+          return;
+        }
+        if (st === 'disconnected') {
+          disconnectGraceTimer = setTimeout(() => {
+            disconnectGraceTimer = null;
+            if (pc === thisPc && thisPc.connectionState === 'disconnected') startWebRTC();
+          }, DISCONNECT_GRACE_MS);
+        }
+      };
+      try {
+        const offer = await thisPc.createOffer();
+        await thisPc.setLocalDescription(offer);
+        await new Promise((res) => {
+          if (thisPc.iceGatheringState === 'complete') return res();
+          const onChange = () => {
+            if (thisPc.iceGatheringState === 'complete') {
+              thisPc.removeEventListener('icegatheringstatechange', onChange);
+              res();
+            }
+          };
+          thisPc.addEventListener('icegatheringstatechange', onChange);
+          setTimeout(res, 4000);
+        });
+        if (pc !== thisPc) return;
+        const r = await fetch('/streamerpi/offer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sdp: thisPc.localDescription.sdp,
+            type: thisPc.localDescription.type,
+            client_id: CLIENT_ID,
+            force: force,
+          }),
+        });
+        if (r.status === 409) {
+          // Another client holds the single-client lock — force a takeover
+          // after a brief pause. This tab is the booth display, so we win.
+          setTimeout(() => startWebRTC({ force: true }), 2000);
+          return;
+        }
+        if (!r.ok) throw new Error('offer http ' + r.status);
+        const answer = await r.json();
+        if (pc !== thisPc) return;
+        await thisPc.setRemoteDescription(answer);
+      } catch (e) {
+        if (pc !== thisPc) return;
+        setTimeout(() => startWebRTC(), 3000);
+      }
+    }
+    startWebRTC();
+
+    // ----- live face annotations from /streamerpi/faces -----
+    const POLL_MS = 250;
+    const STALE_MS = 2500;
+    const FIG_NUMERALS = ['I','II','III','IV','V','VI'];
+
+    function getVideoInfo() {
+      const v = document.querySelector('video.feed');
+      if (v && v.videoWidth) {
+        return { rect: v.getBoundingClientRect(),
+                 srcW: v.videoWidth, srcH: v.videoHeight };
+      }
+      return { rect: { left: 0, top: 0,
+                       width: window.innerWidth, height: window.innerHeight },
+               srcW: 640, srcH: 360 };
+    }
+
+    function bboxToViewport(bbox, vi) {
+      const scale = Math.max(vi.rect.width / vi.srcW,
+                             vi.rect.height / vi.srcH);
+      const rW = vi.srcW * scale, rH = vi.srcH * scale;
+      const offX = vi.rect.left + (vi.rect.width - rW) / 2;
+      const offY = vi.rect.top  + (vi.rect.height - rH) / 2;
+      const [x, y, w] = bbox;
+      return { caretX: offX + (x + w/2) * scale,
+               caretY: offY + y * scale };
+    }
+
+    function describeFace(f, idx) {
+      const known = f.name && f.name !== 'unknown';
+      const dist = (typeof f.distance === 'number') ? f.distance.toFixed(2) : null;
+      const label = `Figure ${FIG_NUMERALS[idx] || idx + 1}`;
+      let desc;
+      if (known && f.confidence === 'high') {
+        desc = `identified as ${f.name}, embedding distance ${dist}, attending`;
+      } else if (known) {
+        desc = `tentatively ${f.name}, distance ${dist}, lower confidence`;
+      } else if (f.confidence === 'medium') {
+        desc = `a figure, not recognised, distance ${dist}`;
+      } else {
+        desc = `a figure, low-confidence read`;
+      }
+      return { label, desc };
+    }
+
+    const faceAnnos = document.getElementById('face-annotations');
+    const leadersSvg = document.getElementById('leaders');
+    let pool = [];
+
+    function ensurePoolSize(n) {
+      while (pool.length < n) {
+        const caret = document.createElement('div');
+        caret.className = 'caret';
+        caret.textContent = '⌃';
+        faceAnnos.appendChild(caret);
+        const caption = document.createElement('div');
+        caption.className = 'caption';
+        const label = document.createElement('span'); label.className = 'label';
+        const desc = document.createElement('span'); desc.className = 'desc';
+        caption.appendChild(label); caption.appendChild(desc);
+        faceAnnos.appendChild(caption);
+        const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        poly.setAttribute('class', 'leader');
+        leadersSvg.appendChild(poly);
+        pool.push({ caret, caption, polyline: poly, label, desc });
+      }
+      for (let i = n; i < pool.length; i++) {
+        pool[i].caret.style.display = 'none';
+        pool[i].caption.style.display = 'none';
+        pool[i].polyline.setAttribute('points', '');
+      }
+    }
+
+    function renderFaces(faces) {
+      const vi = getVideoInfo();
+      ensurePoolSize(faces.length);
+      const sorted = faces.slice().sort(
+        (a, b) => (a.bbox?.[0] ?? 0) - (b.bbox?.[0] ?? 0));
+      const vw = window.innerWidth, vh = window.innerHeight;
+      sorted.forEach((f, i) => {
+        if (!Array.isArray(f.bbox) || f.bbox.length !== 4) return;
+        const p = bboxToViewport(f.bbox, vi);
+        const slot = pool[i];
+        const d = describeFace(f, i);
+        slot.label.textContent = d.label;
+        slot.desc.textContent = d.desc;
+        slot.caret.style.left = p.caretX + 'px';
+        slot.caret.style.top  = p.caretY + 'px';
+        slot.caret.style.display = '';
+        const inRight = p.caretX > vw * 0.55;
+        const capX = inRight ? p.caretX - 340 : p.caretX + 120;
+        const capY = p.caretY + 18;
+        slot.caption.style.left = capX + 'px';
+        slot.caption.style.top  = capY + 'px';
+        slot.caption.style.display = '';
+        const fromX = (p.caretX / vw) * 100;
+        const fromY = (p.caretY / vh) * 100;
+        const toX = ((inRight ? capX + 300 : capX) / vw) * 100;
+        const toY = ((capY + 14) / vh) * 100;
+        const midX = (fromX + toX) / 2;
+        slot.polyline.setAttribute('points',
+          `${fromX},${fromY} ${midX},${fromY} ${midX},${toY} ${toX},${toY}`);
+      });
+    }
+
+    async function pollFaces() {
+      try {
+        const r = await fetch('/streamerpi/faces', { cache: 'no-store' });
+        if (!r.ok) throw new Error('http ' + r.status);
+        const d = await r.json();
+        const stale = (d.age_s != null && d.age_s * 1000 > STALE_MS);
+        renderFaces((stale || !Array.isArray(d.faces)) ? [] : d.faces);
+      } catch (e) {
+        renderFaces([]);
+      }
+    }
+    setInterval(pollFaces, POLL_MS);
+    pollFaces();
+  </script>
+</body>
+</html>

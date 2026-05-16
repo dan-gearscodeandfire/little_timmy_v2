@@ -1,0 +1,10 @@
+# Self-signed TLS cert + private key (regenerate per host)
+cert.pem
+key.pem
+
+# Runtime logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
