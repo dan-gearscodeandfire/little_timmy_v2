@@ -17,6 +17,7 @@ import aiohttp
 from aiohttp import web
 
 STREAMERPI_URL = "https://streamerpi.local:8080"
+LT_URL = "http://127.0.0.1:8893"
 PORT = 8090
 HERE = Path(__file__).resolve().parent
 INDEX_HTML = HERE / "index.html"
@@ -91,11 +92,35 @@ async def proxy_get(request: web.Request) -> web.Response:
                 {"error": str(e)[:200], "path": path}, status=502)
 
 
+async def proxy_lt_get(request: web.Request) -> web.Response:
+    """GET proxy for LT (port 8893) read-only endpoints. Used by the visitor
+    overlay to fetch /api/last_payload — the ephemeral_block in there is the
+    [CONTEXT]…[/CONTEXT] body injected into the most-recent user prompt, and
+    the booth scrolls it down the right edge so visitors can see what Timmy
+    is being told about the room when he replies."""
+    path = request.match_info["path"]
+    timeout = aiohttp.ClientTimeout(total=3)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(f"{LT_URL}/{path}") as upstream:
+                payload = await upstream.read()
+                return web.Response(
+                    body=payload,
+                    status=upstream.status,
+                    headers={"Content-Type": upstream.headers.get(
+                        "Content-Type", "application/json")},
+                )
+        except Exception as e:
+            return web.json_response(
+                {"error": str(e)[:200], "path": path}, status=502)
+
+
 def main() -> None:
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_post("/streamerpi/offer", proxy_offer)
     app.router.add_get("/streamerpi/{path:.+}", proxy_get)
+    app.router.add_get("/lt/{path:.+}", proxy_lt_get)
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
     log.info("booth-mockup serving on https://0.0.0.0:%d "

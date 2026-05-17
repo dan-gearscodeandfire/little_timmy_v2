@@ -139,37 +139,57 @@
     max-width: 380px;
   }
 
-  /* drifting memory column, right edge */
-  .memories {
+  /* drifting context panels — three sections of LT's [CONTEXT] body parsed and
+     placed at TR (relevant memories), TL (who is present), BL (ground truth). */
+  .context-panel {
     position: absolute;
-    top: 80px;
-    right: 36px;
-    bottom: 110px;
-    width: 260px;
-    overflow: hidden;
-    mask-image: linear-gradient(180deg, transparent 0%, black 22%, black 72%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 22%, black 72%, transparent 100%);
+    width: 320px;
   }
-  .memories ul {
+  .context-panel.tr { top: 90px;  right: 36px; bottom: 200px; }
+  .context-panel.tl { top: 90px;  left: 36px;  bottom: 52%;   }
+  .context-panel.bl { top: 52%;   left: 36px;  bottom: 130px; }
+  .context-panel .panel-tag {
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 12px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--bone-strong);
+    text-shadow: var(--shadow-light);
+    margin-bottom: 10px;
+  }
+  .context-panel.tr .panel-tag { text-align: right; }
+  .context-panel.tl .panel-tag, .context-panel.bl .panel-tag { text-align: left; }
+  .context-panel .panel-scroll {
+    position: absolute;
+    top: 32px; bottom: 0; left: 0; right: 0;
+    overflow: hidden;
+    mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 78%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 78%, transparent 100%);
+  }
+  .context-panel .panel-scroll ul {
     list-style: none;
     position: absolute;
-    bottom: 0; right: 0;
+    bottom: 0; left: 0; right: 0;
     width: 100%;
-    animation: drift 95s linear infinite;
-    animation-delay: -55s;
+    animation: drift 80s linear infinite;
   }
-  .memories li {
+  .context-panel.tr .panel-scroll ul { animation-delay: -45s; }
+  .context-panel.tl .panel-scroll ul { animation-delay: -25s; }
+  .context-panel.bl .panel-scroll ul { animation-delay: -65s; }
+  .context-panel li {
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
     font-weight: 400;
     font-size: 18px;
-    line-height: 1.55;
+    line-height: 1.45;
     letter-spacing: 0.015em;
-    text-align: right;
-    color: var(--bone-ghost);
-    text-shadow: var(--shadow-light);
-    margin-bottom: 18px;
+    color: var(--bone-mid);
+    text-shadow: var(--shadow-strong);
+    margin-bottom: 14px;
   }
+  .context-panel.tr li { text-align: right; }
+  .context-panel.tl li, .context-panel.bl li { text-align: left; }
   @keyframes drift {
     from { transform: translateY(100%); }
     to   { transform: translateY(-100%); }
@@ -338,21 +358,20 @@
         <div class="when" id="ts">17:42 EDT</div>
       </div>
 
-      <!-- drifting memories -->
-      <div class="memories" aria-hidden="true">
-        <ul id="memlist">
-          <li>dan prefers terse responses</li>
-          <li>little timmy is a marionette built around a strix halo brain</li>
-          <li>warmth axis biases short replies to feel attentive</li>
-          <li>recall before any non-trivial task</li>
-          <li>this is the booth display for open sauce twenty twenty-six</li>
-          <li>the visitor is not necessarily dan</li>
-          <li>pan-tilt servos route through the serial wombat</li>
-          <li>conversation tier runs llama three-b on eight zero eight one</li>
-          <li>tabs may be refreshed freely when state is stale</li>
-          <li>charm and unease are not mutually exclusive</li>
-          <li>no real names appear in test prompts</li>
-        </ul>
+      <!-- Three context panels — populated from LT /api/last_payload ephemeral_block.
+           Parsed and split: [WHO IS PRESENT] -> TL, GROUND TRUTH -> BL,
+           Relevant memories -> TR. MOOD + Current time are not rendered. -->
+      <div class="context-panel tl" aria-hidden="true">
+        <div class="panel-tag">who is present</div>
+        <div class="panel-scroll"><ul id="ctx-who"></ul></div>
+      </div>
+      <div class="context-panel tr" aria-hidden="true">
+        <div class="panel-tag">retrieved memories</div>
+        <div class="panel-scroll"><ul id="ctx-mem"></ul></div>
+      </div>
+      <div class="context-panel bl" aria-hidden="true">
+        <div class="panel-tag">ground truth</div>
+        <div class="panel-scroll"><ul id="ctx-ground"></ul></div>
       </div>
 
       <!-- bottom horizon -->
@@ -652,6 +671,68 @@
     }
     setInterval(pollFaces, POLL_MS);
     pollFaces();
+
+    // ----- live injected-context panels from LT /api/last_payload -----
+    // ephemeral_block is the [CONTEXT]...[/CONTEXT] body. We parse it into
+    // three sections (who-is-present, ground-truth, relevant-memories) and
+    // render each into its own drifting panel. MOOD + Current time are
+    // dropped — they're surfaced elsewhere or not visitor-relevant.
+    const ctxWho    = document.getElementById('ctx-who');
+    const ctxMem    = document.getElementById('ctx-mem');
+    const ctxGround = document.getElementById('ctx-ground');
+    let lastCtxSig = '';
+
+    function parseSections(block) {
+      const out = { who: [], ground: [], mem: [] };
+      let cur = null;
+      for (const raw of block.split('\n')) {
+        const ln = raw.trim();
+        if (!ln) continue;
+        if (ln.includes('[WHO IS PRESENT]'))      { cur = 'who';    continue; }
+        if (ln.startsWith('GROUND TRUTH'))         { cur = 'ground'; continue; }
+        if (ln.startsWith('Relevant memories'))    { cur = 'mem';    continue; }
+        if (ln.startsWith('MOOD')         ||
+            ln.startsWith('Current time') ||
+            ln.startsWith('- Engagement') ||
+            ln.startsWith('- Tone'))               { cur = null;     continue; }
+        if (cur && ln.startsWith('-')) {
+          out[cur].push(ln.replace(/^-\s*/, ''));
+        }
+      }
+      return out;
+    }
+
+    function fillList(ul, items) {
+      ul.innerHTML = '';
+      for (const t of items) {
+        const li = document.createElement('li');
+        li.textContent = t;
+        ul.appendChild(li);
+      }
+    }
+
+    function renderContext(block) {
+      const sig = block.length + ':' + block.slice(0, 80);
+      if (sig === lastCtxSig) return;
+      lastCtxSig = sig;
+      const s = parseSections(block);
+      fillList(ctxWho,    s.who);
+      fillList(ctxMem,    s.mem);
+      fillList(ctxGround, s.ground);
+    }
+
+    async function pollContext() {
+      try {
+        const r = await fetch('/lt/api/last_payload', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (d && d.available && typeof d.ephemeral_block === 'string') {
+          renderContext(d.ephemeral_block);
+        }
+      } catch (_) { /* LT temporarily unreachable; leave last content */ }
+    }
+    setInterval(pollContext, 4000);
+    pollContext();
   </script>
 </body>
 </html>
