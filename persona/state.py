@@ -41,7 +41,12 @@ PERSISTENCE = 2  # consecutive same-sign signals required to step
 # opposing-direction signal. Mitigates the case where the X-axis signal
 # generator (which is ternary {-1,0,+1}) just doesn't produce a -1 for a
 # long stretch -- the axis would otherwise stay at +1 forever.
-DECAY_TURNS = 8
+# 2026-05-16: tightened 8 -> 3. Mood was pinned at (+1,-1) for hours because
+# same-direction signals kept interleaving the zero stretches, so 8-in-a-row
+# never landed. 3-in-a-row is reachable in a typical conversation pause and
+# pairs with the symmetric Y warmth/reciprocity bonuses + the X idle-bored
+# signal added in updater.py so the axes breathe.
+DECAY_TURNS = 3
 
 _AXES = ("x", "y")
 _VALID = (-1, 0, 1)
