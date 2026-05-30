@@ -1151,6 +1151,18 @@ header .uptime {
       </div>
       <div id="flag-status" style="font-size:11px; color:#8b949e; margin-top:8px; min-height:14px;"></div>
     </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Booth Display</h2></summary>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button id="open-booth-btn" type="button"
+                title="Open the Open Sauce visitor display (booth-mockup :8090) in a new browser window. Requires booth-mockup.service to be running — toggle it in the services table if not."
+                style="font-size:12px; padding:4px 10px; background:#1f3a3a; color:#39c5cf; border:1px solid #39c5cf; border-radius:4px; cursor:pointer;">
+          🎪 Open booth display
+        </button>
+        <span id="open-booth-hint" style="font-size:11px; color:#8b949e;">opens <code style="color:#39c5cf;">https://&lt;host&gt;:8090/</code> in a new window — accept the self-signed cert the first time</span>
+      </div>
+      <div id="open-booth-status" style="font-size:11px; color:#8b949e; margin-top:6px; min-height:14px;"></div>
+    </details>
     <details class="panel" open style="margin-top:16px; display:flex; flex-direction:column;">
       <summary><h2>Conversation</h2></summary>
       <div id="conversation" style="max-height:380px; overflow-y:auto;">
@@ -2382,6 +2394,21 @@ document.getElementById("payload-close-btn").addEventListener("click", () => {
 });
 payloadModal.addEventListener("click", (e) => {
   if (e.target === payloadModal) payloadModal.style.display = "none";
+});
+
+document.getElementById("open-booth-btn").addEventListener("click", () => {
+  const host = window.location.hostname || "localhost";
+  const url = `https://${host}:8090/`;
+  const status = document.getElementById("open-booth-status");
+  const win = window.open(url, "lt_booth_display",
+    "noopener,noreferrer,width=1920,height=1080,menubar=no,toolbar=no,location=no");
+  if (win) {
+    status.textContent = "opened " + url + " in a new window";
+    status.style.color = "#3fb950";
+  } else {
+    status.innerHTML = 'popup blocked — open manually: <a href="' + url + '" target="_blank" style="color:#39c5cf;">' + url + '</a>';
+    status.style.color = "#f0883e";
+  }
 });
 
 loadConversationHistory();
