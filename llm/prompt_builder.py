@@ -247,6 +247,32 @@ def _warn_on_duplicate_adjacent_user_messages(messages: list[dict]) -> None:
             break
 
 
+# Synthetic "utterance" for a proactive turn: nobody actually spoke, so the
+# [UTTERANCE] slot carries a self-directed instruction instead of human speech.
+# This keeps the same [CONTEXT]/[UTTERANCE] wrap (KV-cache invariants intact)
+# and follows the existing synthetic-prompt precedent of _ask_speaker_name /
+# _confirm_name. The visual trigger itself lives in the [CONTEXT] block.
+PROACTIVE_SELF_PROMPT = (
+    "(No one has spoken to you, but something in your view just changed. "
+    "React with ONE short, in-character line about it -- a greeting or an "
+    "aside, not a description of the scene. Do not narrate what you see.)"
+)
+
+
+def build_proactive_messages(
+    history: list[dict],
+    ephemeral_block: str,
+) -> list[dict]:
+    """Assemble messages for a proactive (unprompted) turn.
+
+    Thin wrapper over build_messages with the fixed PROACTIVE_SELF_PROMPT as the
+    synthetic utterance. system[0] stays byte-identical (KV prefix cache
+    survives) and the synthetic prompt is render-time only -- it is NEVER passed
+    to conversation.add_user_turn, so it never pollutes stored history.
+    """
+    return build_messages(history, ephemeral_block, PROACTIVE_SELF_PROMPT)
+
+
 def build_messages(
     history: list[dict],
     ephemeral_block: str,

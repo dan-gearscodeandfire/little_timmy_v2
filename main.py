@@ -12,6 +12,8 @@ import re
 import time
 import httpx
 import numpy as np
+from collections import deque
+from persistence import runtime_toggles
 
 import config
 import eye_led
@@ -24,7 +26,7 @@ from stt.client import transcribe
 from tts.engine import TTSEngine
 from audio import fillers as audio_fillers
 from llm.client import stream_conversation, set_reasoning_tap
-from llm.prompt_builder import build_ephemeral_block, build_messages
+from llm.prompt_builder import build_ephemeral_block, build_messages, build_proactive_messages
 from memory.retrieval import retrieve
 from memory.facts import get_all_facts_for_prompt, get_facts_about_speaker, resolve_entity
 
@@ -275,6 +277,14 @@ class Orchestrator:
             fresh_face_age_sec=config.LOOK_AT_FRESH_FACE_AGE_SEC,
         )
         self._look_at_enabled = config.LOOK_AT_ENABLED
+        # Mutual-exclusion for ALL spoken turns (reactive + proactive). A
+        # reactive turn (process_speech / process_text_input) holds this for
+        # its whole duration; the proactive path try-acquires non-blocking and
+        # drops if a turn is in flight, so it never talks over the user.
+        self._turn_lock = asyncio.Lock()
+        # Proactive-speech debounce state.
+        self._last_proactive_time = 0.0
+        self._proactive_times: deque[float] = deque(maxlen=16)  # for per-minute rate cap
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
@@ -586,12 +596,107 @@ class Orchestrator:
 
     async def process_text_input(self, text: str):
         """Process typed text input (from web UI)."""
-        t_start = time.time()
-        log.info("[USER:text] %s", text)
-        await broadcast_event("turn", {"role": "user", "content": text})
-        await self.conversation.add_user_turn(text)
-        await self._generate_response(text, stt_ms=0, t_start=t_start,
-                                       speaker_name="dan", speaker_db_id=1, spk_ms=0)
+        # Hold the turn lock so a proactive remark can't overlap this turn.
+        async with self._turn_lock:
+            t_start = time.time()
+            log.info("[USER:text] %s", text)
+            await broadcast_event("turn", {"role": "user", "content": text})
+            await self.conversation.add_user_turn(text)
+            await self._generate_response(text, stt_ms=0, t_start=t_start,
+                                           speaker_name="dan", speaker_db_id=1, spk_ms=0)
+
+    async def maybe_speak_proactively(self, record, is_new_arrival: bool) -> None:
+        """Maybe emit a short unprompted remark in reaction to a visual event.
+
+        Called from vision_people_monitor every ~2s with the current scene
+        record and whether new people just appeared (rising edge). Heavily
+        gated: master switch + runtime toggle + hearing on + urgency/speak_now
+        + rising edge + cooldown + per-minute cap + turn-lock (drops, never
+        queues, if a reactive turn is in flight). Generates via the same
+        LLM->TTS path as a reactive turn, so echo suppression and the
+        conversation-priority gate are inherited.
+        """
+        # --- cheap gates first ---
+        if not config.PROACTIVE_SPEECH_ENABLED:
+            return
+        if not runtime_toggles.get("proactive_speech_enabled"):
+            return
+        if self.capture.hearing_muted:
+            return  # a muted Timmy that still talks is surprising
+        if record is None:
+            return
+
+        relevance = self.vision.get_last_relevance()
+        urgent = bool(record.speak_now) or (
+            relevance is not None
+            and relevance.urgency_score >= config.PROACTIVE_URGENCY_THRESHOLD
+        )
+        # Rising edge only: a fresh arrival, or a newly-urgent scene. Sustained
+        # urgency must not re-fire (the cooldown is the backstop, this is the
+        # primary debounce).
+        if not (is_new_arrival or urgent):
+            return
+
+        now = time.time()
+        if now - self._last_proactive_time < config.PROACTIVE_COOLDOWN_SEC:
+            return
+        # Per-minute hard cap (belt + suspenders over the cooldown).
+        recent = [t for t in self._proactive_times if now - t < 60.0]
+        if len(recent) >= config.PROACTIVE_MAX_PER_MIN:
+            return
+
+        # --- turn-lock: drop (don't queue) if a reactive turn is in flight ---
+        # No await between this check and acquire(), so in asyncio's single
+        # thread the lock can't be taken in between -- acquire() returns
+        # immediately without blocking. We never queue: a stale "someone
+        # entered" remark must not fire late behind a real conversation.
+        if self._turn_lock.locked():
+            return
+        await self._turn_lock.acquire()
+
+        # Record cooldown immediately so a long generation can't let a second
+        # trigger slip through before we update it.
+        self._last_proactive_time = now
+        self._proactive_times.append(now)
+
+        self.vision.pause_polling()  # free the GPU while we stream (mirrors main loop)
+        try:
+            history = self.conversation.build_history_messages()
+            presence_state = (
+                self.room_ledger.current_state() if self._presence_enabled else None
+            )
+            ephemeral = build_ephemeral_block(
+                memories=[],
+                facts=[],
+                vision_description=self.vision.get_description(),
+                visual_question=False,
+                presence_state=presence_state,
+            )
+            messages = build_proactive_messages(history, ephemeral)
+
+            asyncio.create_task(self.supervisor.on_tts_start())
+            asyncio.create_task(eye_led.notify("SPEAKING"))
+
+            full_response, _timings = await self._stream_to_tts(
+                messages, max_sentences=config.PROACTIVE_MAX_SENTENCES,
+            )
+
+            asyncio.create_task(self.supervisor.on_tts_end())
+            asyncio.create_task(eye_led.notify("AI_CONNECTED"))
+
+            if full_response and full_response.strip():
+                log.info("[PROACTIVE] %s", full_response)
+                await broadcast_event(
+                    "turn",
+                    {"role": "assistant", "content": full_response, "proactive": True},
+                )
+                # Store only the assistant side -- there was no user turn.
+                await self.conversation.add_assistant_turn(full_response)
+        except Exception:
+            log.exception("[PROACTIVE] generation failed")
+        finally:
+            self.vision.resume_polling()
+            self._turn_lock.release()
 
     async def _confirm_name(self, name: str, t_start: float, stt_ms: int, spk_ms: int):
         """Have Timmy confirm the extracted name before committing it."""
@@ -1236,10 +1341,16 @@ async def main():
                         last_people = []
                     continue
                 current_people = record.people or []
+                new_names = (set(p.lower() for p in current_people)
+                             - set(p.lower() for p in last_people))
                 if set(p.lower() for p in current_people) != set(p.lower() for p in last_people):
                     was_empty = len(last_people) == 0
                     await orch.supervisor.on_vision_people_changed(current_people, was_empty)
                     last_people = current_people
+                # Proactive verbal reaction. Heavily gated inside (master switch
+                # + runtime toggle + cooldown + turn-lock); a no-op unless
+                # enabled. Rising edge = a person present now who wasn't before.
+                await orch.maybe_speak_proactively(record, is_new_arrival=bool(new_names))
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -1253,11 +1364,14 @@ async def main():
     try:
         while True:
             audio_segment = await orch.capture.speech_queue.get()
-            orch.vision.pause_polling()
-            try:
-                await orch.process_speech(audio_segment)
-            finally:
-                orch.vision.resume_polling()
+            # Hold the turn lock so an in-flight proactive remark finishes (or
+            # is excluded) before this reactive turn speaks -- never overlap.
+            async with orch._turn_lock:
+                orch.vision.pause_polling()
+                try:
+                    await orch.process_speech(audio_segment)
+                finally:
+                    orch.vision.resume_polling()
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:

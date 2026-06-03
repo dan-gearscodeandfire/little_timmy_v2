@@ -163,6 +163,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         result = await services.toggle_hearing(desired)
                         toggles = await services.check_lt_toggles_status()
                         await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "proactive_speech":
+                        result = await services.toggle_proactive_speech(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
                         result = await services.toggle_service(svc_id, desired)
                         health = await services.check_all_health()
@@ -544,6 +548,12 @@ async def toggle_vision_auto_poll(data: dict):
 async def toggle_hearing(data: dict):
     """Mute/unmute LT's hearing. whisper-server stays running."""
     return await services.toggle_hearing(bool(data.get("enabled", True)))
+
+
+@app.post("/api/proactive/toggle")
+async def toggle_proactive_speech(data: dict):
+    """Enable/disable LT's proactive (unprompted) speech. Live; no restart."""
+    return await services.toggle_proactive_speech(bool(data.get("enabled", True)))
 
 
 async def health_poll_loop():
@@ -1079,6 +1089,16 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Proactive Speech (unprompted)</div>
+            <div class="service-detail" id="proactive-speech-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="proactive-speech-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
       <div class="model-selector" id="model-selector">
         <label>Conversation LLM Model</label>
@@ -1429,6 +1449,7 @@ function connectWS() {
     } else if (msg.type === "lt_toggles") {
       ltFlagBusy.vision_auto_poll = false;
       ltFlagBusy.hearing = false;
+      ltFlagBusy.proactive_speech = false;
       applyLTToggles(msg);
     } else if (msg.type === "turn") {
       addTurn(msg.role, msg.content, msg.speaker);
@@ -2047,6 +2068,7 @@ const LT_FLAGS = {
     cardId: 'vision-auto-poll-card',
     toggleId: 'vision-auto-poll-toggle',
     detailId: 'vision-auto-poll-detail',
+    route: '/api/vision/auto_poll/toggle',
     enabledDetail: '1fps poll loop active (~3-4 VLM calls/min)',
     disabledDetail: 'Polling paused (event-driven trigger still fires)',
   },
@@ -2054,16 +2076,28 @@ const LT_FLAGS = {
     cardId: 'hearing-card',
     toggleId: 'hearing-toggle',
     detailId: 'hearing-detail',
+    route: '/api/hearing/toggle',
     enabledDetail: 'Mic frames feeding whisper.cpp',
     disabledDetail: 'Muted (whisper-server still running)',
   },
+  proactive_speech: {
+    cardId: 'proactive-speech-card',
+    toggleId: 'proactive-speech-toggle',
+    detailId: 'proactive-speech-detail',
+    route: '/api/proactive/toggle',
+    enabledDetail: 'Reacts to visual events (cooldown 120s)',
+    disabledDetail: 'Silent unless spoken to',
+  },
 };
-const ltFlagState = { vision_auto_poll: null, hearing: null };
-const ltFlagBusy  = { vision_auto_poll: false, hearing: false };
+const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null };
+const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false };
+let ltProactiveMaster = true;  // config kill-switch; false => toggle is inert
 
 function applyLTToggles(data) {
   if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
   if (typeof data.hearing_enabled === 'boolean') ltFlagState.hearing = data.hearing_enabled;
+  if (typeof data.proactive_speech_enabled === 'boolean') ltFlagState.proactive_speech = data.proactive_speech_enabled;
+  if (typeof data.proactive_speech_master === 'boolean') ltProactiveMaster = data.proactive_speech_master;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
 }
 
@@ -2084,12 +2118,17 @@ function updateLTFlagUI(flag) {
   const toggle  = document.querySelector('#' + def.toggleId + ' input');
   const tlabel  = document.getElementById(def.toggleId);
   const detail  = document.getElementById(def.detailId);
-  if (card)   card.style.borderLeftColor = enabled ? '#3fb950' : '#484f58';
+  // Proactive speech is inert when the config kill-switch (master) is off,
+  // even if the runtime toggle reads on -- surface that so the switch isn't
+  // misleading.
+  const masterOff = (flag === 'proactive_speech' && !ltProactiveMaster);
+  if (card)   card.style.borderLeftColor = masterOff ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
   if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
   if (detail) {
     if (busy)                  detail.textContent = 'Toggling...';
     else if (enabled === null) detail.textContent = 'Checking...';
+    else if (masterOff)        detail.textContent = 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)';
     else if (enabled)          detail.textContent = def.enabledDetail;
     else                       detail.textContent = def.disabledDetail;
   }
@@ -2100,7 +2139,7 @@ async function toggleLTFlag(flag, enabled) {
   ltFlagBusy[flag] = true;
   updateLTFlagUI(flag);
   try {
-    const route = (flag === 'vision_auto_poll') ? '/api/vision/auto_poll/toggle' : '/api/hearing/toggle';
+    const route = LT_FLAGS[flag].route;
     const r = await fetch(route, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

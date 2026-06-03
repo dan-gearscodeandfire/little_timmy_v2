@@ -580,14 +580,20 @@ async def check_lt_toggles_status() -> dict:
     out = {
         "vision_auto_poll_enabled": False,
         "hearing_enabled": False,
+        "proactive_speech_enabled": False,
+        "proactive_speech_master": True,
         "error": None,
     }
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             v = await client.get(f"{cfg.TIMMY_BASE_URL}/api/vision/auto_poll")
             h = await client.get(f"{cfg.TIMMY_BASE_URL}/api/hearing")
+            p = await client.get(f"{cfg.TIMMY_BASE_URL}/api/proactive")
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
+            pj = p.json()
+            out["proactive_speech_enabled"] = bool(pj.get("enabled", False))
+            out["proactive_speech_master"] = bool(pj.get("master", True))
     except Exception as e:
         out["error"] = str(e)[:120]
     return out
@@ -633,5 +639,28 @@ async def toggle_hearing(enabled: bool) -> dict:
             return result
     except Exception as e:
         await _broadcast_status(f"Hearing toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_proactive_speech(enabled: bool) -> dict:
+    """Enable/disable LT's proactive (unprompted) speech. Persists the LT-side
+    runtime toggle; takes effect on the next visual event (no restart). Only
+    fires when the static config kill-switch is also on."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} proactive speech...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/proactive",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Proactive speech {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Proactive speech toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}

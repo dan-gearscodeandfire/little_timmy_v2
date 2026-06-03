@@ -33,6 +33,11 @@ _DEFAULTS: dict = {
     # llama-3b systemd unit + sets/clears conversation_url_override as
     # appropriate. Default matches the LT-OS config.py module default.
     "conversation_model_id": "llama3.2-3b",
+    # Proactive (unprompted) speech (2026-06-03). Live kill/enable switch for
+    # Timmy reacting verbally to high-urgency visual events without being
+    # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the
+    # static master switch) -- BOTH must be true. Default False (opt-in).
+    "proactive_speech_enabled": False,
 }
 
 _lock = threading.Lock()

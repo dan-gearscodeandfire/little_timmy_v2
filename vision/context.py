@@ -248,6 +248,14 @@ class VisionContext:
 
         return self._current
 
+    def get_last_relevance(self) -> RelevanceResult | None:
+        """Return the most recent relevance result (urgency/speak_now signals).
+
+        Used by the proactive-speech path to decide whether a visual event is
+        worth an unprompted remark. May be None before the first analyzed frame.
+        """
+        return self._last_relevance
+
     def get_description(self) -> str | None:
         """Get a filtered scene description for prompt injection.
 

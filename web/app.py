@@ -537,3 +537,30 @@ async def set_hearing(payload: dict | None = None):
     enabled = bool((payload or {}).get("enabled", True))
     cap.set_hearing(enabled)
     return {"ok": True, "enabled": bool(cap.is_hearing_enabled), "muted": bool(cap.hearing_muted)}
+
+
+@app.get("/api/proactive")
+async def get_proactive():
+    """Read the proactive-speech runtime toggle. `enabled` is the live operator
+    switch; `master` is the static config kill-switch (config.PROACTIVE_SPEECH_
+    ENABLED). The feature only fires when BOTH are true."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("proactive_speech_enabled")),
+        "master": bool(config.PROACTIVE_SPEECH_ENABLED),
+    }
+
+
+@app.post("/api/proactive")
+async def set_proactive(payload: dict | None = None):
+    """Enable/disable proactive (unprompted) speech live. Persists the runtime
+    toggle (read per-decision by maybe_speak_proactively, so it takes effect on
+    the next visual event without a restart)."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", True))
+    runtime_toggles.set("proactive_speech_enabled", enabled)
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("proactive_speech_enabled")),
+        "master": bool(config.PROACTIVE_SPEECH_ENABLED),
+    }

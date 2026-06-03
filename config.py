@@ -81,6 +81,20 @@ COREFERENCE_ENABLED = os.getenv("TIMMY_COREFERENCE_ENABLED", "true").lower() == 
 CONTEXT_TURNS = int(os.getenv("TIMMY_CONTEXT_TURNS", "2"))        # prior turns blended into the semantic query
 CONTEXT_TURN_CHAR_CAP = int(os.getenv("TIMMY_CONTEXT_TURN_CHAR_CAP", "200"))  # per prior-turn char cap (anti-dilution)
 
+# --- Proactive (unprompted) speech (2026-06-03) ---
+# Hard master kill-switch for Timmy reacting verbally to a high-urgency visual
+# event (e.g. someone entering) without being addressed first. Defaults to
+# ALLOW; the LIVE on/off is the `proactive_speech_enabled` runtime toggle (the
+# LT-OS dashboard switch), which defaults OFF -- so the effective default is
+# silent. Set TIMMY_PROACTIVE_SPEECH_ENABLED=false to forbid the feature
+# entirely regardless of the dashboard. BOTH must be true to speak. See
+# maybe_speak_proactively().
+PROACTIVE_SPEECH_ENABLED = os.getenv("TIMMY_PROACTIVE_SPEECH_ENABLED", "true").lower() == "true"
+PROACTIVE_URGENCY_THRESHOLD = float(os.getenv("TIMMY_PROACTIVE_URGENCY_THRESHOLD", "0.8"))  # mirrors relevance.SPEAK_THRESHOLD
+PROACTIVE_COOLDOWN_SEC = float(os.getenv("TIMMY_PROACTIVE_COOLDOWN_SEC", "120.0"))  # min seconds between remarks
+PROACTIVE_MAX_PER_MIN = int(os.getenv("TIMMY_PROACTIVE_MAX_PER_MIN", "1"))          # hard rate cap (belt + suspenders over cooldown)
+PROACTIVE_MAX_SENTENCES = int(os.getenv("TIMMY_PROACTIVE_MAX_SENTENCES", "1"))      # terser than a reactive reply
+
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
 CONVERSATION_TEMPERATURE = 0.85  # bumped from 0.7 2026-05-15 to break the identical-back-to-back-reply pattern observed with the new Qwen 3.6 payload
