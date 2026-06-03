@@ -10,8 +10,9 @@ venv/
 models/*.onnx
 models/*.onnx.json
 models/tts/
-models/speaker/*.npy
-models/speaker/*.bak*
+# Speaker voiceprints + id map are runtime-generated state, never tracked
+# (covers *.npy and variant suffixes like .npy.pre_pipeline / .npy.disabled).
+models/speaker/
 
 # IDE
 .vscode/
