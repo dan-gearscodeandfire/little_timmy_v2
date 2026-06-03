@@ -682,8 +682,17 @@ class Orchestrator:
         # so don't add the speaker to `subjects` here -- it would double-count.
         speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
 
+        # Coreference: blend prior turns into the semantic retrieval query so
+        # elliptical follow-ups ("what about her?") embed near their antecedent.
+        # add_user_turn already ran, so the current utterance is hot_turns[-1];
+        # recent_turns_excluding_current drops it. No-op when COREFERENCE off.
+        ctx_turns = (
+            self.conversation.recent_turns_excluding_current(config.CONTEXT_TURNS)
+            if config.COREFERENCE_ENABLED else None
+        )
+
         gather_args = [
-            retrieve(user_text, top_k=config.RETRIEVAL_TOP_K),
+            retrieve(user_text, top_k=config.RETRIEVAL_TOP_K, context_turns=ctx_turns),
             get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty_facts(),
             get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         ]

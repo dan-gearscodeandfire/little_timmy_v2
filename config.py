@@ -50,6 +50,37 @@ ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing ro
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
 
+# Weighted RRF fusion (2026-06-02). The three search channels no longer vote
+# equally: the semantic (embedding) channel is the highest-signal source for
+# paraphrase/meaning recall, FTS is solid keyword evidence, and trigram is the
+# noisy char-level channel kept only for STT-mangled proper nouns. Each
+# channel's contribution stays the scale-free RRF term weight * 1/(k+rank+1),
+# so robustness is preserved -- we only rebalance how loudly each votes.
+# A/B CONTROL: set all three weights to 1.0 and RRF_COSINE_BONUS to 0.0 to
+# reproduce the original equal-weight, rank-only behavior exactly.
+RRF_K = int(os.getenv("TIMMY_RRF_K", "60"))
+RRF_W_SEMANTIC = float(os.getenv("TIMMY_RRF_W_SEMANTIC", "2.0"))
+RRF_W_FTS = float(os.getenv("TIMMY_RRF_W_FTS", "1.0"))
+RRF_W_TRIGRAM = float(os.getenv("TIMMY_RRF_W_TRIGRAM", "0.5"))
+# Additive semantic-distance fold-in. The cosine distance (already used as the
+# <SEMANTIC_DISTANCE_MAX floor in memory/retrieval) is normalized to a (0,1]
+# bonus within the kept band so a 0.25-distance hit outranks a 0.49 one
+# instead of tying. Sized at ~one RRF rank-step (1/61 at k=60) so it acts as a
+# tiebreaker, not a hammer. Set to 0.0 to disable the fold-in.
+RRF_COSINE_BONUS = float(os.getenv("TIMMY_RRF_COSINE_BONUS", "0.02"))
+
+# Coreference / context-aware retrieval query (2026-06-02). The SEMANTIC
+# channel's query is prefixed with the last few conversation turns so
+# elliptical follow-ups ("what about her?") embed near the antecedent. The
+# FTS/trigram channels keep the bare current utterance (prior-turn tokens add
+# keyword noise). Storage and the conversation prompt are unaffected -- this
+# only shapes the embedding query.
+# A/B CONTROL: set TIMMY_COREFERENCE_ENABLED=false to revert to bare-utterance
+# embedding.
+COREFERENCE_ENABLED = os.getenv("TIMMY_COREFERENCE_ENABLED", "true").lower() == "true"
+CONTEXT_TURNS = int(os.getenv("TIMMY_CONTEXT_TURNS", "2"))        # prior turns blended into the semantic query
+CONTEXT_TURN_CHAR_CAP = int(os.getenv("TIMMY_CONTEXT_TURN_CHAR_CAP", "200"))  # per prior-turn char cap (anti-dilution)
+
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
 CONVERSATION_TEMPERATURE = 0.85  # bumped from 0.7 2026-05-15 to break the identical-back-to-back-reply pattern observed with the new Qwen 3.6 payload

@@ -154,6 +154,18 @@ class ConversationManager:
                 return (user_text, assistant_text)
         return None
 
+    def recent_turns_excluding_current(self, n: int) -> list[Turn]:
+        """Return the last `n` hot turns EXCLUDING the current utterance.
+
+        Used to build a coreference-aware retrieval query. add_user_turn runs
+        before retrieval, so hot_turns[-1] is the current utterance; we drop it
+        and take the preceding `n` (oldest-first). Returns [] if there's no
+        prior context yet.
+        """
+        if n <= 0 or len(self.state.hot_turns) <= 1:
+            return []
+        return self.state.hot_turns[:-1][-n:]
+
     def reset(self):
         """Clear all conversation state."""
         self.state = ConversationState()

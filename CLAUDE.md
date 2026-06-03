@@ -107,7 +107,8 @@ USB mic 48 kHz → Silero VAD → 16 kHz buffer
   → broadcast turn event (WS fanout: web /ws + booth_display /ws)
   → eye_led AI_THINKING signal (LT → streamerpi → ESP32)
   → parallel:
-      - hybrid retrieval (pgvector + FTS + trigram → RRF → top-K memories)
+      - hybrid retrieval (pgvector + FTS + trigram → WEIGHTED RRF → top-K memories;
+        semantic channel query is coreference-augmented with last N turns)
       - get_facts_about_speaker (alias-aware: subject ∈ {canonical, 'user', 'i', 'me'} gated by speaker_id)
       - fetch streamerpi /faces → presence ledger update
   → ephemeral_block assembly (mood + ground-truths + memories + WHO PRESENT)
@@ -147,7 +148,7 @@ Vision pipeline runs independently at 1 fps with scene-change gating, plus event
 
   memory/
     manager.py                 # memory CRUD + Ollama embeddings
-    retrieval.py               # hybrid pgvector + FTS + trigram → RRF
+    retrieval.py               # hybrid pgvector + FTS + trigram → weighted RRF (+ cosine fold-in, coreference query)
     facts.py                   # facts table + get_facts_about_speaker (alias-aware, Bundle B)
     extraction.py              # two-pass extractor; canonical subject normalization (Bundle B option b)
     rollup.py                  # sliding-window hot → warm → cold
@@ -254,6 +255,8 @@ curl -X POST http://localhost:8894/api/service/little_timmy/restart
 - **face DB lives on streamerpi only** since 2026-05-07. Old `vision/face_id.py` + `~/.face_db/` retired. Enroll via streamerpi `/face_db/enroll` or `enroll_face_remote.py`.
 - **LT does NOT depend on `demerzel-vision.service` (:8895)** since 2026-05-05. That service is the DeepStack-compatible API for Blue Iris, not LT.
 - **GPT-OSS-120B is retired** (2026-05-24). Local frontier = Qwen3.6 only. Don't suggest it as an alternative.
+- **Retrieval fusion is weighted, not equal-rank** (2026-06-03). `memory/retrieval.py:_fuse` weights channels (default semantic 2.0 / fts 1.0 / trigram 0.5) and folds the semantic cosine distance back in as a tiebreaker (`RRF_COSINE_BONUS`). The `<SEMANTIC_DISTANCE_MAX` (0.50) floor is unchanged; the bonus normalizes *within* the kept band, so re-tuning the floor and the bonus are coupled — change them together. **A/B control:** set `TIMMY_RRF_W_*=1.0` + `TIMMY_RRF_COSINE_BONUS=0.0` + `TIMMY_COREFERENCE_ENABLED=false` to reproduce the old equal-weight, rank-only, bare-utterance behavior exactly. All knobs are env-overridable in `config.py`.
+- **Coreference query affects the semantic channel only** (2026-06-03). `retrieve(query, context_turns=...)` blends the last `CONTEXT_TURNS` (default 2) hot turns into the *embedding* query so elliptical follow-ups ("what about her?") resolve; FTS/trigram still get the bare utterance. Nothing stored changes — `recent_turns_excluding_current()` drops the current utterance (which `add_user_turn` already appended before retrieval runs).
 
 ---
 
@@ -278,7 +281,7 @@ On okLinuxBoxPC, `MEMORY.md` carries one-line pointers to each.
 
 ## Provenance footer
 
-- **Last edited:** 2026-05-30 by Claude (Opus 4.7), with Dan in the loop.
-- **Verified against code on:** 2026-05-30 (HEAD = `5b435d3`).
+- **Last edited:** 2026-06-03 by Claude (Opus 4.8), with Dan in the loop.
+- **Verified against code on:** 2026-06-03 (branch `feat/weighted-rrf-coreference`; weighted-RRF + coreference retrieval landed). Prior: 2026-05-30 (HEAD `5b435d3`).
 - **Spawned this primer:** session 2026-05-29/30 (conv-tier memory refresh + Booth Display button + primer creation).
 - **Next refresh expected:** when any item in the "Refresh trigger checklist" above fires. Do **not** wait for a calendar interval — drift in this file directly mis-leads future sessions.
