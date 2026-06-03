@@ -9,16 +9,29 @@ produce empty arrays.
 import asyncio
 import json
 import logging
+from collections import deque
 from memory.manager import store_memory
 from memory.facts import store_fact
 from llm.client import generate_memory
+import config
 
 log = logging.getLogger(__name__)
 
-# Single-flight: drop new extraction requests while one is already running.
-# Avoids GPU contention with the conversation LLM and bounds memory pressure
-# under fast turn rates. Bool-flag check + set is atomic in single-threaded
-# asyncio (no await between check and set).
+# Bounded FIFO of pending exchanges awaiting extraction. Each item is a dict:
+# {user_text, assistant_text, speaker_id, speaker_name, retries}. Drained one
+# at a time by a self-rescheduling pump (_pump), so at most one extraction task
+# runs at once -- the old single-flight guarantee, but WITHOUT dropping the
+# exchanges that arrive while one is in progress (they queue instead).
+#
+# Why a queue + re-enqueue instead of the old drop-and-forget: extraction shares
+# the single Qwen :8083 slot with conversation. The priority gate in llm.client
+# cancels an in-flight extraction the moment the user speaks again; the old code
+# then lost that work entirely (CancelledError sailed past `except Exception`).
+# Now a cancelled extraction is re-enqueued and parks on generate_memory's
+# existing _wait_for_conversation_idle until the conversation lulls.
+_queue: deque[dict] = deque()
+# True while a _do_extraction task is active. Check+set is atomic in
+# single-threaded asyncio (no await between check in _pump and the set).
 _extraction_running = False
 
 
@@ -78,21 +91,62 @@ async def extract_and_store(
     canonical going forward while the historical "user" rows stay
     surfaceable via the alias.
     """
-    global _extraction_running
     # Skip extraction for very short/empty user messages (likely STT hallucinations)
     stripped = user_text.strip()
     if len(stripped) < 15 and not any(c.isupper() for c in stripped[1:]):
         log.debug("Skipping extraction - user text too short: %r", stripped)
         return
-    if _extraction_running:
-        log.debug("Memory extraction skipped - previous extraction still running")
-        return
-    _extraction_running = True
-    asyncio.create_task(_do_extraction(user_text, assistant_text, speaker_id, speaker_name))
+
+    # Enqueue (bounded). On overflow, drop the OLDEST pending exchange with a
+    # WARN -- never silently truncate (memory-hygiene "no silent caps").
+    if len(_queue) >= config.EXTRACTION_QUEUE_MAX:
+        dropped = _queue.popleft()
+        log.warning(
+            "Extraction queue full (%d); dropping oldest pending exchange: %r",
+            config.EXTRACTION_QUEUE_MAX, dropped["user_text"][:60],
+        )
+    _queue.append({
+        "user_text": user_text,
+        "assistant_text": assistant_text,
+        "speaker_id": speaker_id,
+        "speaker_name": speaker_name,
+        "retries": 0,
+    })
+    _pump()
 
 
-async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | None, speaker_name: str | None = None):
+def _pump() -> None:
+    """Start the next queued extraction if none is running. Called on enqueue
+    and from each _do_extraction's finally so the queue drains serially."""
     global _extraction_running
+    if _extraction_running or not _queue:
+        return
+    item = _queue.popleft()
+    _extraction_running = True
+    # Own task (not awaited by the pump) so the priority gate cancels the
+    # extraction child, never the caller -- and so the finally can re-pump.
+    asyncio.create_task(_do_extraction(item))
+
+
+def _requeue(item: dict) -> None:
+    """Push a cancelled exchange back for another attempt, bounded by
+    EXTRACTION_MAX_RETRIES."""
+    item["retries"] += 1
+    if item["retries"] > config.EXTRACTION_MAX_RETRIES:
+        log.warning(
+            "Extraction dropped after %d cancellations: %r",
+            item["retries"] - 1, item["user_text"][:60],
+        )
+        return
+    _queue.appendleft(item)  # front of line: retry before newer exchanges
+
+
+async def _do_extraction(item: dict):
+    global _extraction_running
+    user_text = item["user_text"]
+    assistant_text = item["assistant_text"]
+    speaker_id = item["speaker_id"]
+    speaker_name = item["speaker_name"]
     try:
         # Pass 1: cheap thinking-OFF classifier
         classify_prompt = _CLASSIFIER_PROMPT.format(
@@ -147,9 +201,16 @@ async def _do_extraction(user_text: str, assistant_text: str, speaker_id: int | 
         log.info("Memory extraction complete: %d facts, %d memories",
                  len(parsed.get("facts", [])), len(parsed.get("memories", [])))
 
+    except asyncio.CancelledError:
+        # Priority gate cancelled us mid-extraction so a user reply can use the
+        # brain. Re-enqueue (bounded) so the work isn't lost; the retry parks on
+        # generate_memory's idle-gate until the conversation lulls.
+        _requeue(item)
+        raise
     except json.JSONDecodeError as e:
         log.warning("Memory extraction JSON parse failed: %s", e)
     except Exception as e:
         log.error("Memory extraction error: %s", e)
     finally:
         _extraction_running = False
+        _pump()  # drain the next queued exchange (or the just-requeued retry)

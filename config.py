@@ -46,6 +46,17 @@ WARM_MAX_SUMMARIES = 3         # max warm summaries in prompt
 ROLLUP_AGE_SECONDS = 1800      # 30 min — trigger rollup for old turns (was 600; bumped for Qwen 3.6 KV-cache reuse)
 ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing rollup; prevents priority-gate starvation when conversation is active
 
+# --- Memory extraction queue (2026-06-03) ---
+# Per-exchange fact/memory extraction is fire-and-forget but shares the single
+# Qwen :8083 slot with conversation. The conversation-priority gate cancels an
+# in-flight extraction whenever the user speaks again, and the old single-flight
+# guard dropped any exchange that arrived mid-extraction -- so during lively
+# chat, turns' facts could go unpersisted. Extraction is now a bounded FIFO
+# queue drained one-at-a-time; a cancelled extraction is re-enqueued (it parks
+# on the existing idle-gate until the conversation lulls) rather than lost.
+EXTRACTION_QUEUE_MAX = 32      # bounded pending-exchange backlog; oldest dropped (with WARN) past this
+EXTRACTION_MAX_RETRIES = 5     # re-enqueue a cancelled extraction up to this many times, then drop (WARN)
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
