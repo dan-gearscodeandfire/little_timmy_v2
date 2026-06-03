@@ -123,10 +123,12 @@ USB mic 48 kHz → Silero VAD → 16 kHz buffer
       - mood update (VADER + nomic-embed → 3×3 axis signals)
       - rollup (idle-windowed; cancellable by next user turn)
       - compliment / 👍👎 detection → flagged.jsonl / feedback_inbox.jsonl
-      - vision.trigger_capture("speech")
 ```
+(Note: the speech-triggered vision capture now fires at **VAD speech-onset**, earlier than this fire-and-forget block — see below.)
 
 Vision pipeline runs independently at 1 fps with scene-change gating, plus event-driven captures. Behavior state machine runs on streamerpi (`behavior.py`) — IDLE / SCAN / TRACK / ENGAGE / LOOK_AROUND / HOLD / SLEEP with transition-cause attribution.
+
+**Scene-change gating (2026-06-03):** `vision/scene_change.py` keeps the global whole-frame MAD gate (`CHANGE_THRESHOLD`) unchanged, plus an **additive localized gate** — it tiles the 160×90 frame into a `VISION_SCENE_GRID_ROWS`×`COLS` grid (default 4×4) and also triggers if any cell's MAD ≥ `VISION_SCENE_LOCALIZED_THRESHOLD` (default 20), catching small/edge motion the global score dilutes below threshold. Additive = can only *increase* triggering, never suppress (zero regression). Optional `VISION_SCENE_ILLUM_INVARIANT` (default off) subtracts the spatial mean of the frame diff so uniform lighting shifts cancel. **Speech-onset capture:** `audio/capture.py` fires a no-arg `set_speech_onset_callback` the instant VAD detects onset; `main()` wires it to `vision.trigger_capture("speech_onset")`, ~1–2 s earlier than the old STT-end trigger (which was removed), so the cached scene is fresher when a visual question lands. Runs against the :8084 vision server, so no contention with the :8083 brain.
 
 ---
 
@@ -299,6 +301,6 @@ On okLinuxBoxPC, `MEMORY.md` carries one-line pointers to each.
 ## Provenance footer
 
 - **Last edited:** 2026-06-03 by Claude (Opus 4.8), with Dan in the loop.
-- **Verified against code on:** 2026-06-03 (branch `feat/weighted-rrf-coreference`; weighted-RRF + coreference retrieval committed `d2af1e1`; proactive-speech path + LT-OS toggle committed `696a961`, dormant by default, live in-frame test pending; extraction queue/re-enqueue added, uncommitted). Prior: 2026-05-30 (HEAD `5b435d3`).
+- **Verified against code on:** 2026-06-03 (`main`; weighted-RRF + coreference `d2af1e1`, proactive-speech + LT-OS toggle `696a961` (dormant, live in-frame test pending), extraction queue/re-enqueue `31ed259`; vision localized scene-gate + speech-onset capture added). Prior: 2026-05-30 (HEAD `5b435d3`).
 - **Spawned this primer:** session 2026-05-29/30 (conv-tier memory refresh + Booth Display button + primer creation).
 - **Next refresh expected:** when any item in the "Refresh trigger checklist" above fires. Do **not** wait for a calendar interval — drift in this file directly mis-leads future sessions.

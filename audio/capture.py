@@ -43,6 +43,11 @@ class AudioCapture:
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Fired (thread-safe, on the event loop) once per utterance the instant
+        # VAD detects speech onset. Used to kick off a fresh vision capture ~1-2s
+        # earlier than waiting for STT to finish, so the cached scene is fresher
+        # when a visual question lands. Set via set_speech_onset_callback.
+        self._on_speech_onset = None
         # VAD model loaded lazily
         self._vad_model = None
         # Live-transcription worker (offloads HTTP off the capture thread)
@@ -252,6 +257,11 @@ class AudioCapture:
                         silence_count = 0
                         audio_buffer = list(pre_speech_ring) + [audio]
                         log.debug("Speech onset detected (prob=%.2f)", vad_prob)
+                        # Kick a fresh vision capture now (speech start), not at
+                        # STT-end -- gives the VLM a head start so the cached
+                        # scene is fresher when the reply is built. Thread-safe.
+                        if self._on_speech_onset and self._loop and not self._loop.is_closed():
+                            self._loop.call_soon_threadsafe(self._on_speech_onset)
                 else:
                     audio_buffer.append(audio)
                     if is_speech:
@@ -297,6 +307,12 @@ class AudioCapture:
                             segment_so_far = np.concatenate(audio_buffer)
                             self._submit_live_audio(segment_so_far)
                             last_transcription = self._latest_live_text
+
+    def set_speech_onset_callback(self, fn):
+        """Register a no-arg callable fired (on the event loop, thread-safe)
+        once per utterance the moment VAD detects speech onset. Used to start a
+        fresh vision capture early. Keep it cheap and non-blocking."""
+        self._on_speech_onset = fn
 
     _live_transcribe_fn = None
 

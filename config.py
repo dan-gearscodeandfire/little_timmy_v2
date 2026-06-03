@@ -147,6 +147,23 @@ LLM_VISION_URL = os.getenv("TIMMY_VISION_URL", "http://localhost:8084")  # dedic
 VISION_PERIODIC_INTERVAL = 10.0   # seconds between periodic captures
 VISION_STALE_THRESHOLD = 60.0    # discard descriptions older than this
 
+# Scene-change gating (2026-06-03). The global-MAD gate (CHANGE_THRESHOLD in
+# vision/scene_change.py) dilutes a small but meaningful gesture at the frame
+# edge across the whole 160x90 frame, so it can stay under threshold and the
+# VLM never fires. The localized gate is ADDITIVE: it tiles the frame into a
+# grid and triggers if ANY cell's MAD exceeds VISION_SCENE_LOCALIZED_THRESHOLD,
+# catching localized motion the global score misses -- it can only INCREASE
+# triggering, never suppress (zero regression to the existing global gate).
+# Set the localized threshold very high to effectively disable it.
+VISION_SCENE_LOCALIZED_THRESHOLD = float(os.getenv("TIMMY_SCENE_LOCALIZED_THRESHOLD", "20.0"))
+VISION_SCENE_GRID_ROWS = int(os.getenv("TIMMY_SCENE_GRID_ROWS", "4"))
+VISION_SCENE_GRID_COLS = int(os.getenv("TIMMY_SCENE_GRID_COLS", "4"))
+# Optional illumination invariance: subtract the spatial mean of the frame diff
+# before scoring so a uniform lighting shift cancels out. Default OFF (the
+# existing thresholds were tuned on raw MAD; enabling rescales them). Applies to
+# both the global and localized scores when on.
+VISION_SCENE_ILLUM_INVARIANT = os.getenv("TIMMY_SCENE_ILLUM_INVARIANT", "false").lower() == "true"
+
 # Trigger 3 - continuous self-improvement of voiceprints. When True, every
 # tight (dist < TIGHT_DRIFT_THRESHOLD = 0.20) confident speaker match
 # contributes to a per-speaker rolling buffer; every DRIFT_BATCH_SIZE = 30

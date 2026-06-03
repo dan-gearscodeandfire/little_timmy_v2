@@ -448,8 +448,10 @@ class Orchestrator:
         speaker_name = speaker_result.name
         speaker_db_id = speaker_result.speaker_id
 
-        # Trigger vision capture on speech detection
-        asyncio.create_task(self.vision.trigger_capture("speech"))
+        # Vision capture is now kicked at VAD speech-ONSET (see
+        # capture.set_speech_onset_callback wiring in main()), ~1-2s earlier
+        # than here, so the cached scene is fresher by the time the reply is
+        # built. No trigger_capture at STT-end anymore.
 
         # Notify behavioral supervisor of speech
         asyncio.create_task(self.supervisor.on_speech_detected(speaker_name))
@@ -1317,6 +1319,13 @@ async def main():
             return ""
 
     orch.capture.set_live_transcribe(live_transcribe)
+
+    # Kick a fresh vision capture at speech onset (fires on the loop thread).
+    # Runs against the vision server :8084 (separate from the :8083 brain), so
+    # it never contends with the conversation tier.
+    def _on_speech_onset():
+        asyncio.create_task(orch.vision.trigger_capture("speech_onset"))
+    orch.capture.set_speech_onset_callback(_on_speech_onset)
 
     # Start web server
     import uvicorn
