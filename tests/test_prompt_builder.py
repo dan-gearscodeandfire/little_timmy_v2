@@ -4,15 +4,27 @@ The dedup at build_messages strips the trailing user turn from `history`
 if it matches the current `user_text` (because the orchestrator's
 add_user_turn already appended the current turn to hot_turns before
 prompt-building runs — so without the strip, the user message would
-appear twice with the system block sandwiched between).
+appear twice).
 
 A regression caught 2026-05-12 by inspection of /api/last_payload: the
 strip's content-equality check failed against `[Dan]: hey timmy`-style
 speaker-prefixed content from ConversationManager.build_history_messages,
 so duplication came back silently.
 
-These tests pin the dedup to the speaker-prefixed AND bare cases, plus
-the guard warning if duplication slips through anyway.
+PROMPT SHAPE (post-2026-05-28 Qwen refactor — see module docstring of
+llm/prompt_builder.py and Zettel little-timmy-conversation-tier-qwen36-
+shipped-2026-05-28): the per-turn dynamic context is NO LONGER a separate
+system message at the tail. The layout is now:
+
+    [0]      system = static persona + protocol clause (KV-cached forever)
+    [1..M-1] history (dedup'd)
+    [M]      user   = [CONTEXT]\\n<ephemeral>\\n[/CONTEXT]\\n
+                      [UTTERANCE]\\n<user_text>\\n[/UTTERANCE]
+
+So the ephemeral block lives INSIDE the wrapped final user message, and
+the raw user_text is wrapped, not bare. These tests pin the dedup to the
+speaker-prefixed AND bare cases under that shape, plus the guard warning
+if duplication slips through anyway.
 
 Run:
     .venv/bin/pytest tests/test_prompt_builder.py -v
@@ -26,7 +38,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from llm.prompt_builder import build_messages
+from llm.prompt_builder import (
+    build_messages,
+    wrap_user_message,
+    build_static_persona_system,
+)
 
 
 def _user(content: str) -> dict:
@@ -35,6 +51,20 @@ def _user(content: str) -> dict:
 
 def _assistant(content: str) -> dict:
     return {"role": "assistant", "content": content}
+
+
+def _wrapped_tail(ephemeral: str, utterance: str) -> dict:
+    """The final user message as build_messages assembles it: the ephemeral
+    context block + raw utterance wrapped in [CONTEXT]/[UTTERANCE]."""
+    return {"role": "user", "content": wrap_user_message(ephemeral, utterance)}
+
+
+def _assert_static_system_head(messages: list[dict]) -> None:
+    """system[0] is the stable persona+protocol, NOT the per-turn ephemeral."""
+    assert messages[0] == {
+        "role": "system",
+        "content": build_static_persona_system(),
+    }
 
 
 def _assert_no_adjacent_duplicate_users(messages: list[dict]) -> None:
@@ -61,10 +91,10 @@ def test_dedup_strips_bare_user_turn_at_tail():
         _user("hey timmy"),  # current turn, already appended
     ]
     msgs = build_messages(history, "EPHEMERAL", "hey timmy")
-    # Tail should be: ephemeral system, single user turn — NOT two user turns.
-    assert msgs[-2] == {"role": "system", "content": "EPHEMERAL"}
-    assert msgs[-1] == {"role": "user", "content": "hey timmy"}
-    # No earlier "hey timmy" user turn remaining.
+    _assert_static_system_head(msgs)
+    # Tail is the wrapped current turn — NOT a second bare user turn.
+    assert msgs[-1] == _wrapped_tail("EPHEMERAL", "hey timmy")
+    # No earlier bare "hey timmy" user turn remaining (stripped).
     assert all(m.get("content") != "hey timmy" for m in msgs[:-1])
     _assert_no_adjacent_duplicate_users(msgs)
 
@@ -79,8 +109,8 @@ def test_dedup_strips_speaker_prefixed_user_turn_at_tail():
         {"role": "user", "content": "[Dan]: hey timmy"},  # current turn
     ]
     msgs = build_messages(history, "EPHEMERAL", "hey timmy")
-    assert msgs[-2] == {"role": "system", "content": "EPHEMERAL"}
-    assert msgs[-1] == {"role": "user", "content": "hey timmy"}
+    _assert_static_system_head(msgs)
+    assert msgs[-1] == _wrapped_tail("EPHEMERAL", "hey timmy")
     # The [Dan]:-prefixed trailing turn must be gone.
     assert all(m.get("content") != "[Dan]: hey timmy" for m in msgs[:-1])
     _assert_no_adjacent_duplicate_users(msgs)
@@ -93,7 +123,9 @@ def test_dedup_handles_unknown_speaker_prefix():
         {"role": "user", "content": "[Unknown_3]: who am I"},
     ]
     msgs = build_messages(history, "EPHEMERAL", "who am I")
-    assert msgs[-1] == {"role": "user", "content": "who am I"}
+    assert msgs[-1] == _wrapped_tail("EPHEMERAL", "who am I")
+    # The prefixed trailing turn was the only history entry and was stripped.
+    assert all(m.get("content") != "[Unknown_3]: who am I" for m in msgs[:-1])
     _assert_no_adjacent_duplicate_users(msgs)
 
 
@@ -107,16 +139,16 @@ def test_dedup_does_not_strip_unrelated_trailing_user_turn():
     msgs = build_messages(history, "EPHEMERAL", "current question")
     # Earlier question should still be in history (no false strip).
     assert any(m.get("content") == "different earlier question" for m in msgs)
-    assert msgs[-1] == {"role": "user", "content": "current question"}
+    assert msgs[-1] == _wrapped_tail("EPHEMERAL", "current question")
     _assert_no_adjacent_duplicate_users(msgs)
 
 
 def test_empty_history():
-    """First turn — no history. Just ephemeral + user."""
+    """First turn — no history. Just static system[0] + wrapped user tail."""
     msgs = build_messages([], "EPHEMERAL", "hello")
     assert msgs == [
-        {"role": "system", "content": "EPHEMERAL"},
-        {"role": "user", "content": "hello"},
+        {"role": "system", "content": build_static_persona_system()},
+        _wrapped_tail("EPHEMERAL", "hello"),
     ]
     _assert_no_adjacent_duplicate_users(msgs)
 
@@ -129,28 +161,21 @@ def test_history_ends_in_assistant_turn():
         _assistant("a1"),
     ]
     msgs = build_messages(history, "EPHEMERAL", "q2")
-    # Assistant turn retained, new user appended.
-    assert msgs[-3] == _assistant("a1")
-    assert msgs[-2] == {"role": "system", "content": "EPHEMERAL"}
-    assert msgs[-1] == {"role": "user", "content": "q2"}
+    _assert_static_system_head(msgs)
+    # Assistant turn retained, wrapped new user appended after it.
+    assert msgs[-2] == _assistant("a1")
+    assert msgs[-1] == _wrapped_tail("EPHEMERAL", "q2")
     _assert_no_adjacent_duplicate_users(msgs)
 
 
 def test_guard_warns_on_actual_duplication(caplog):
-    """The guard should log a warning if the assembled messages contain two
-    adjacent user turns with identical content. Triggered by passing a
-    history whose tail user turn has EMPTY content but matches user_text
-    of empty string — edge case to exercise the warning path."""
+    """Under normal use the dedup guard should NOT warn — dedup handled the
+    trailing duplicate. (The warning path fires only if dedup regresses and
+    two adjacent identical user turns reach the assembled payload.)"""
     caplog.set_level(logging.WARNING, logger="llm.prompt_builder")
-    # Construct a messages payload that will produce adjacent identical
-    # user turns: a non-prefixed tail user turn that doesn't trigger the
-    # strip, by giving it content like "X" but asking with "Y" — and then
-    # we directly check the guard separately. Simplest: pass an already-
-    # well-formed assembly to confirm NO warning fires under healthy use.
     history = [
         _user("[Dan]: hello"),
     ]
     msgs = build_messages(history, "EPHEMERAL", "hello")
-    # Under normal use the guard should NOT warn — dedup handled it.
     assert "adjacent duplicate user messages" not in caplog.text
     _assert_no_adjacent_duplicate_users(msgs)
