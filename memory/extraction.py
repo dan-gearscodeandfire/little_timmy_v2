@@ -17,22 +17,43 @@ import config
 
 log = logging.getLogger(__name__)
 
-# Bounded FIFO of pending exchanges awaiting extraction. Each item is a dict:
-# {user_text, assistant_text, speaker_id, speaker_name, retries}. Drained one
-# at a time by a self-rescheduling pump (_pump), so at most one extraction task
-# runs at once -- the old single-flight guarantee, but WITHOUT dropping the
-# exchanges that arrive while one is in progress (they queue instead).
+# Two-stage pipeline:
 #
-# Why a queue + re-enqueue instead of the old drop-and-forget: extraction shares
-# the single Qwen :8083 slot with conversation. The priority gate in llm.client
-# cancels an in-flight extraction the moment the user speaks again; the old code
-# then lost that work entirely (CancelledError sailed past `except Exception`).
-# Now a cancelled extraction is re-enqueued and parks on generate_memory's
-# existing _wait_for_conversation_idle until the conversation lulls.
-_queue: deque[dict] = deque()
+#   extract_and_store()  -->  _pending (debounce buffer)
+#                                   |  debounce / max-hold timer fires
+#                                   v
+#                             _do_flush(): coalesce by speaker
+#                                   |
+#                                   v
+#                             _queue (serialized executor)  -->  _pump --> _do_extraction
+#
+# Stage 1 (_pending + debounce timer, 2026-06-06): each conversation turn is
+# buffered, NOT extracted immediately. A new turn re-arms the timer, so during a
+# lively back-and-forth no extraction ever STARTS -- which is the whole point.
+# The earlier per-turn design started a fresh extraction every turn and let the
+# priority gate cancel it the instant the user spoke again; task.cancel() only
+# drops the httpx connection while llama.cpp keeps computing the abandoned
+# generation server-side, so a burst stacked abandoned-but-running generations on
+# the single-slot (-np 1) Strix Halo brain -> amdgpu hard-wedge (okDemerzel freeze
+# 2026-05-12, 2026-06-06). Debouncing means extraction only fires after
+# EXTRACTION_DEBOUNCE_SECONDS of quiet (or EXTRACTION_MAX_HOLD_SECONDS of unbroken
+# chatter), when the conversation is idle and nothing will be cancelled.
+#
+# Stage 2 (_queue + _pump, the proven 2026-06-03 executor): at flush time the
+# buffer is coalesced -- grouped by speaker, all of one speaker's turns joined
+# into ONE classifier+extraction pass instead of one-per-turn -- and the coalesced
+# items feed the existing single-flight queue. The cancel -> _requeue safety net
+# stays underneath: if the rare lull-time extraction IS cancelled by a resuming
+# conversation, it re-enqueues as one coalesced item (never a per-turn explosion)
+# and parks on generate_memory's _wait_for_conversation_idle until the next lull.
+_pending: deque[dict] = deque()   # stage 1: raw per-turn exchanges awaiting debounce
+_queue: deque[dict] = deque()     # stage 2: coalesced items awaiting serialized extraction
 # True while a _do_extraction task is active. Check+set is atomic in
 # single-threaded asyncio (no await between check in _pump and the set).
 _extraction_running = False
+# Pending debounce timer + when the current buffer started filling (loop.time()).
+_flush_handle: "asyncio.TimerHandle | None" = None
+_buffer_started: float | None = None
 
 
 # L7 2026-05-14: prompts are externalized so they version-control cleanly
@@ -78,11 +99,12 @@ async def extract_and_store(
     speaker_id: int | None = None,
     speaker_name: str | None = None,
 ):
-    """Extract memories and facts from a conversation exchange.
+    """Buffer a conversation exchange for debounced, coalesced extraction.
 
-    Two-pass: thinking-OFF classifier first (cheap), then thinking-ON
-    structured extraction only if the classifier says yes. Single-flight:
-    drops new requests while one is in progress.
+    Returns fast (just buffers + arms a timer) -- the actual two-pass
+    classifier+extraction runs later, only after the conversation has been
+    quiet for config.EXTRACTION_DEBOUNCE_SECONDS (or buffering has hit
+    config.EXTRACTION_MAX_HOLD_SECONDS). See the module-level pipeline note.
 
     speaker_name (when known) is used to normalize self-reference subjects
     in the LLM output: "user" / "i" / "me" become the canonical name,
@@ -97,27 +119,99 @@ async def extract_and_store(
         log.debug("Skipping extraction - user text too short: %r", stripped)
         return
 
-    # Enqueue (bounded). On overflow, drop the OLDEST pending exchange with a
+    # Buffer (bounded). On overflow, drop the OLDEST pending exchange with a
     # WARN -- never silently truncate (memory-hygiene "no silent caps").
-    if len(_queue) >= config.EXTRACTION_QUEUE_MAX:
-        dropped = _queue.popleft()
+    if len(_pending) >= config.EXTRACTION_QUEUE_MAX:
+        dropped = _pending.popleft()
         log.warning(
-            "Extraction queue full (%d); dropping oldest pending exchange: %r",
+            "Extraction buffer full (%d); dropping oldest pending exchange: %r",
             config.EXTRACTION_QUEUE_MAX, dropped["user_text"][:60],
         )
-    _queue.append({
+    _pending.append({
         "user_text": user_text,
         "assistant_text": assistant_text,
         "speaker_id": speaker_id,
         "speaker_name": speaker_name,
         "retries": 0,
     })
+    _arm_flush()
+
+
+def _arm_flush() -> None:
+    """(Re)arm the debounce timer after a turn is buffered. A new turn pushes
+    the flush out by EXTRACTION_DEBOUNCE_SECONDS, so a lively back-and-forth
+    keeps deferring extraction until it lulls -- bounded by
+    EXTRACTION_MAX_HOLD_SECONDS measured from when the buffer started filling,
+    so an unbroken monologue still flushes."""
+    global _flush_handle, _buffer_started
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    if _buffer_started is None:
+        _buffer_started = now
+    # Cap by remaining hold budget so a non-stop talker can't defer forever.
+    remaining_hold = config.EXTRACTION_MAX_HOLD_SECONDS - (now - _buffer_started)
+    if remaining_hold <= 0:
+        _do_flush()
+        return
+    delay = min(config.EXTRACTION_DEBOUNCE_SECONDS, remaining_hold)
+    if _flush_handle is not None:
+        _flush_handle.cancel()
+    _flush_handle = loop.call_later(delay, _do_flush)
+
+
+def _do_flush() -> None:
+    """Debounce fired: drain the buffer, coalesce by speaker into the executor
+    queue, and start draining. Runs in the event loop (call_later), so it only
+    builds items + calls _pump -- no awaits."""
+    global _flush_handle, _buffer_started
+    if _flush_handle is not None:
+        _flush_handle.cancel()
+    _flush_handle = None
+    _buffer_started = None
+    if not _pending:
+        return
+    items = list(_pending)
+    _pending.clear()
+    coalesced = _coalesce_by_speaker(items)
+    log.info("Extraction flush: %d buffered turn(s) -> %d coalesced pass(es)",
+             len(items), len(coalesced))
+    _queue.extend(coalesced)
     _pump()
 
 
+def _coalesce_by_speaker(items: list[dict]) -> list[dict]:
+    """Group buffered turns by speaker (preserving first-seen order) and join
+    each group's turns into one extraction item. Coalescing per-speaker keeps
+    store_fact's speaker_id / _normalize_subject(speaker_name) attribution
+    correct when two people talked during the same lull (usually it's one).
+    User/assistant texts are newline-joined; the extractor only mines USER
+    statements, so a block of them reads naturally under the prompt's
+    'User:' framing."""
+    groups: dict = {}
+    order: list = []
+    for it in items:
+        key = (it["speaker_id"], it["speaker_name"])
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(it)
+    out: list[dict] = []
+    for key in order:
+        group = groups[key]
+        speaker_id, speaker_name = key
+        out.append({
+            "user_text": "\n".join(g["user_text"] for g in group),
+            "assistant_text": "\n".join(g["assistant_text"] for g in group),
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "retries": 0,
+        })
+    return out
+
+
 def _pump() -> None:
-    """Start the next queued extraction if none is running. Called on enqueue
-    and from each _do_extraction's finally so the queue drains serially."""
+    """Start the next queued extraction if none is running. Called from the
+    flush and from each _do_extraction's finally so the queue drains serially."""
     global _extraction_running
     if _extraction_running or not _queue:
         return
@@ -161,14 +255,19 @@ async def _do_extraction(item: dict):
             return
         log.info("Memory classifier said yes - running full extraction")
 
-        # Pass 2: thinking-ON structured extraction. Prompt loaded from
+        # Pass 2: thinking-OFF structured extraction. Prompt loaded from
         # prompts/extract_facts.txt at module import; formatted with the
-        # turn-specific user/assistant text here.
+        # turn-specific user/assistant text here. Was thinking=True until
+        # 2026-06-06: the ~1436-token CoT per attempt was the per-call
+        # amplifier in the okDemerzel hard-freeze (cancel-churn of abandoned
+        # thinking-ON generations on the single-slot -np1 Vulkan brain). This
+        # is a structured-JSON tool, so thinking OFF matches the standing
+        # thinking-OFF-for-structured-tools rule. (A/B extraction quality.)
         prompt = _EXTRACTION_PROMPT.format(
             user_text=user_text, assistant_text=assistant_text,
         )
 
-        result = await generate_memory(prompt, thinking=True)
+        result = await generate_memory(prompt, thinking=False)
         if not result:
             return
 

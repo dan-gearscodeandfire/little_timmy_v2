@@ -57,6 +57,25 @@ ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing ro
 EXTRACTION_QUEUE_MAX = 32      # bounded pending-exchange backlog; oldest dropped (with WARN) past this
 EXTRACTION_MAX_RETRIES = 5     # re-enqueue a cancelled extraction up to this many times, then drop (WARN)
 
+# --- Debounce + coalesce (2026-06-06, cancel-churn structural fix) ---
+# The bounded queue above stopped DROPPING exchanges, but during a lively burst
+# it still STARTED a fresh extraction every turn -- each one cancelled client-side
+# the instant the user spoke again. The priority gate's task.cancel() only drops
+# the httpx connection; llama.cpp keeps computing the abandoned generation
+# server-side. Over a burst those abandoned-but-still-running generations stack
+# under the live conversation gens -> concurrent Vulkan compute on the single-slot
+# (-np 1) Strix Halo brain -> amdgpu hard-wedge (okDemerzel freeze 2026-05-12,
+# 2026-06-06). Fix: don't START extraction during the burst at all. Buffer each
+# turn and debounce; only after the conversation has been quiet for
+# EXTRACTION_DEBOUNCE_SECONDS do we drain the buffer, coalesce it (grouped by
+# speaker) into ONE classifier+extraction pass, and run it -- at which point the
+# idle-gate passes instantly and nothing gets cancelled. EXTRACTION_MAX_HOLD_SECONDS
+# is the ceiling so an unbroken monologue still flushes instead of deferring facts
+# forever (and pinning the buffer). See project_okdemerzel_hang_2026-05-12 +
+# Obsidian okdemerzel-freeze-rca-extraction-cancel-churn-2026-06-06.
+EXTRACTION_DEBOUNCE_SECONDS = 8.0   # quiet gap after the last turn before extraction fires; each new turn resets it
+EXTRACTION_MAX_HOLD_SECONDS = 90.0  # flush anyway after this much continuous chatter, debounce notwithstanding
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
@@ -109,7 +128,7 @@ PROACTIVE_MAX_SENTENCES = int(os.getenv("TIMMY_PROACTIVE_MAX_SENTENCES", "1"))  
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
 CONVERSATION_TEMPERATURE = 0.85  # bumped from 0.7 2026-05-15 to break the identical-back-to-back-reply pattern observed with the new Qwen 3.6 payload
-MEMORY_MAX_TOKENS = 3072  # bumped from 1024 for Qwen3.6 thinking=True (probed: 1436 tokens for a typical extraction; 3072 gives ~2x headroom)
+MEMORY_MAX_TOKENS = 3072  # kept generous after extraction went thinking=False (2026-06-06): this is a ceiling, not a target -- thinking-off JSON stops well short, and a tight cap would risk truncating multi-fact JSON -> parse fail -> lost+re-enqueued extraction (the churn we removed). Was bumped 1024->3072 for the old thinking=True CoT (~1436 tok).
 MEMORY_TEMPERATURE = 0.3
 
 # --- Persona ---
