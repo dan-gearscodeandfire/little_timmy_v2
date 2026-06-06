@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main import (
+from conversation.reply_filter import (
     filtered_assistant_stream,
     user_invites_longer_reply,
     _REPLY_VETO_FALLBACK,

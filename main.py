@@ -39,6 +39,10 @@ from memory.extraction import extract_and_store
 from feedback.detector import maybe_capture_feedback
 from speaker.voice_commands import detect_reenroll_intent
 from conversation.manager import ConversationManager
+from conversation.turn import (
+    ConversationTurn, LiveLLM, LiveMemory, SpeakerIdentity, TurnContext, TurnSettings,
+)
+from conversation.introductions import Introductions
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
@@ -65,189 +69,13 @@ logging.basicConfig(
 log = logging.getLogger("timmy")
 
 
-# --- Reply hygiene ---
-# 2026-05-11 session repeatedly flagged verbose narration replies where the
-# Llama 3B conversation tier treated the [WHAT YOU SEE] vision context as a
-# cue to describe the workshop unprompted, violating "1-2 short sentences"
-# and "do NOT narrate the scene" rules in the system prompt. Two known
-# offenders below; the same canned phrase "a window into the digital world,
-# with lines of code scrolling by" came out twice within a few turns.
-_NARRATION_PREFIXES = (
-    "i'm standing in front of",
-    "i'm surrounded by",
-    "the workshop is",
-    "the room is",
-    "the computer monitor behind",
-    "you are standing in",
+# The reply-hygiene post-filter now lives in conversation.reply_filter
+# (canonical copy, used inside ConversationTurn). main.py only needs these
+# two symbols for the finalized-turn snapshot's sentence-cap recompute.
+from conversation.reply_filter import (
+    user_invites_longer_reply,
+    _REPLY_LONGER_SENTENCES,
 )
-_NARRATION_PREFIX_CHECK_AT = 30  # chars
-_REPLY_MAX_SENTENCES = 2
-_REPLY_VETO_FALLBACK = "Sure."
-
-# When the user explicitly invites a longer reply, allow up to this many
-# sentences instead of _REPLY_MAX_SENTENCES. Still bounded — runaway-prone
-# narration is still a risk — but enough for a substantive answer like
-# "what do you know about me" or "tell me your story".
-_REPLY_LONGER_SENTENCES = 6
-
-# Phrases (lowercase substring match on the user turn) that signal the user
-# explicitly wants Timmy to speak past the default 2-sentence cap. Matched
-# loosely — false positives just lengthen one reply, false negatives are
-# the regression we're trying to avoid.
-_LONGER_REPLY_PERMISSION_PHRASES = (
-    "speak longer",
-    "talk longer",
-    "longer than usual",
-    "longer answer",
-    "longer response",
-    "go into detail",
-    "in detail",
-    "in depth",
-    "tell me more about",
-    "tell me everything",
-    "tell me your story",
-    "you can be verbose",
-    "you may be verbose",
-    "open-ended",
-    "open ended",
-    "long answer",
-    "give me a long",
-)
-
-
-def user_invites_longer_reply(user_text: str) -> bool:
-    """True if the user's turn contains an explicit permission phrase
-    inviting Timmy to speak beyond the default 2-sentence cap."""
-    if not user_text:
-        return False
-    lower = user_text.lower()
-    return any(p in lower for p in _LONGER_REPLY_PERMISSION_PHRASES)
-
-
-def _looks_like_narration(buf: str) -> bool:
-    head = buf.lower().lstrip()[:50]
-    return any(head.startswith(p) for p in _NARRATION_PREFIXES)
-
-
-def _trim_at_nth_terminator(s: str, n: int) -> str:
-    """Return prefix of `s` up to and including the nth `.!?` occurrence.
-    Returns the full string unchanged if there are fewer than n terminators,
-    or empty string if n<=0. Used by filtered_assistant_stream to truncate
-    cleanly at the cap-th sentence boundary instead of yielding the entire
-    cap-crossing token and leaking the start of sentence N+1 downstream."""
-    if n <= 0:
-        return ""
-    seen = 0
-    for i, ch in enumerate(s):
-        if ch in ".!?":
-            seen += 1
-            if seen == n:
-                return s[: i + 1]
-    return s
-
-
-async def filtered_assistant_stream(token_iter, max_sentences: int | None = None):
-    """Post-filter the conversation-tier token stream before TTS sees it.
-
-    Two veto paths:
-      - Narration prefix (first ~30 chars) -> swallow the rest of the
-        upstream and yield a single fallback ("Sure.") so TTS still
-        speaks something terse. Tokens are buffered until the prefix
-        check has fired so the veto suppresses the entire reply rather
-        than letting the first ~29 chars leak to TTS / WS / hot_turns.
-      - N sentence terminators (.!?) accumulated -> swallow the rest of
-        the upstream so TTS / persistence / WS broadcast all see the
-        truncated form. Default N is _REPLY_MAX_SENTENCES (2). Callers
-        can override via `max_sentences` (e.g. _REPLY_LONGER_SENTENCES
-        when the user invited a longer reply via
-        `user_invites_longer_reply`).
-
-    Sentence terminators inside abbreviations are not a concern here:
-    Llama 3B almost never emits "Mr." / "Dr." in this skeleton-cohost
-    persona.
-    """
-    cap = max_sentences if max_sentences and max_sentences > 0 else _REPLY_MAX_SENTENCES
-    accum = ""
-    buffered = ""
-    sentence_count = 0
-    narration_checked = False
-    drained = False
-    async for token in token_iter:
-        if drained:
-            # Keep iterating to let the upstream finish cleanly; drop the
-            # tokens silently. Upstream HTTP connection stays healthy.
-            continue
-        accum += token
-        if not narration_checked:
-            # Hold every token until accum reaches the prefix-check window.
-            # Without this hold, the first ~29 chars would already be on
-            # TTS / WS / hot_turns before the veto fires, defeating it.
-            buffered += token
-            if len(accum) < _NARRATION_PREFIX_CHECK_AT:
-                continue
-            narration_checked = True
-            if _looks_like_narration(accum):
-                log.warning("[POST-FILTER] vetoed narration reply (first 60 chars): %r",
-                            accum[:60])
-                drained = True
-                yield _REPLY_VETO_FALLBACK
-                continue
-            # Safe prefix — flush the buffer in one chunk and resume
-            # streaming. Sentence counting catches up on the buffered text.
-            # 2026-05-15: if the buffer already crosses the cap, trim it at
-            # the cap-th terminator so we don't leak the start of sentence
-            # N+1 into TTS / hot_turns. Previously the entire buffered
-            # prefix was yielded and the leaked partial got picked up by
-            # the end-of-stream flush in _stream_to_tts, producing audible
-            # mid-sentence cutoffs (e.g. "Fine. Dexter and Preston. I'll").
-            buf_terminators = sum(1 for ch in buffered if ch in ".!?")
-            if sentence_count + buf_terminators >= cap:
-                trimmed = _trim_at_nth_terminator(buffered, cap - sentence_count)
-                yield trimmed
-                log.info("[POST-FILTER] capped reply at %d sentences (trimmed in narration-flush; dropped %d chars)",
-                         cap, len(buffered) - len(trimmed))
-                sentence_count = cap
-                buffered = ""
-                drained = True
-                continue
-            sentence_count += buf_terminators
-            yield buffered
-            buffered = ""
-            continue
-        # Token branch: same trim-at-cap discipline as the narration flush.
-        tok_terminators = sum(1 for ch in token if ch in ".!?")
-        if sentence_count + tok_terminators >= cap:
-            trimmed = _trim_at_nth_terminator(token, cap - sentence_count)
-            yield trimmed
-            log.info("[POST-FILTER] capped reply at %d sentences (trimmed mid-token; dropped %d chars)",
-                     cap, len(token) - len(trimmed))
-            sentence_count = cap
-            drained = True
-            continue
-        sentence_count += tok_terminators
-        yield token
-    # End-of-stream flush: a reply shorter than the prefix-check window
-    # never triggered the narration check. Every entry in _NARRATION_PREFIXES
-    # is <30 chars, so a reply that is exactly "the room is" (15 chars) and
-    # then stops would otherwise slip through. Run the check defensively.
-    # Also apply the sentence cap here — short replies that fit entirely
-    # inside the buffer bypass the per-token cap check otherwise.
-    if buffered and not drained:
-        if _looks_like_narration(accum):
-            log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
-            yield _REPLY_VETO_FALLBACK
-        else:
-            # Trim to the cap-th terminator if the buffer has ≥cap terminators
-            # AND any trailing content after the cap-th. Catches both
-            # "A. B. C." (3 terminators, cap=2) and "A. B. C" (2 terminators
-            # + partial third sentence) — both previously fell through as
-            # incomplete-trailing-sentence cutoffs.
-            trimmed = _trim_at_nth_terminator(buffered, cap)
-            if 0 < len(trimmed) < len(buffered):
-                log.info("[POST-FILTER] capped short reply at %d sentences (dropped %d chars)",
-                         cap, len(buffered) - len(trimmed))
-                buffered = trimmed
-            yield buffered
 
 
 class Orchestrator:
@@ -285,6 +113,27 @@ class Orchestrator:
         # Proactive-speech debounce state.
         self._last_proactive_time = 0.0
         self._proactive_times: deque[float] = deque(maxlen=16)  # for per-minute rate cap
+
+        # The deep module that owns a conversation turn (retrieve -> prompt ->
+        # stream -> filter -> per-sentence TTS -> save). The Orchestrator is now
+        # the doorway: it identifies the speaker, handles presence side-effects,
+        # then delegates the turn here. See CONTEXT.md. Collaborators are the
+        # real adapters; tests build ConversationTurn with fakes instead.
+        self._turn = ConversationTurn(
+            speaker=self.tts,
+            llm=LiveLLM(),
+            memory=LiveMemory(top_k=config.RETRIEVAL_TOP_K),
+            history=self.conversation,
+            settings=TurnSettings.from_config(),
+            on_event=broadcast_event,
+        )
+
+        # The "what's your name?" sub-dialog owns its own cross-turn state and
+        # speaks via the turn's say(). The doorway consults it each turn.
+        self._introductions = Introductions(
+            speaker_id_module=self.speaker_id_module,
+            turn=self._turn,
+        )
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
@@ -478,7 +327,7 @@ class Orchestrator:
             )
             if unknown_info:
                 self.speaker_id_module.mark_name_asked(speaker_result.name)
-                await self._ask_speaker_name(unknown_info, t_start, stt_ms, spk_ms)
+                await self._introductions.ask_name(unknown_info)
                 return
 
         await self._generate_response(
@@ -488,109 +337,6 @@ class Orchestrator:
             spk_ms=spk_ms,
         )
 
-    async def _stream_to_tts(
-        self,
-        messages: list[dict],
-        *,
-        max_sentences: int | None = None,
-        on_first_token=None,
-        on_first_sentence=None,
-    ) -> tuple[str, dict]:
-        """Stream LLM tokens, sentence-buffer them, hand each sentence to TTS.
-
-        Returns (full_response, timings) where timings keys are:
-          first_token_ms : ms from helper-start to the first model token
-                           (None if the stream produced nothing)
-          first_tts_ms   : ms from helper-start to the first TTS-speak call
-                           (None if no sentence was spoken)
-          total_ms       : ms from helper-start to helper-return
-
-        Optional callbacks (each can be an async function):
-          on_first_token    : fires once, when the first token lands
-          on_first_sentence : fires once, just before the first TTS-speak call
-
-        M2 2026-05-14: extracted from three near-identical loops in
-        _ask_speaker_name, _confirm_name, and _generate_response. Per-token
-        broadcast_event("token", ...) and sentence-boundary detection are
-        identical; the side-effect hooks let the generate path layer in
-        eye_led + supervisor calls without duplicating the loop body.
-        """
-        t_start = time.time()
-        full_response = ""
-        sentence_buffer = ""
-        first_token_time: float | None = None
-        first_tts_time: float | None = None
-
-        async for token in filtered_assistant_stream(
-            stream_conversation(messages), max_sentences=max_sentences,
-        ):
-            if first_token_time is None:
-                first_token_time = time.time()
-                if on_first_token is not None:
-                    await on_first_token()
-            full_response += token
-            sentence_buffer += token
-            await broadcast_event("token", {"content": token})
-            stripped = sentence_buffer.rstrip()
-            if stripped and stripped[-1] in ".?!;:":
-                sentence = sentence_buffer.strip()
-                sentence_buffer = ""
-                if sentence:
-                    if first_tts_time is None:
-                        first_tts_time = time.time()
-                        if on_first_sentence is not None:
-                            await on_first_sentence()
-                    await self.tts.speak(sentence)
-
-        if sentence_buffer.strip():
-            if first_tts_time is None:
-                first_tts_time = time.time()
-                if on_first_sentence is not None:
-                    await on_first_sentence()
-            await self.tts.speak(sentence_buffer.strip())
-
-        end_time = time.time()
-        return full_response, {
-            "first_token_ms": int((first_token_time - t_start) * 1000) if first_token_time else None,
-            "first_tts_ms":   int((first_tts_time - t_start) * 1000) if first_tts_time else None,
-            "total_ms":       int((end_time - t_start) * 1000),
-        }
-
-    async def _ask_speaker_name(self, unknown_info, t_start, stt_ms, spk_ms):
-        """Generate a response asking an unknown speaker for their name."""
-        known_names = [
-            ks.name for ks in self.speaker_id_module._known_speakers
-        ]
-        known_str = ", ".join(n.title() for n in known_names if n != "timmy")
-
-        last_quote = unknown_info.last_text[:80] if unknown_info.last_text else "something"
-
-        prompt_text = (
-            f"A new person has joined the conversation. I know {known_str} is here, "
-            f"but someone new just said: \"{last_quote}\". "
-            f"Ask them for their name in a friendly, in-character way."
-        )
-
-        history = self.conversation.build_history_messages()
-        ephemeral = build_ephemeral_block(memories=[], facts=[])
-        messages = build_messages(history, ephemeral, prompt_text)
-
-        full_response, _timings = await self._stream_to_tts(messages)
-        llm_ms = _timings["total_ms"]
-        e2e_ms = int((time.time() - t_start) * 1000)
-
-        log.info("[TIMMY] %s", full_response)
-        log.info("[PERF] stt=%dms spk=%dms llm=%dms e2e=%dms (name solicitation)",
-                 stt_ms, spk_ms, llm_ms, e2e_ms)
-
-        await broadcast_event("turn", {"role": "assistant", "content": full_response})
-        await self.conversation.add_assistant_turn(full_response)
-
-        # Set a flag so next utterance from this unknown triggers name capture
-        self._pending_name_capture = unknown_info.temp_id
-
-    _pending_name_capture: str | None = None
-    _pending_name_confirm: dict | None = None  # {"temp_id": str, "name": str}
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
     # can capture the same (user, assistant, full system prompt) tuple the
     # verbal-feedback path captures.
@@ -663,7 +409,6 @@ class Orchestrator:
 
         self.vision.pause_polling()  # free the GPU while we stream (mirrors main loop)
         try:
-            history = self.conversation.build_history_messages()
             presence_state = (
                 self.room_ledger.current_state() if self._presence_enabled else None
             )
@@ -674,154 +419,47 @@ class Orchestrator:
                 visual_question=False,
                 presence_state=presence_state,
             )
-            messages = build_proactive_messages(history, ephemeral)
 
             asyncio.create_task(self.supervisor.on_tts_start())
             asyncio.create_task(eye_led.notify("SPEAKING"))
 
-            full_response, _timings = await self._stream_to_tts(
-                messages, max_sentences=config.PROACTIVE_MAX_SENTENCES,
-            )
+            # speak_proactively owns the LLM->TTS engine and — only if something
+            # was actually said — the proactive "turn" broadcast and the
+            # assistant-turn persistence. There is no user turn.
+            result = await self._turn.speak_proactively(ephemeral)
 
             asyncio.create_task(self.supervisor.on_tts_end())
             asyncio.create_task(eye_led.notify("AI_CONNECTED"))
 
-            if full_response and full_response.strip():
-                log.info("[PROACTIVE] %s", full_response)
-                await broadcast_event(
-                    "turn",
-                    {"role": "assistant", "content": full_response, "proactive": True},
-                )
-                # Store only the assistant side -- there was no user turn.
-                await self.conversation.add_assistant_turn(full_response)
+            if result.text and result.text.strip():
+                log.info("[PROACTIVE] %s", result.text)
         except Exception:
             log.exception("[PROACTIVE] generation failed")
         finally:
             self.vision.resume_polling()
             self._turn_lock.release()
 
-    async def _confirm_name(self, name: str, t_start: float, stt_ms: int, spk_ms: int):
-        """Have Timmy confirm the extracted name before committing it."""
-        history = self.conversation.build_history_messages()
-        ephemeral = build_ephemeral_block(memories=[], facts=[])
-        confirm_prompt = (
-            f'You just heard someone say their name is "{name.title()}". '
-            f'Repeat the name back to confirm, like "Did you say {name.title()}?" '
-            f'Keep it brief and in-character.'
-        )
-        messages = build_messages(history, ephemeral, confirm_prompt)
-
-        full_response, _timings = await self._stream_to_tts(messages)
-        llm_ms = _timings["total_ms"]
-        e2e_ms = int((time.time() - t_start) * 1000)
-
-        log.info("[TIMMY] %s (name confirmation)", full_response)
-        log.info("[PERF] stt=%dms spk=%dms llm=%dms e2e=%dms (name confirm)",
-                 stt_ms, spk_ms, llm_ms, e2e_ms)
-
-        await broadcast_event("turn", {"role": "assistant", "content": full_response})
-        await self.conversation.add_assistant_turn(full_response)
-
     async def _generate_response(self, user_text: str, stt_ms: int, t_start: float,
                                   speaker_name: str = "dan",
                                   speaker_db_id: int | None = 1,
                                   spk_ms: int = 0):
-        """Core response pipeline: retrieve → prompt → LLM stream → TTS."""
+        """Core response pipeline: presence doorway → delegate to the turn."""
 
-        # --- Check if we're waiting for name confirmation ---
-        if self._pending_name_confirm and speaker_name.startswith("unknown_"):
-            lower = user_text.lower().strip().rstrip(".!?,")
-            if any(w in lower for w in ("yes", "yeah", "yep", "correct", "that's right",
-                                         "right", "sure", "yup", "exactly", "mhm")):
-                name = self._pending_name_confirm["name"]
-                self.speaker_id_module.assign_name(
-                    self._pending_name_confirm["temp_id"], name
-                )
-                speaker_name = name
-                log.info("Confirmed name: %s for %s", name,
-                         self._pending_name_confirm["temp_id"])
-                self._pending_name_confirm = None
-            elif any(w in lower for w in ("no", "nope", "nah", "wrong")):
-                log.info("Name rejected by user, will re-ask next stable utterance")
-                temp_id = self._pending_name_confirm["temp_id"]
-                self._pending_name_confirm = None
-                # Allow re-asking by resetting name_asked
-                for us in self.speaker_id_module._unknown_speakers:
-                    if us.temp_id == temp_id:
-                        us.name_asked = False
-                        break
-            else:
-                # They said something else — maybe the actual name this time
-                name = self._extract_name_from_response(user_text)
-                if name:
-                    self._pending_name_confirm["name"] = name
-                    await self._confirm_name(name, t_start, stt_ms, spk_ms)
-                    return
-                else:
-                    self._pending_name_confirm = None
+        # --- Name-confirmation sub-dialog (Introductions owns the state) ---
+        # If we're mid-introduction, this may speak a follow-up (handled=True ->
+        # we're done) or promote the speaker to a just-confirmed name and fall
+        # through to a normal turn.
+        intro = await self._introductions.handle(user_text, speaker_name)
+        if intro.handled:
+            return
+        speaker_name = intro.speaker_name
 
-        # --- Check if this is a name response to our solicitation ---
-        if self._pending_name_capture and speaker_name.startswith("unknown_"):
-            name = self._extract_name_from_response(user_text)
-            if name:
-                # Ask for confirmation instead of immediately assigning
-                self._pending_name_confirm = {
-                    "temp_id": self._pending_name_capture,
-                    "name": name,
-                }
-                self._pending_name_capture = None
-                await self._confirm_name(name, t_start, stt_ms, spk_ms)
-                return
-            else:
-                log.info("Could not extract name from: %r", user_text)
-            self._pending_name_capture = None
-
-        # --- Memory Retrieval (parallel) ---
-        t1 = time.time()
-
-        words = user_text.lower().split()
-        subjects = []
-        for i, w in enumerate(words):
-            if w == "my" and i + 1 < len(words):
-                subjects.append(f"my {words[i+1]}")
-        # Note: speaker's own facts are fetched via get_facts_about_speaker
-        # below (which aliases subject across {speaker_name, user, i, me}),
-        # so don't add the speaker to `subjects` here -- it would double-count.
-        speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
-
-        # Coreference: blend prior turns into the semantic retrieval query so
-        # elliptical follow-ups ("what about her?") embed near their antecedent.
-        # add_user_turn already ran, so the current utterance is hot_turns[-1];
-        # recent_turns_excluding_current drops it. No-op when COREFERENCE off.
-        ctx_turns = (
-            self.conversation.recent_turns_excluding_current(config.CONTEXT_TURNS)
-            if config.COREFERENCE_ENABLED else None
-        )
-
-        gather_args = [
-            retrieve(user_text, top_k=config.RETRIEVAL_TOP_K, context_turns=ctx_turns),
-            get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty_facts(),
-            get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
-        ]
-        if self._presence_enabled:
-            gather_args.append(self._fetch_face_safe())
-
-        gathered = await asyncio.gather(*gather_args)
-        retrieved_memories = gathered[0]
-        # gather_args[1] = non-speaker subjects ("my X" patterns)
-        # gather_args[2] = speaker's own facts via alias-aware retrieval
-        # Merge, dedupe by fact id, prefer fresher (speaker-side is already
-        # learned_at-ordered).
-        _non_speaker_facts = gathered[1]
-        _speaker_facts = gathered[2]
-        _seen_fact_ids = set()
-        resolved_facts = []
-        for _f in (*_speaker_facts, *_non_speaker_facts):
-            if _f.id in _seen_fact_ids:
-                continue
-            _seen_fact_ids.add(_f.id)
-            resolved_facts.append(_f)
-        face_obs = gathered[3] if len(gathered) > 3 else None
+        # --- Presence face fetch (doorway) ---
+        # Memory retrieval (memories + facts, with coreference + "my X" subject
+        # scoping and fact dedup) now lives inside ConversationTurn. The doorway
+        # only fetches the face observation that identity fusion needs below;
+        # _fetch_face_safe returns None when presence is disabled.
+        face_obs = await self._fetch_face_safe()
 
         # --- Presence: voice + face fusion ---
         fusion_source = None
@@ -894,46 +532,13 @@ class Orchestrator:
             fusion_source = verdict.resolution_source
             face_hint_name = verdict.face_hint_name
             presence_state = self.room_ledger.current_state()
-        retrieval_ms = int((time.time() - t1) * 1000)
-        log.info("[MEMORY] %d memories, %d facts (%dms)",
-                 len(retrieved_memories), len(resolved_facts), retrieval_ms)
 
-        await broadcast_event("retrieval", {
-            "memories": [
-                {"type": m.type, "content": m.content[:200], "score": round(m.score, 3)}
-                for m in retrieved_memories
-            ],
-            "facts": [
-                {"subject": f.subject, "predicate": f.predicate, "value": f.value}
-                for f in resolved_facts
-            ],
-        })
-
-        # --- Build Prompt ---
-        history = self.conversation.build_history_messages()
-
-        # Vision context on visual questions: always use the cached scene
-        # description rather than blocking the response on a fresh VLM call.
-        # `_handle_speech` (~line 393) already fired
-        # `asyncio.create_task(self.vision.trigger_capture("speech"))` on this
-        # turn, plus the periodic poll updates the cache on its own cadence
-        # (VISION_PERIODIC_INTERVAL=10s, scene-change gated). The cache is
-        # typically <10s old when a visual question lands.
-        #
-        # The previous `await trigger_capture("visual_question")` path added
-        # ~5-8s of Qwen3.6 :8084 latency to the response (observed e2e=10.8s
-        # on 2026-05-12 00:28 "Can you tell me what you see right now?", with
-        # llm=1.1s + tts=0.7s and ~9s unaccounted = blocking VLM call). For a
-        # forced refresh on visual_question specifically, schedule with
-        # asyncio.create_task — never await on the response path. Mirrors the
-        # rollup-detach fix in conversation/manager.py (commit d5d434a).
-        #
-        # Trade-off: on a true cold-start (no cached scene yet, periodic
-        # poll hasn't completed once), `vision_desc` will be None and Llama
-        # answers without visual context. The speech-trigger fires the same
-        # capture; the second visual question of the session lands with
-        # context. For OpenSauce this beats the 10s blocking pattern by a
-        # wide margin.
+        # --- Vision context for the prompt (doorway-resolved, passed in) ---
+        # Always use the cached scene rather than blocking the reply on a fresh
+        # VLM call: the speech-onset trigger + periodic poll keep it <10s fresh,
+        # and a blocking visual_question capture once cost ~9s e2e. A forced
+        # refresh must be asyncio.create_task, never awaited here. (Full
+        # rationale in git history.)
         visual_q = is_visual_question(user_text)
         vision_desc = self.vision.get_description()
         if visual_q:
@@ -942,69 +547,58 @@ class Orchestrator:
                 "(speech-trigger refresh runs in background)"
             )
 
-        ephemeral = build_ephemeral_block(
-            memories=retrieved_memories,
-            facts=resolved_facts,
-            speaker_name=speaker_name,
-            vision_description=vision_desc,
-            visual_question=visual_q,
-            presence_state=presence_state,
-            fusion_source=fusion_source,
-            face_hint_name=face_hint_name,
-        )
-        messages = build_messages(history, ephemeral, user_text)
-
-        # --- Stream LLM + TTS Pipeline ---
-        # Honor explicit user permission to speak past the 2-sentence cap
-        # ("you can speak longer than usual", "tell me more about", etc).
-        # Detected on the user_text only -- Llama 3B's reply itself can't
-        # promote the cap. Bounded to _REPLY_LONGER_SENTENCES so unbounded
-        # narration is still impossible.
-        cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(user_text) else None
-
-        # Filler-word gate. 50% on non-curt prompts: queue a short
-        # pre-rendered filler ahead of the real reply so the user
-        # hears Timmy starting to speak immediately instead of waiting
-        # for first-sentence-ready (~190 ms median on Llama 3B). Plays
-        # via the same TTS playback loop so it queues naturally ahead
-        # of the first real sentence; cooldown=0 between them.
+        # Filler-word gate: queue a short pre-rendered filler ahead of the real
+        # reply so the user hears Timmy start immediately. Fired before the turn
+        # streams so it queues naturally ahead of the first real sentence.
         if audio_fillers.should_fire(user_text):
             asyncio.create_task(self.tts.speak_filler(audio_fillers.pick()))
 
         async def _on_first_sentence():
-            # Eye LED + supervisor side effects fire the moment the first
-            # sentence is about to hit TTS. Both are fire-and-forget so they
-            # don't delay the speak() call.
+            # Eye LED + supervisor cues fire the moment the first sentence is
+            # about to hit TTS. Fire-and-forget so they don't delay speak().
             asyncio.create_task(self.supervisor.on_tts_start())
             asyncio.create_task(eye_led.notify("SPEAKING"))
 
-        full_response, _timings = await self._stream_to_tts(
-            messages,
-            max_sentences=cap,
-            on_first_sentence=_on_first_sentence,
+        # --- Delegate the turn to the ConversationTurn module ---
+        # It owns: memory retrieval (+ the "retrieval" broadcast), prompt
+        # assembly (vision + presence passed in), LLM stream, narration/length
+        # filter, per-sentence TTS, the "turn" broadcast, assistant-turn
+        # persistence, and the memory save. The sentence cap is computed inside
+        # from user_invites_longer_reply(user_text).
+        result = await self._turn.respond(
+            user_text,
+            SpeakerIdentity(name=speaker_name, db_id=speaker_db_id),
+            TurnContext(
+                stt_ms=stt_ms, spk_ms=spk_ms, t_start=t_start,
+                vision_description=vision_desc, visual_question=visual_q,
+                presence_state=presence_state, fusion_source=fusion_source,
+                face_hint_name=face_hint_name,
+                on_first_sentence=_on_first_sentence,
+            ),
         )
+        full_response = result.text
+        ephemeral = result.ephemeral
+        messages = result.messages
 
         # Notify supervisor that TTS is done + Eye LED back to listening.
         asyncio.create_task(self.supervisor.on_tts_end())
         asyncio.create_task(eye_led.notify("AI_CONNECTED"))
 
-        llm_first_token_ms = _timings["first_token_ms"] or 0
-        llm_total_ms = _timings["total_ms"]
-        tts_ms = _timings["first_tts_ms"] or 0
+        llm_first_token_ms = result.timings["first_token_ms"] or 0
+        llm_total_ms = result.timings["total_ms"]
+        tts_ms = result.timings["first_tts_ms"] or 0
+        retrieval_ms = result.retrieval_ms
         e2e_ms = int((time.time() - t_start) * 1000)
 
         log.info("[TIMMY] %s", full_response)
         log.info("[PERF] stt=%dms spk=%dms retrieval=%dms llm_ft=%dms llm=%dms tts=%dms e2e=%dms",
                  stt_ms, spk_ms, retrieval_ms, llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms)
 
-        await broadcast_event("turn", {"role": "assistant", "content": full_response})
-        # Bundle A 00:37 reframe: surface the estimated prompt token count
-        # for this turn so the LT-OS Latency panel can show "1234 tokens sent
-        # to LLM" alongside the timing metrics. ~4 chars/token English
-        # heuristic matches conversation.manager.estimate_tokens.
-        _prompt_chars = sum(len(m.get("content", "") or "") for m in messages)
-        est_prompt_tokens = max(1, _prompt_chars // 4)
-        est_completion_tokens = max(0, len(full_response) // 4)
+        # The turn already broadcast the assistant "turn" event and persisted
+        # the assistant turn; the doorway only assembles the metrics report.
+        # est_prompt/completion tokens (~4 chars/token) come back on the result.
+        est_prompt_tokens = result.est_prompt_tokens
+        est_completion_tokens = result.est_completion_tokens
 
         await broadcast_event("metrics", {
             "stt_ms": stt_ms,
@@ -1031,7 +625,11 @@ class Orchestrator:
             last_est_completion_tokens=est_completion_tokens,
         )
 
-        await self.conversation.add_assistant_turn(full_response)
+        # (the assistant turn was already persisted inside ConversationTurn)
+
+        # Recompute the sentence cap for the finalized-turn snapshot below; the
+        # turn computes it internally, mirror it here for the LoRA payload.
+        cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(user_text) else None
 
         # --- Compliment detection for persona tuning (fire-and-forget) ---
         asyncio.create_task(
@@ -1087,10 +685,8 @@ class Orchestrator:
         except Exception as _e:
             log.warning("[T2] voice-command detection failed: %s", _e)
 
-        # --- Async Memory Formation (fire-and-forget) ---
-        await extract_and_store(user_text, full_response,
-                                speaker_id=speaker_db_id,
-                                speaker_name=speaker_name)
+        # (memory formation / extract_and_store already ran as the turn's
+        # final real step inside ConversationTurn — see CONTEXT.md decision 4)
 
         # --- Async Mood Update (fire-and-forget) ---
         # Updates the deterministic 2-axis mood state (engagement, warmth)
@@ -1173,61 +769,6 @@ class Orchestrator:
         log_dir.mkdir(exist_ok=True)
         with open(filename, "w") as f:
             _json.dump(entry, f, indent=2)
-
-    @staticmethod
-    def _extract_name_from_response(text: str) -> str | None:
-        """Try to extract a name from a short response like 'I'm Erin' or 'My name is Erin'.
-
-        Conservative: rejects evasive, playful, or non-name responses.
-        """
-        text = text.strip().rstrip(".!?,")
-        lower = text.lower()
-
-        # Reject obviously evasive/playful responses early
-        _EVASIVE_PHRASES = [
-            "not sure", "don't know", "i'm not", "none of your",
-            "wouldn't you", "guess", "figure it out", "not telling",
-            "not allowed", "can't tell", "secret", "classified",
-            "why do you", "does it matter", "who cares", "i don't",
-            "i can't", "i won't", "not going to", "rather not",
-        ]
-        if any(phrase in lower for phrase in _EVASIVE_PHRASES):
-            return None
-
-        import re
-        patterns = [
-            r"(?:my name is|i'm|i am|it's|call me|they call me|name's|i go by)\s+(\w+)",
-            r"^(\w+)$",  # just a single word
-        ]
-
-        # Expanded rejection set
-        _NOT_NAMES = {
-            # Fillers & affirmations
-            "yes", "no", "yeah", "yep", "nope", "nah", "sure", "ok", "okay",
-            "hi", "hey", "hello", "bye", "thanks",
-            # Articles & pronouns
-            "the", "a", "an", "this", "that", "it", "i",
-            # Question words
-            "what", "who", "why", "how", "when", "where", "which",
-            # Common verbs/adverbs
-            "well", "just", "um", "uh", "like", "really", "actually",
-            "here", "there", "going", "doing", "trying", "thinking",
-            # Adjectives that match "I'm X" but aren't names
-            "not", "fine", "good", "great", "tired", "busy", "sorry",
-            "happy", "sad", "bored", "confused", "lost", "done",
-            "sure", "ready", "allowed", "able", "afraid", "certain",
-            "kidding", "joking", "serious", "curious", "interested",
-            # Negative constructs
-            "nobody", "nothing", "none", "never",
-        }
-
-        for pattern in patterns:
-            m = re.search(pattern, lower)
-            if m:
-                name = m.group(1)
-                if name not in _NOT_NAMES and len(name) >= 2:
-                    return name
-        return None
 
 
 async def main():
