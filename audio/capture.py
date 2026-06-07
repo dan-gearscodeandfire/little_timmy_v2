@@ -48,6 +48,14 @@ class AudioCapture:
         # earlier than waiting for STT to finish, so the cached scene is fresher
         # when a visual question lands. Set via set_speech_onset_callback.
         self._on_speech_onset = None
+        # Live turn-taking state, read (cross-thread) by the proactive-speech
+        # gate so it never barges in over the user. `user_speaking` is True from
+        # VAD onset until the utterance finalizes or is discarded; `last_voice_ts`
+        # is the wall-clock of the most recent voiced chunk (for the grace window).
+        # Plain attribute writes from the capture thread -- atomic enough; the
+        # reader only needs a recent snapshot, not strict synchronization.
+        self.user_speaking = False
+        self.last_voice_ts = 0.0
         # VAD model loaded lazily
         self._vad_model = None
         # Live-transcription worker (offloads HTTP off the capture thread)
@@ -248,12 +256,19 @@ class AudioCapture:
                         audio_buffer = []
                         silence_count = 0
                         last_transcription = ''
+                    self.user_speaking = False
                     continue
+
+                # Turn-taking signal for the proactive-speech gate. Updated only
+                # on genuine (non-suppressed, non-muted) voiced chunks.
+                if is_speech:
+                    self.last_voice_ts = time.time()
 
                 if not recording:
                     pre_speech_ring.append(audio)
                     if is_speech:
                         recording = True
+                        self.user_speaking = True
                         silence_count = 0
                         audio_buffer = list(pre_speech_ring) + [audio]
                         log.debug("Speech onset detected (prob=%.2f)", vad_prob)
@@ -281,6 +296,7 @@ class AudioCapture:
                             log.info("Finalized speech (complete, %.1fs)",
                                      len(segment) / target_sr)
                             recording = False
+                            self.user_speaking = False
                             audio_buffer = []
                             silence_count = 0
                             last_transcription = ""
@@ -293,6 +309,7 @@ class AudioCapture:
                         log.info("Finalized speech (timeout, %.1fs)",
                                  len(segment) / target_sr)
                         recording = False
+                        self.user_speaking = False
                         audio_buffer = []
                         silence_count = 0
                         last_transcription = ""

@@ -371,6 +371,16 @@ class Orchestrator:
             return
         if self.capture.hearing_muted:
             return  # a muted Timmy that still talks is surprising
+        # Turn-taking / barge-in guard. The reactive _turn_lock (acquired in the
+        # main loop only when a *finalized* segment lands on speech_queue) does
+        # NOT cover an in-progress utterance, so without this the proactive path
+        # talks right over the user mid-sentence. Bail if they're speaking now,
+        # or spoke within the grace window (covers the finalize->turn-lock handoff
+        # gap and natural mid-thought pauses VAD may endpoint). See config knob.
+        if self.capture.user_speaking:
+            return
+        if time.time() - self.capture.last_voice_ts < config.PROACTIVE_USER_SPEECH_GRACE_SEC:
+            return
         if record is None:
             return
 

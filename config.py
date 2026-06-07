@@ -124,6 +124,13 @@ PROACTIVE_URGENCY_THRESHOLD = float(os.getenv("TIMMY_PROACTIVE_URGENCY_THRESHOLD
 PROACTIVE_COOLDOWN_SEC = float(os.getenv("TIMMY_PROACTIVE_COOLDOWN_SEC", "120.0"))  # min seconds between remarks
 PROACTIVE_MAX_PER_MIN = int(os.getenv("TIMMY_PROACTIVE_MAX_PER_MIN", "1"))          # hard rate cap (belt + suspenders over cooldown)
 PROACTIVE_MAX_SENTENCES = int(os.getenv("TIMMY_PROACTIVE_MAX_SENTENCES", "1"))      # terser than a reactive reply
+# Turn-taking / barge-in guard. The reactive _turn_lock only protects an already
+# *finalized* turn (one on speech_queue); while the user is mid-utterance nothing
+# holds it, so without this gate the proactive path talks right over in-progress
+# speech. maybe_speak_proactively() bails if the user is speaking now, or spoke
+# within this many seconds (grace covers the finalize->turn-lock handoff gap and
+# natural mid-thought pauses VAD may endpoint). Set 0 for a pure binary gate.
+PROACTIVE_USER_SPEECH_GRACE_SEC = float(os.getenv("TIMMY_PROACTIVE_USER_SPEECH_GRACE_SEC", "2.0"))
 
 # --- LLM Generation ---
 CONVERSATION_MAX_TOKENS = 256  # short zingers
