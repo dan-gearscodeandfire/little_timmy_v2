@@ -319,6 +319,50 @@
     letter-spacing: 0.12em;
   }
 
+  /* right edge: tilt rail (vertical mirror of the bottom pan rule) */
+  .tilt-rail {
+    position: absolute;
+    right: 16px;
+    top: 20%; bottom: 20%;
+    width: 14px;
+  }
+  .tilt-rule {
+    position: absolute;
+    left: 7px; top: 0; bottom: 0;
+    width: 1px;
+    background: linear-gradient(180deg,
+      transparent 0%,
+      var(--bone-mid) 6%,
+      var(--bone-mid) 94%,
+      transparent 100%);
+  }
+  .tilt-ticks {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 7px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 2% 0;
+    align-items: flex-end;
+  }
+  .tilt-ticks span {
+    display: block;
+    height: 1px; width: 4px;
+    background: var(--bone-faint);
+  }
+  .tilt-ticks span.major { width: 7px; background: var(--bone-mid); }
+  .tilt-needle {
+    position: absolute;
+    left: 7px;
+    width: 0; height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-right: 8px solid var(--bone-strong);
+    transform: translateY(-50%);
+    transition: top 1.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
   /* a vertical hairline graticule at center, very low opacity */
   .center-hair {
     position: absolute;
@@ -404,6 +448,21 @@
         </div>
       </div>
 
+      <!-- right edge: tilt rail (vertical mirror of the bottom pan rule) -->
+      <div class="tilt-rail">
+        <div class="tilt-rule"></div>
+        <div class="tilt-ticks">
+          <span class="major"></span>
+          <span></span><span></span><span></span><span></span>
+          <span class="major"></span>
+          <span></span><span></span><span></span><span></span>
+          <span class="major"></span>
+          <span></span><span></span><span></span><span></span>
+          <span class="major"></span>
+        </div>
+        <div class="tilt-needle" id="tilt-needle" style="top: 50%;"></div>
+      </div>
+
     </div>
   </div>
 
@@ -414,6 +473,7 @@
     // entry. Ranges are not in the payload, so we hardcode streamerpi's UI-coord
     // limits (matches /servo/status `ranges` returned from the same server).
     const needle = document.getElementById('needle');
+    const tiltNeedle = document.getElementById('tilt-needle');
     const panv = document.getElementById('panv');
     const tiltv = document.getElementById('tiltv');
     const PAN_RANGE  = { min: -90, max:  90 };
@@ -429,6 +489,9 @@
       if (!Number.isFinite(pan) || !Number.isFinite(tilt)) return;
       const pct = ((pan - PAN_RANGE.min) / (PAN_RANGE.max - PAN_RANGE.min)) * 100;
       needle.style.left = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+      // vertical: 0% (top) = max tilt (up), 100% (bottom) = min tilt (down)
+      const tpct = (1 - (tilt - TILT_RANGE.min) / (TILT_RANGE.max - TILT_RANGE.min)) * 100;
+      tiltNeedle.style.top = Math.max(0, Math.min(100, tpct)).toFixed(1) + '%';
       panv.textContent  = fmtDeg(pan);
       tiltv.textContent = fmtDeg(tilt);
     }
