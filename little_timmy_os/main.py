@@ -1881,10 +1881,13 @@ async function pollVision() {
       scores.innerHTML = scoreItems.join(' &middot; ');
     }
 
+    // Frame age + which capture path produced it. This is the exact frame the
+    // VLM last consumed, so the thumbnail above can be trusted as ground-truth.
     const age = v.age_s != null ? v.age_s.toFixed(0) + 's ago' : '--';
+    const src = v.frame_source ? ' (' + v.frame_source + ')' : '';
     const chg = v.change_score != null ? v.change_score.toFixed(1) : '--';
     const ratio = v.stats.polled > 0 ? ((v.stats.analyzed / v.stats.polled) * 100).toFixed(0) : '0';
-    stats.textContent = 'Age: ' + age + ' | Change: ' + chg + ' | VLM: ' + v.stats.analyzed + '/' + v.stats.polled + ' (' + ratio + '%)';
+    stats.textContent = 'Frame: ' + age + src + ' | Change: ' + chg + ' | VLM: ' + v.stats.analyzed + '/' + v.stats.polled + ' (' + ratio + '%)';
 
     // Relevance classifier scores
     const relDiv = document.getElementById('vision-relevance');

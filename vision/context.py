@@ -36,8 +36,13 @@ class VisionContext:
         self._retry_task: asyncio.Task | None = None
         # Rolling buffer of recent scene records (for temporal context)
         self._history: deque[SceneRecord] = deque(maxlen=10)
-        # Last analyzed JPEG (for debug/dashboard display)
+        # Last analyzed JPEG (for debug/dashboard display). Written by BOTH the
+        # periodic poll (_on_frame) and the event-driven trigger_capture so the
+        # dashboard thumbnail is always the exact frame the VLM last consumed.
         self._last_jpeg: bytes | None = None
+        # Which capture path produced _last_jpeg: "poll" | "speech_onset" | ...
+        # Lets an operator trust the thumbnail as ground-truth when debugging.
+        self._last_frame_source: str | None = None
         # Last relevance result
         self._last_relevance: RelevanceResult | None = None
         self._passive_face_callback = None
@@ -163,6 +168,7 @@ class VisionContext:
                 self._current = record
                 self._last_update = time.monotonic()
                 self._last_jpeg = jpeg_bytes
+                self._last_frame_source = "poll"
                 self._history.append(record)
                 self._last_relevance = relevance
 
@@ -189,6 +195,8 @@ class VisionContext:
 
                     self._current = record
                     self._last_update = time.monotonic()
+                    self._last_jpeg = jpeg
+                    self._last_frame_source = reason
                     self._history.append(record)
                     self._last_relevance = relevance
                 return record
@@ -296,6 +304,10 @@ class VisionContext:
             "enabled": self._enabled,
             "has_frame": self._last_jpeg is not None,
             "frame_b64": None,
+            # Which capture path produced the displayed frame, and how old it is.
+            # age_s now refers to this exact frame: _last_jpeg and _last_update
+            # are written together in the same locked block on both paths.
+            "frame_source": self._last_frame_source,
             "record": None,
             "relevance": None,
             "age_s": None,
