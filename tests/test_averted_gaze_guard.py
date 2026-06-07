@@ -50,6 +50,13 @@ CASES = [
     ("what am I wearing", True, True),
     ("how do I look", True, True),
     ("can you see me", True, True),
+    # Live C6 test (2026-06-07): the phrasing Dan actually used. "the X I'm
+    # holding" has no "my"/"am i" and the what..i span is >20 chars, so it
+    # slipped the self-ref detector and Timmy confabulated "it's black" off a
+    # stale frame. The "i'm <presenting-verb>" pattern is what now catches it.
+    ("what color is the thermos I'm holding here", True, True),
+    ("what color is this thing I'm holding", True, True),
+    ("what's this I’m showing you", True, True),  # curly apostrophe (STT)
     # Scene questions: visual, but NOT self-referential -> guard must not fire.
     ("what do you see", True, False),
     ("describe the room", True, False),

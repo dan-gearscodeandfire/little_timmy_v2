@@ -43,6 +43,10 @@ _compiled = [re.compile(p, re.IGNORECASE) for p in _VISUAL_PATTERNS]
 _SELF_REF_PATTERNS = [
     r"\b(am i|do i|how do i)\b",
     r"\bwhat\b.{0,20}\bi\b.{0,15}\b(wearing|holding|doing|making|eating|drinking)\b",
+    # "the thermos I'm holding", "this thing I'm showing you" -- a user
+    # presenting an object presupposes they're in frame, even with no "my".
+    # Apostrophe class covers straight (') and curly (’) STT output.
+    r"\bi['’]?m\b.{0,15}\b(wearing|holding|showing|pointing|presenting|making|eating|drinking)\b",
     r"\b(my|me)\b.{0,20}\b(wearing|holding|shoulder|hand|shirt|jacket|hat|glasses|face|hair|look|looking|holding)\b",
     r"\b(on|in)\b.{0,10}\bmy\b",          # "on my shoulder", "in my hand"
     r"\bwhat('?s| is| am i)?\b.{0,15}\bon me\b",
