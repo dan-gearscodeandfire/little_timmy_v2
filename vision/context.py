@@ -244,6 +244,17 @@ class VisionContext:
         except Exception:
             log.exception("[FACE_ID] Enrichment failed")
 
+    def scene_age(self) -> float | None:
+        """Seconds since the cached scene record was last updated.
+
+        Returns None if vision is disabled or no frame has been analyzed yet.
+        Used by the visual-question block-on-fresh gate to decide whether the
+        cached frame is too stale to answer a direct visual question from.
+        """
+        if not self._enabled or self._current is None:
+            return None
+        return time.monotonic() - self._last_update
+
     def get_scene_record(self) -> SceneRecord | None:
         """Get the current scene record, or None if stale/unavailable."""
         if not self._enabled or self._current is None:
@@ -288,6 +299,22 @@ class VisionContext:
 
         # Relevance says don't inject
         return None
+
+    def get_raw_description(self) -> str | None:
+        """Unfiltered scene summary for direct visual questions.
+
+        get_description() suppresses low-novelty scenes because they aren't
+        worth volunteering unprompted -- but when the user explicitly asks a
+        visual question ("what am I holding?"), the relevance filter is the
+        wrong gate: a freshly-raised teal water bottle scores low novelty in a
+        cluttered workshop, get_description() returns None, the prompt carries
+        no [WHAT YOU SEE] block, and the brain confabulates ("it's a wrench").
+        This returns the raw record summary (objects/activity/people) so the
+        answer is grounded in the frame regardless of novelty. Still honors the
+        60s staleness cutoff via get_scene_record().
+        """
+        record = self.get_scene_record()
+        return record.summary() if record else None
 
     def get_history(self, n: int = 5) -> list[SceneRecord]:
         """Get the last N scene records for temporal context."""

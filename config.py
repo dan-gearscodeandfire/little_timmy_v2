@@ -203,6 +203,16 @@ VISION_AVERTED_GAZE_GUARD = os.getenv("TIMMY_VISION_AVERTED_GAZE_GUARD", "true")
 # Delay before the background recapture so the look-at pan has time to land.
 VISION_RECAPTURE_DELAY_S = float(os.getenv("TIMMY_VISION_RECAPTURE_DELAY_S", "0.6"))
 
+# Block-on-fresh for direct visual questions (2026-06-07). A visual question
+# ("what am I holding?") about a just-presented object can't be answered from a
+# cached frame that predates the gesture. If the cached scene is older than this,
+# the turn AWAITS a fresh capture before composing the answer instead of racing
+# the background speech-onset capture (which lost the race -> confabulation, e.g.
+# answering "your hands are empty" while the VLM had just logged "teal water
+# bottle"). LOW_RES captures run ~2-4s, so the latency hit lands only on visual-Q
+# turns whose frame is actually stale. Set high to disable.
+VISION_VISUAL_Q_MAX_AGE_S = float(os.getenv("TIMMY_VISION_VISUAL_Q_MAX_AGE_S", "2.0"))
+
 # Trigger 3 - continuous self-improvement of voiceprints. When True, every
 # tight (dist < TIGHT_DRIFT_THRESHOLD = 0.20) confident speaker match
 # contributes to a per-speaker rolling buffer; every DRIFT_BATCH_SIZE = 30

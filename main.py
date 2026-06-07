@@ -544,24 +544,43 @@ class Orchestrator:
             presence_state = self.room_ledger.current_state()
 
         # --- Vision context for the prompt (doorway-resolved, passed in) ---
-        # Always use the cached scene rather than blocking the reply on a fresh
-        # VLM call: the speech-onset trigger + periodic poll keep it <10s fresh,
-        # and a blocking visual_question capture once cost ~9s e2e. A forced
-        # refresh must be asyncio.create_task, never awaited here. (Full
-        # rationale in git history.)
         # Self-referential visual questions ("what's on my shoulder?", "how do
         # I look?") are genuine visual questions that is_visual_question misses
         # (the C6 utterance was one), so fold them in -- otherwise they'd take
         # the background-awareness vision branch and confabulate.
         self_ref_q = is_self_referential_visual_question(user_text)
         visual_q = is_visual_question(user_text) or self_ref_q
-        vision_desc = self.vision.get_description()
         subject_not_in_view = False
+
+        # Block-on-fresh (2026-06-07): a visual question about a just-presented
+        # object can't be answered from a cached frame predating the gesture.
+        # Historically we never awaited a capture here because the HIGH_RES path
+        # cost ~9s e2e; that path is retired and LOW_RES runs ~2-4s. The
+        # background speech-onset capture also races this turn and loses (it
+        # logged "teal water bottle" microseconds after we snapshotted the stale
+        # "empty hands" record -> confabulation). So when the question is visual
+        # and the cached frame is stale, await our own fresh capture first; the
+        # description AND the averted-gaze guard below then read that frame.
         if visual_q:
-            log.info(
-                "[VISION] Visual question detected; using cached scene "
-                "(speech-trigger refresh runs in background)"
-            )
+            age = self.vision.scene_age()
+            if age is None or age > config.VISION_VISUAL_Q_MAX_AGE_S:
+                log.info(
+                    "[VISION] visual question + stale frame (age=%s) "
+                    "-> blocking on fresh capture before answering",
+                    f"{age:.1f}s" if age is not None else "none",
+                )
+                await self.vision.trigger_capture("visual_question")
+            # Direct visual question: answer from the raw frame, bypassing the
+            # relevance filter (which only gates UNSOLICITED observations). Using
+            # the filtered get_description() here returns None for low-novelty
+            # scenes -> no [WHAT YOU SEE] block -> the brain confabulates.
+            vision_desc = self.vision.get_raw_description()
+        else:
+            vision_desc = self.vision.get_description()
+        if visual_q:
+            log.info("[VISION] Visual question detected (frame age=%s)",
+                     f"{self.vision.scene_age():.1f}s"
+                     if self.vision.scene_age() is not None else "none")
             # Averted-gaze guard (C6): self-referential visual questions
             # presuppose the user is in frame. If the frame we'd answer from
             # contains no person AND streamerpi reports no live face, the head is
