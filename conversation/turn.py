@@ -89,6 +89,10 @@ class TurnContext:
     t_start: Optional[float] = None
     vision_description: Optional[str] = None
     visual_question: bool = False
+    # Averted-gaze guard (C6): set when the turn is a self-referential visual
+    # question but the head isn't aimed at the user, so the cached scene can't
+    # answer it. Flips the prompt to an honest deflection instead of confabulation.
+    subject_not_in_view: bool = False
     presence_state: Optional[dict] = None
     fusion_source: Optional[str] = None
     face_hint_name: Optional[str] = None
@@ -191,6 +195,7 @@ class ConversationTurn:
             speaker_name=who.name,
             vision_description=ctx.vision_description,
             visual_question=ctx.visual_question,
+            vision_subject_absent=ctx.subject_not_in_view,
             presence_state=ctx.presence_state,
             fusion_source=ctx.fusion_source,
             face_hint_name=ctx.face_hint_name,

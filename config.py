@@ -190,6 +190,19 @@ VISION_SCENE_GRID_COLS = int(os.getenv("TIMMY_SCENE_GRID_COLS", "4"))
 # both the global and localized scores when on.
 VISION_SCENE_ILLUM_INVARIANT = os.getenv("TIMMY_SCENE_ILLUM_INVARIANT", "false").lower() == "true"
 
+# Averted-gaze guard (2026-06-07, C6). Self-referential visual questions
+# ("what's on my shoulder?", "how do I look?") presuppose the user is in frame.
+# When the cached frame we'd answer from contains no person AND streamerpi
+# reports no face visible right now, the head is aimed away -- so answering
+# "be specific and descriptive" confabulates about a frame that doesn't contain
+# the subject. With the guard on, deflect honestly instead, and fire a delayed
+# background recapture so the NEXT turn answers from an aimed frame (the
+# look-at-speaker policy pans the head toward the off-camera voice in parallel).
+# Non-self-referential visual questions ("what do you see?") are unaffected.
+VISION_AVERTED_GAZE_GUARD = os.getenv("TIMMY_VISION_AVERTED_GAZE_GUARD", "true").lower() == "true"
+# Delay before the background recapture so the look-at pan has time to land.
+VISION_RECAPTURE_DELAY_S = float(os.getenv("TIMMY_VISION_RECAPTURE_DELAY_S", "0.6"))
+
 # Trigger 3 - continuous self-improvement of voiceprints. When True, every
 # tight (dist < TIGHT_DRIFT_THRESHOLD = 0.20) confident speaker match
 # contributes to a per-speaker rolling buffer; every DRIFT_BATCH_SIZE = 30

@@ -46,7 +46,7 @@ from conversation.introductions import Introductions
 from speaker.identifier import SpeakerIdentifier
 from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
-from vision.visual_question import is_visual_question
+from vision.visual_question import is_visual_question, is_self_referential_visual_question
 from conversation.enroll_intent import detect_enroll_intent
 from vision.supervisor import BehaviorSupervisor
 from presence import (
@@ -549,13 +549,46 @@ class Orchestrator:
         # and a blocking visual_question capture once cost ~9s e2e. A forced
         # refresh must be asyncio.create_task, never awaited here. (Full
         # rationale in git history.)
-        visual_q = is_visual_question(user_text)
+        # Self-referential visual questions ("what's on my shoulder?", "how do
+        # I look?") are genuine visual questions that is_visual_question misses
+        # (the C6 utterance was one), so fold them in -- otherwise they'd take
+        # the background-awareness vision branch and confabulate.
+        self_ref_q = is_self_referential_visual_question(user_text)
+        visual_q = is_visual_question(user_text) or self_ref_q
         vision_desc = self.vision.get_description()
+        subject_not_in_view = False
         if visual_q:
             log.info(
                 "[VISION] Visual question detected; using cached scene "
                 "(speech-trigger refresh runs in background)"
             )
+            # Averted-gaze guard (C6): self-referential visual questions
+            # presuppose the user is in frame. If the frame we'd answer from
+            # contains no person AND streamerpi reports no live face, the head is
+            # aimed away -- deflect honestly instead of confabulating, and fire a
+            # delayed background recapture so the next turn answers from an aimed
+            # frame (look-at pans the head toward the off-camera voice meanwhile).
+            if config.VISION_AVERTED_GAZE_GUARD and self_ref_q:
+                rec = self.vision.get_scene_record()
+                frame_has_person = bool(rec and rec.people)
+                face_live = (
+                    face_obs.behavior.face_visible
+                    if face_obs and face_obs.behavior else None
+                )
+                if not frame_has_person and face_live is not True:
+                    subject_not_in_view = True
+                    log.info(
+                        "[VISION] averted-gaze guard: self-ref visual Q %r but "
+                        "subject not in view (frame_people=%s, face_visible=%s) "
+                        "-> deflecting + background recapture",
+                        user_text[:60], rec.people if rec else None, face_live,
+                    )
+
+                    async def _delayed_recapture():
+                        # Let the look-at pan land before grabbing a fresh frame.
+                        await asyncio.sleep(config.VISION_RECAPTURE_DELAY_S)
+                        await self.vision.trigger_capture("visual_question_recapture")
+                    asyncio.create_task(_delayed_recapture())
 
         # Filler-word gate: queue a short pre-rendered filler ahead of the real
         # reply so the user hears Timmy start immediately. Fired before the turn
@@ -581,6 +614,7 @@ class Orchestrator:
             TurnContext(
                 stt_ms=stt_ms, spk_ms=spk_ms, t_start=t_start,
                 vision_description=vision_desc, visual_question=visual_q,
+                subject_not_in_view=subject_not_in_view,
                 presence_state=presence_state, fusion_source=fusion_source,
                 face_hint_name=face_hint_name,
                 on_first_sentence=_on_first_sentence,

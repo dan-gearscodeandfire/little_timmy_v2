@@ -34,10 +34,43 @@ _VISUAL_PATTERNS = [
 
 _compiled = [re.compile(p, re.IGNORECASE) for p in _VISUAL_PATTERNS]
 
+# Patterns where the question presupposes the USER (or something they're
+# presenting) is in the camera frame -- "what am I wearing", "what's on my
+# shoulder", "how do I look", "can you see me". These are the only visual
+# questions the averted-gaze guard applies to: if the head is looked away,
+# answering them confabulates. Scene questions ("what do you see", "describe
+# the room") are deliberately excluded -- they're answerable from any frame.
+_SELF_REF_PATTERNS = [
+    r"\b(am i|do i|how do i)\b",
+    r"\bwhat\b.{0,20}\bi\b.{0,15}\b(wearing|holding|doing|making|eating|drinking)\b",
+    r"\b(my|me)\b.{0,20}\b(wearing|holding|shoulder|hand|shirt|jacket|hat|glasses|face|hair|look|looking|holding)\b",
+    r"\b(on|in)\b.{0,10}\bmy\b",          # "on my shoulder", "in my hand"
+    r"\bwhat('?s| is| am i)?\b.{0,15}\bon me\b",
+    r"\bcan you see me\b",
+    r"\bdo you see me\b",
+    r"\bhow do i look\b",
+    r"\bwhat.*\b(my)\b.*\b(shirt|jacket|hat|glasses)\b",
+]
+_self_ref_compiled = [re.compile(p, re.IGNORECASE) for p in _SELF_REF_PATTERNS]
+
 
 def is_visual_question(text: str) -> bool:
     """Return True if the utterance is asking a visual question."""
     for pattern in _compiled:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def is_self_referential_visual_question(text: str) -> bool:
+    """Return True if the question presupposes the user is in the camera frame.
+
+    Used by the averted-gaze guard: these questions ("what am I wearing",
+    "what's on my shoulder", "how do I look") can only be answered honestly
+    when the head is actually aimed at the user. Scene questions ("what do you
+    see") return False here so they stay answerable from any frame.
+    """
+    for pattern in _self_ref_compiled:
         if pattern.search(text):
             return True
     return False

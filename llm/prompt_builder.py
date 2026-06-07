@@ -94,6 +94,7 @@ def build_ephemeral_block(
     now: datetime | None = None,
     vision_description: str | None = None,
     visual_question: bool = False,
+    vision_subject_absent: bool = False,
     presence_state: dict | None = None,
     fusion_source: str | None = None,
     face_hint_name: str | None = None,
@@ -180,7 +181,21 @@ def build_ephemeral_block(
             mem_lines.append(f"- ({time_str}) {content}")
         parts.append("\n".join(mem_lines))
 
-    if vision_description:
+    if visual_question and vision_subject_absent:
+        # Averted-gaze guard (C6): the user asked about themselves but the
+        # camera isn't aimed at them, so the cached scene doesn't contain the
+        # subject. Suppress the (wrong) scene description entirely and tell the
+        # model to deflect honestly rather than confabulate. A background
+        # recapture is already in flight so the next turn can answer for real.
+        parts.append(
+            "[WHAT YOU SEE]\n"
+            "You are NOT currently looking at the user -- your camera is aimed "
+            "away from them, so you cannot see them or whatever they're asking "
+            "about. Do NOT guess, describe, or invent any visual detail. In one "
+            "short, natural sentence, tell them you're not looking their way "
+            "right now and that you'll turn toward them."
+        )
+    elif vision_description:
         if visual_question:
             parts.append(
                 "[WHAT YOU SEE]\n" + vision_description
