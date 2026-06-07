@@ -5,19 +5,20 @@
 <title>Little Timmy — Visitor Overlay (Concept B)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=Inter:wght@200;300;400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,500&family=Inter:wght@200;300;400;500;600&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
     --bone: 248, 244, 234;
-    --bone-strong: rgba(248, 244, 234, 0.96);
-    --bone-mid:    rgba(248, 244, 234, 0.78);
-    --bone-faint:  rgba(248, 244, 234, 0.55);
-    --bone-ghost:  rgba(248, 244, 234, 0.38);
-    --signal: rgba(232, 158, 122, 0.95);
-    --shadow-strong: 0 1px 4px rgba(0,0,0,0.85), 0 0 10px rgba(0,0,0,0.55);
-    --shadow-light:  0 1px 3px rgba(0,0,0,0.75);
+    --bone-strong: rgba(248, 244, 234, 1);
+    --bone-mid:    rgba(248, 244, 234, 0.90);
+    --bone-faint:  rgba(248, 244, 234, 0.72);
+    --bone-ghost:  rgba(248, 244, 234, 0.48);
+    --signal: rgba(235, 162, 126, 1);
+    /* tight dark halo (outline + glow) so glyphs separate from a busy frame */
+    --shadow-strong: 0 0 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.9), 0 1px 4px rgba(0,0,0,0.95), 0 0 16px rgba(0,0,0,0.55);
+    --shadow-light:  0 0 2px rgba(0,0,0,0.92), 0 1px 3px rgba(0,0,0,0.85), 0 0 9px rgba(0,0,0,0.5);
   }
 
   html, body {
@@ -51,6 +52,21 @@
     opacity: 0.35;
     mix-blend-mode: overlay;
     pointer-events: none;
+  }
+
+  /* contrast scrim: darkens the edges/corners/bottom where text lives,
+     leaving the center subject clear. Sits above the video, below all text. */
+  .scrim {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg,
+        rgba(0,0,0,0.52) 0%, rgba(0,0,0,0.14) 16%,
+        transparent 38%, transparent 60%,
+        rgba(0,0,0,0.30) 80%, rgba(0,0,0,0.66) 100%),
+      linear-gradient(90deg,
+        rgba(0,0,0,0.46) 0%, transparent 22%,
+        transparent 78%, rgba(0,0,0,0.46) 100%);
   }
 
   /* SVG leader-line layer */
@@ -118,7 +134,7 @@
     display: block;
     font-family: 'Inter', sans-serif;
     font-weight: 500;
-    font-size: 13px;
+    font-size: 15px;
     letter-spacing: 0.24em;
     text-transform: uppercase;
     color: var(--bone-mid);
@@ -151,7 +167,7 @@
   .context-panel .panel-tag {
     font-family: 'Inter', sans-serif;
     font-weight: 500;
-    font-size: 12px;
+    font-size: 14px;
     letter-spacing: 0.32em;
     text-transform: uppercase;
     color: var(--bone-strong);
@@ -164,24 +180,27 @@
     position: absolute;
     top: 32px; bottom: 0; left: 0; right: 0;
     overflow: hidden;
-    mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 78%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 18%, black 78%, transparent 100%);
+  }
+  /* edge fade applies only while content overflows + drifts; short content stays crisp */
+  .context-panel .panel-scroll.overflow {
+    mask-image: linear-gradient(180deg, transparent 0%, black 12%, black 82%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 12%, black 82%, transparent 100%);
   }
   .context-panel .panel-scroll ul {
     list-style: none;
     position: absolute;
-    bottom: 0; left: 0; right: 0;
+    top: 0; left: 0; right: 0;   /* top-anchored: sits directly under the header */
     width: 100%;
-    animation: drift 80s linear infinite;
   }
-  .context-panel.tr .panel-scroll ul { animation-delay: -45s; }
-  .context-panel.tl .panel-scroll ul { animation-delay: -25s; }
-  .context-panel.bl .panel-scroll ul { animation-delay: -65s; }
+  /* drift only when there's more content than fits (set via JS: --drift, --drift-dur) */
+  .context-panel .panel-scroll.overflow ul {
+    animation: drift-v var(--drift-dur, 40s) ease-in-out infinite alternate;
+  }
   .context-panel li {
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
     font-weight: 400;
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1.45;
     letter-spacing: 0.015em;
     color: var(--bone-mid);
@@ -190,9 +209,9 @@
   }
   .context-panel.tr li { text-align: right; }
   .context-panel.tl li, .context-panel.bl li { text-align: left; }
-  @keyframes drift {
-    from { transform: translateY(100%); }
-    to   { transform: translateY(-100%); }
+  @keyframes drift-v {
+    from { transform: translateY(0); }
+    to   { transform: translateY(calc(-1 * var(--drift, 0px))); }
   }
 
   /* top-right plate stamp */
@@ -203,14 +222,14 @@
     font-family: 'Inter', sans-serif;
   }
   .stamp .pl {
-    font-size: 14px;
+    font-size: 16px;
     letter-spacing: 0.34em;
     color: var(--bone-strong);
     text-shadow: var(--shadow-light);
     margin-bottom: 5px;
   }
   .stamp .when {
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 0.24em;
     color: var(--bone-mid);
     text-shadow: var(--shadow-light);
@@ -223,7 +242,7 @@
     top: 30px; left: 36px;
     font-family: 'Inter', sans-serif;
     font-weight: 500;
-    font-size: 13px;
+    font-size: 15px;
     letter-spacing: 0.30em;
     color: var(--bone-strong);
     text-shadow: var(--shadow-light);
@@ -294,7 +313,7 @@
     align-items: baseline;
     font-family: 'Inter', sans-serif;
     font-weight: 500;
-    font-size: 13px;
+    font-size: 15px;
     letter-spacing: 0.26em;
     text-transform: uppercase;
     text-shadow: var(--shadow-light);
@@ -381,6 +400,9 @@
 <body>
   <div class="stage">
     <div id="feed"></div>
+
+    <!-- contrast scrim (above video, below text overlays) -->
+    <div class="scrim"></div>
 
     <!-- center hairline -->
     <div class="center-hair"></div>
@@ -774,6 +796,27 @@
       }
     }
 
+    // Top-anchor each panel; only enable the drift when the list is taller than
+    // its visible area. Sparse content then sits crisp under the header.
+    function updatePanelDrift() {
+      document.querySelectorAll('.context-panel .panel-scroll').forEach((ps) => {
+        const ul = ps.querySelector('ul');
+        if (!ul) return;
+        const overflow = ul.offsetHeight - ps.clientHeight; // offsetHeight ignores transform
+        if (overflow > 4) {
+          ps.style.setProperty('--drift', overflow + 'px');
+          // gentle pace, scaled to how much overflows
+          const dur = Math.max(18, Math.min(70, Math.round(overflow / 40 * 6) + 12));
+          ps.style.setProperty('--drift-dur', dur + 's');
+          ps.classList.add('overflow');
+        } else {
+          ps.classList.remove('overflow');
+          ps.style.removeProperty('--drift');
+          ps.style.removeProperty('--drift-dur');
+        }
+      });
+    }
+
     function renderContext(block) {
       const sig = block.length + ':' + block.slice(0, 80);
       if (sig === lastCtxSig) return;
@@ -782,7 +825,9 @@
       fillList(ctxWho,    s.who);
       fillList(ctxMem,    s.mem);
       fillList(ctxGround, s.ground);
+      updatePanelDrift();
     }
+    window.addEventListener('resize', updatePanelDrift);
 
     async function pollContext() {
       try {
