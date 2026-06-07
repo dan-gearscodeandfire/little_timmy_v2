@@ -406,6 +406,19 @@ async def get_timmy_mood():
         return {"error": f"timmy unreachable: {e}"}
 
 
+@app.post("/api/timmy/mood/override")
+async def set_timmy_mood_override(payload: dict | None = None):
+    """Forward a manual mood override (or release) from the dashboard to Timmy."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/mood/override",
+                                  json=payload or {})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": f"timmy unreachable: {e}"}
+
+
 @app.post("/api/timmy/speaker/reenroll")
 async def proxy_speaker_reenroll(payload: dict | None = None):
     """Forward a UI re-enrollment click to Little Timmy."""
@@ -986,6 +999,37 @@ header .uptime {
   border-color: #e94560;
   box-shadow: 0 0 8px rgba(233, 69, 96, 0.45);
 }
+/* Override mode: cells become clickable targets */
+.mood-grid.override .mood-cell {
+  cursor: pointer;
+}
+.mood-grid.override .mood-cell:hover {
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+.mood-grid.override .mood-cell.active {
+  background: #d29922;            /* amber == human-driven, distinct from auto red */
+  border-color: #d29922;
+  box-shadow: 0 0 8px rgba(210, 153, 34, 0.5);
+  color: #0d1117;
+}
+.mood-override-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  font-size: 11px;
+  color: #8b949e;
+  cursor: pointer;
+  user-select: none;
+}
+.mood-override-toggle input { cursor: pointer; }
+.mood-override-status {
+  font-size: 10px;
+  color: #d29922;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
 .mood-rendered {
   margin-top: 12px;
   background: #0d1117;
@@ -1191,6 +1235,11 @@ header .uptime {
     </details>
     <details class="panel" open style="margin-top:16px;">
       <summary><h2>Mood</h2></summary>
+      <label class="mood-override-toggle">
+        <input type="checkbox" id="mood-override-chk">
+        <span>Manual override</span>
+        <span id="mood-override-status" class="mood-override-status"></span>
+      </label>
       <div class="mood-grid">
         <div class="corner"></div>
         <div class="axis-label-x">Bored</div>
@@ -2627,12 +2676,71 @@ async function pollPresence() {
 pollPresence();
 setInterval(pollPresence, 3000);
 
+// Suppress the next poll's override-UI sync for a beat after a user action so
+// the checkbox/grid don't flicker against the in-flight server round-trip.
+let moodOverrideBusyUntil = 0;
+
+function applyMoodOverrideUI(isOverride) {
+  const chk = document.getElementById('mood-override-chk');
+  const grid = document.querySelector('.mood-grid');
+  const status = document.getElementById('mood-override-status');
+  if (chk && Date.now() > moodOverrideBusyUntil) chk.checked = !!isOverride;
+  if (grid) grid.classList.toggle('override', !!isOverride);
+  if (status) status.textContent = isOverride ? 'manual' : '';
+}
+
+async function postMoodOverride(body) {
+  moodOverrideBusyUntil = Date.now() + 1500;
+  try {
+    const r = await fetch('/api/timmy/mood/override', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data && data.ok === false) { console.warn('mood override failed:', data.error); }
+  } catch (e) { console.warn('mood override post error', e); }
+  pollMood();
+}
+
+function setupMoodOverride() {
+  const chk = document.getElementById('mood-override-chk');
+  if (chk) {
+    chk.addEventListener('change', () => {
+      if (chk.checked) {
+        // Enabling: pin to whatever cell is currently active (no jump).
+        const active = document.querySelector('.mood-cell.active');
+        const x = active ? Number(active.dataset.x) : 0;
+        const y = active ? Number(active.dataset.y) : 0;
+        applyMoodOverrideUI(true);
+        postMoodOverride({enabled: true, x, y});
+      } else {
+        applyMoodOverrideUI(false);
+        postMoodOverride({enabled: false});
+      }
+    });
+  }
+  document.querySelectorAll('.mood-cell').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const chk = document.getElementById('mood-override-chk');
+      if (!chk || !chk.checked) return;   // only clickable in override mode
+      const x = Number(cell.dataset.x);
+      const y = Number(cell.dataset.y);
+      document.querySelectorAll('.mood-cell').forEach(c =>
+        c.classList.toggle('active', c === cell));
+      postMoodOverride({enabled: true, x, y});
+    });
+  });
+}
+setupMoodOverride();
+
 async function pollMood() {
   try {
     const r = await fetch('/api/timmy/mood');
     if (!r.ok) return;
     const data = await r.json();
     if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
+    applyMoodOverrideUI(!!data.override);
     document.querySelectorAll('.mood-cell').forEach(cell => {
       const cx = Number(cell.dataset.x);
       const cy = Number(cell.dataset.y);

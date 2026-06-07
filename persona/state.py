@@ -54,8 +54,13 @@ _VALID = (-1, 0, 1)
 
 @dataclass
 class MoodState:
-    x: int = 0
-    y: int = 0
+    # Product default (2026-06-07): boot pinned to Interested (x=+1) +
+    # Begrudgingly-Nice (y=+1) under manual override (see `override` below), so
+    # a fresh install / reset starts in the cell Dan drives from the dashboard
+    # rather than dead-neutral. Auto drift only takes over once override is
+    # released from the LT-OS Mood panel.
+    x: int = 1
+    y: int = 1
     x_signals: deque = field(default_factory=lambda: deque(maxlen=PERSISTENCE))
     y_signals: deque = field(default_factory=lambda: deque(maxlen=PERSISTENCE))
     last_update_ts: float = 0.0
@@ -67,6 +72,13 @@ class MoodState:
     # in any direction means the axis isn't being silently abandoned).
     x_idle_turns: int = 0
     y_idle_turns: int = 0
+    # Manual override: when True, the axes are pinned to (x, y) by an operator
+    # (LT-OS dashboard) and update() will NOT transition them. Signals are
+    # still recorded for instrumentation so we can see what the auto system
+    # *would* have done. Clearing the override resumes automatic drift from
+    # wherever the axes were pinned. Defaults ON (2026-06-07) so Timmy boots
+    # under manual control at the nice+interested cell above.
+    override: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -79,18 +91,20 @@ class MoodState:
             "last_y_signal": self.last_y_signal,
             "x_idle_turns": self.x_idle_turns,
             "y_idle_turns": self.y_idle_turns,
+            "override": self.override,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "MoodState":
         s = cls(
-            x=int(d.get("x", 0)),
-            y=int(d.get("y", 0)),
+            x=int(d.get("x", 1)),
+            y=int(d.get("y", 1)),
             last_update_ts=float(d.get("last_update_ts", 0.0)),
             last_x_signal=float(d.get("last_x_signal", 0.0)),
             last_y_signal=float(d.get("last_y_signal", 0.0)),
             x_idle_turns=int(d.get("x_idle_turns", 0)),
             y_idle_turns=int(d.get("y_idle_turns", 0)),
+            override=bool(d.get("override", True)),
         )
         for v in d.get("x_signals", [])[-PERSISTENCE:]:
             s.x_signals.append(float(v))
@@ -198,6 +212,34 @@ def update(x_signal: float, y_signal: float) -> dict:
     """
     with _lock:
         s = _load() if _state is None else _state
+
+        # Manual override: axes are pinned by an operator. Record what the
+        # auto system saw (last signals + a debug line tagged override) but do
+        # NOT transition x/y. This keeps the instrumentation honest about what
+        # would have happened while the human is driving.
+        if s.override:
+            sx_obs = _classify_sign(x_signal, s.x)
+            sy_obs = _classify_sign(y_signal, s.y)
+            s.last_update_ts = time.time()
+            s.last_x_signal = float(x_signal)
+            s.last_y_signal = float(y_signal)
+            _save(s)
+            globals()["_state"] = s
+            _debug_log({
+                "ts": s.last_update_ts,
+                "raw_x": float(x_signal),
+                "raw_y": float(y_signal),
+                "classified_sx": sx_obs,
+                "classified_sy": sy_obs,
+                "new_x": s.x,
+                "new_y": s.y,
+                "moved_x": 0,
+                "moved_y": 0,
+                "override": True,
+            })
+            return {"x": s.x, "y": s.y, "moved_x": 0, "moved_y": 0,
+                    "x_signal": x_signal, "y_signal": y_signal, "override": True}
+
         prev_x, prev_y = s.x, s.y
         sx = _classify_sign(x_signal, s.x)
         sy = _classify_sign(y_signal, s.y)
@@ -297,3 +339,43 @@ def reset() -> None:
     with _lock:
         _state = MoodState()
         _save(_state)
+
+
+def set_override(x: int, y: int) -> dict:
+    """Pin the mood to (x, y) and freeze automatic transitions.
+
+    x, y are clamped to {-1, 0, +1}. Clears the persistence buffers so that
+    if the override is later released, the auto system starts fresh from the
+    pinned cell rather than acting on stale pre-override signals.
+    """
+    global _state
+    with _lock:
+        s = _load() if _state is None else _state
+        s.x = max(-1, min(1, int(x)))
+        s.y = max(-1, min(1, int(y)))
+        s.override = True
+        s.x_signals.clear()
+        s.y_signals.clear()
+        s.x_idle_turns = 0
+        s.y_idle_turns = 0
+        s.last_update_ts = time.time()
+        _save(s)
+        _state = s
+        log.info("mood override SET to (x=%d, y=%d)", s.x, s.y)
+        return {"x": s.x, "y": s.y, "override": True}
+
+
+def clear_override() -> dict:
+    """Release the manual override; automatic drift resumes from current cell."""
+    global _state
+    with _lock:
+        s = _load() if _state is None else _state
+        s.override = False
+        s.x_signals.clear()
+        s.y_signals.clear()
+        s.x_idle_turns = 0
+        s.y_idle_turns = 0
+        _save(s)
+        _state = s
+        log.info("mood override CLEARED; resuming auto drift from (x=%d, y=%d)", s.x, s.y)
+        return {"x": s.x, "y": s.y, "override": False}

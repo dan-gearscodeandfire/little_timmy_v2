@@ -146,6 +146,7 @@ async def get_mood():
     s = _mood_get()
     return {
         "x": s.x, "y": s.y,
+        "override": s.override,
         "last_update_ts": s.last_update_ts,
         "last_x_signal": s.last_x_signal,
         "last_y_signal": s.last_y_signal,
@@ -153,6 +154,30 @@ async def get_mood():
         "y_signals": list(s.y_signals),
         "rendered": _render_mood(s),
     }
+
+
+@app.post("/api/mood/override")
+async def set_mood_override(payload: dict):
+    """Manual mood override from the LT-OS dashboard.
+
+    Body: {"enabled": true, "x": int, "y": int} to pin the mood, or
+          {"enabled": false} to release and resume automatic drift.
+    Returns the resulting {x, y, override, rendered}.
+    """
+    from persona import state as _mood_state
+    from persona.render import render as _render_mood
+    enabled = bool(payload.get("enabled", True))
+    if enabled:
+        try:
+            x = int(payload["x"]); y = int(payload["y"])
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "error": "enabled override requires integer x and y"}
+        _mood_state.set_override(x, y)
+    else:
+        _mood_state.clear_override()
+    s = _mood_state.get()
+    return {"ok": True, "x": s.x, "y": s.y, "override": s.override,
+            "rendered": _render_mood(s)}
 
 
 @app.get("/api/feedback")
