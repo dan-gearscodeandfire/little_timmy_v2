@@ -55,6 +55,8 @@ from presence import (
     FaceHintStreak,
     LookAtPolicy,
 )
+from presence.face_enroller import FaceEnroller
+from vision.face_remote import RemoteFaceClient
 from presence.face_client_local import fetch_face_observation_local
 
 logging.basicConfig(
@@ -133,6 +135,23 @@ class Orchestrator:
         self._introductions = Introductions(
             speaker_id_module=self.speaker_id_module,
             turn=self._turn,
+        )
+
+        # Interactive auto-enrollment for *faces* (distinct from FaceHintStreak,
+        # which is voiceprint->known-face binding). Owns the consent/name/guided-
+        # capture/verify FSM; consulted from the conversation doorway (handle) and
+        # from a dedicated /faces poll loop (observe_faces). Default OFF until armed
+        # via TIMMY_AUTO_ENROLL_ENABLED. See presence/face_enroller.py.
+        self._faces_client = RemoteFaceClient(max_age_s=2.0)
+        self._last_unknown_speech_ts = 0.0  # engagement signal: last unknown-voice turn
+        self._last_speech_ts = 0.0          # any-voice turn (test-only engagement relax)
+        self._face_enroller = FaceEnroller(
+            say=self._turn.say,
+            speak=self.tts.speak,
+            enroll_stream=self._enroll_stream,
+            verify_faces=self._faces_client.fetch_fresh_results,
+            turn_lock=self._turn_lock,
+            on_enrolled=self._record_auto_enroll,
         )
 
     async def _fetch_face_safe(self):
@@ -257,6 +276,55 @@ class Orchestrator:
                 f"Sorry, I couldn't get a clear look. Try again with better lighting?"
             )
 
+    async def _enroll_stream(self, name: str, count: int, interval_s: float, mode: str):
+        """Async generator over streamerpi's SSE /face_db/enroll/stream.
+
+        Yields (event_type, payload) tuples — 'started' | 'progress' | 'complete'
+        | 'error' — so FaceEnroller can pace pose cues in real time and abort if
+        the person leaves. Fixed enrollment (/face_db/enroll) stays the voice-
+        triggered path; this streaming variant is for interactive auto-enroll."""
+        payload = {"name": name, "count": count, "interval_s": interval_s, "mode": mode}
+        timeout = httpx.Timeout(60.0, connect=5.0)
+        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+            async with client.stream(
+                "POST", config.STREAMERPI_FACE_ENROLL_STREAM_URL, json=payload
+            ) as resp:
+                resp.raise_for_status()
+                event_type = None
+                async for line in resp.aiter_lines():
+                    if line.startswith("event:"):
+                        event_type = line[6:].strip()
+                    elif line.startswith("data:"):
+                        try:
+                            data = _json.loads(line[5:].strip())
+                        except Exception:
+                            data = {}
+                        if event_type:
+                            yield (event_type, data)
+                            event_type = None
+                    elif not line.strip():
+                        event_type = None
+
+    def _record_auto_enroll(self, name: str, meta: dict) -> None:
+        """Append an auto-enrolled identity to the provenance file (source:auto)
+        for audit / pruning / a future 'forget me' command. Best-effort."""
+        path = config.FACE_ENROLL_PROVENANCE_PATH
+        try:
+            records = []
+            if os.path.exists(path):
+                try:
+                    records = _json.loads(open(path).read()).get("records", [])
+                except Exception:
+                    records = []
+            records.append({"name": name, **meta})
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(_json.dumps({"version": 1, "records": records}, indent=2))
+            os.replace(tmp, path)
+            log.info("[AUTOENROLL] provenance recorded: %s (%s)", name, meta.get("source"))
+        except Exception:
+            log.exception("[AUTOENROLL] provenance write failed for %s", name)
+
     async def process_speech(self, audio: np.ndarray):
         """Process a speech segment through the full pipeline."""
         t_start = time.time()
@@ -293,9 +361,14 @@ class Orchestrator:
         # Store transcribed text on unknown speaker for name solicitation prompt
         if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
             self.speaker_id_module.set_last_text(speaker_result.name, user_text)
+            # Engagement signal for face auto-enroll: an unrecognised voice is
+            # actively talking to LT right now. The face-poll loop pairs this
+            # with a new-face CANDIDATE before offering to remember a face.
+            self._last_unknown_speech_ts = time.time()
 
         speaker_name = speaker_result.name
         speaker_db_id = speaker_result.speaker_id
+        self._last_speech_ts = time.time()  # any-voice engagement (test relax)
 
         # Vision capture is now kicked at VAD speech-ONSET (see
         # capture.set_speech_onset_callback wiring in main()), ~1-2s earlier
@@ -313,6 +386,16 @@ class Orchestrator:
             "speaker": speaker_name,
         })
         await self.conversation.add_user_turn(user_text, speaker=speaker_name)
+
+        # A face auto-enroll consent dialog in flight OWNS this turn. Route it to
+        # the FSM BEFORE the legacy voice enroll-intent / name-ask below, which
+        # would otherwise hijack natural consent phrases. STT audits out a bare
+        # "yes", so consent replies are necessarily long ("yes, you can remember
+        # my face") and keyword-laden — exactly what trips detect_enroll_intent.
+        if self._face_enroller.awaiting:
+            ae = await self._face_enroller.handle(user_text, speaker_name)
+            if ae.handled:
+                return
 
         # voice-enroll-shortcut
         enroll = detect_enroll_intent(user_text, speaker_name)
@@ -463,6 +546,13 @@ class Orchestrator:
         if intro.handled:
             return
         speaker_name = intro.speaker_name
+
+        # --- Face auto-enroll consent dialog (FaceEnroller owns the state) ---
+        # If we're mid-offer ("mind if I remember your face?"), this consumes the
+        # yes/no/name reply and speaks the follow-up; a no-op when not in flight.
+        enroll_outcome = await self._face_enroller.handle(user_text, speaker_name)
+        if enroll_outcome.handled:
+            return
 
         # --- Presence face fetch (doorway) ---
         # Memory retrieval (memories + facts, with coreference + "my X" subject
@@ -972,6 +1062,47 @@ async def main():
 
     vision_monitor_task = asyncio.create_task(vision_people_monitor())
 
+    # Dedicated fast /faces poll feeding the new-face trigger -> interactive
+    # auto-enrollment. Separate from vision_people_monitor (2s, VLM-based) because
+    # the trigger window needs >= MIN_SAMPLES in WINDOW_S (~0.4s cadence). Engaged
+    # = an unrecognised voice spoke recently AND hearing is on AND nobody is
+    # mid-utterance (don't barge in). No-op unless TIMMY_AUTO_ENROLL_ENABLED.
+    async def face_enroll_monitor():
+        if not orch._face_enroller.cfg.enabled:
+            log.info("[AUTOENROLL] disabled (TIMMY_AUTO_ENROLL_ENABLED unset)")
+            return
+        log.info("[AUTOENROLL] armed: polling /faces every %.2fs",
+                 config.AUTO_ENROLL_POLL_INTERVAL_S)
+        while True:
+            try:
+                await asyncio.sleep(config.AUTO_ENROLL_POLL_INTERVAL_S)
+                full = await orch._faces_client.fetch_full()
+                if full is None:
+                    continue
+                now = time.time()
+                # Engagement: an unrecognised voice spoke recently (production), or
+                # ANY voice when the test relax is set (solo single-person test).
+                speech_ts = (
+                    orch._last_speech_ts
+                    if config.AUTO_ENROLL_ENGAGE_ANY_SPEECH
+                    else orch._last_unknown_speech_ts
+                )
+                engaged = (
+                    not orch.capture.hearing_muted
+                    and not orch.capture.user_speaking
+                    and (now - speech_ts) < orch._face_enroller.cfg.engagement_window_s
+                )
+                await orch._face_enroller.observe_faces(
+                    full["faces"], full["image_size"], engaged=engaged,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("[AUTOENROLL] monitor tick error", exc_info=True)
+                await asyncio.sleep(2.0)
+
+    face_enroll_task = asyncio.create_task(face_enroll_monitor())
+
     log.info("=== Little Timmy ready on http://0.0.0.0:%d ===", config.WEB_PORT)
 
     try:
@@ -988,10 +1119,12 @@ async def main():
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:
+        face_enroll_task.cancel()
         await orch.supervisor.stop()
         await orch.vision.stop()
         await orch.capture.stop()
         await orch.tts.stop()
+        await orch._faces_client.close()
         await close_pool()
         server.should_exit = True
 

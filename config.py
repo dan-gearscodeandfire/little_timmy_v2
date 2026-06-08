@@ -166,6 +166,28 @@ STREAMERPI_FACES_URL = os.getenv(
 STREAMERPI_FACE_ENROLL_URL = os.getenv(
     "TIMMY_FACE_ENROLL_URL", "https://192.168.1.110:8080/face_db/enroll"
 )
+STREAMERPI_FACE_ENROLL_STREAM_URL = os.getenv(
+    "TIMMY_FACE_ENROLL_STREAM_URL", "https://192.168.1.110:8080/face_db/enroll/stream"
+)
+STREAMERPI_FACE_DELETE_URL = os.getenv(
+    "TIMMY_FACE_DELETE_URL", "https://192.168.1.110:8080/face_db/delete"
+)
+# Interactive auto-enrollment (presence/face_enroller.py). Default OFF — flip
+# TIMMY_AUTO_ENROLL_ENABLED=1 to arm. Provenance of auto-enrolled identities is
+# appended here for audit / pruning / a future "forget me" command.
+FACE_ENROLL_PROVENANCE_PATH = os.getenv(
+    "TIMMY_FACE_ENROLL_PROVENANCE_PATH",
+    os.path.join(os.path.dirname(__file__), "face_db_provenance.json"),
+)
+# Cadence of the dedicated /faces poll that feeds the new-face trigger. Must be
+# fast enough that WINDOW_S accumulates >= MIN_SAMPLES (5s / 0.4s ~= 12 > 6).
+AUTO_ENROLL_POLL_INTERVAL_S = float(os.getenv("TIMMY_AE_POLL_INTERVAL_S", "0.4"))
+# TEST-ONLY: relax the engagement gate to fire on ANY recent speech instead of
+# only an unrecognised voice. Lets a single known person (Dan, with his face
+# deleted but voiceprint intact) act as the "stranger" for a solo live test.
+# Leave OFF in production — there a true stranger is unknown by face AND voice.
+AUTO_ENROLL_ENGAGE_ANY_SPEECH = os.getenv(
+    "TIMMY_AE_ENGAGE_ANY_SPEECH", "0").strip().lower() in ("1", "true", "yes", "on")
 STREAMERPI_EYE_LED_URL = os.getenv(
     "TIMMY_EYE_LED_URL", "https://192.168.1.110:8080/esp32/write"
 )
