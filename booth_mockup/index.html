@@ -904,14 +904,17 @@
         const faceAge = adj(p.last_seen_face_age_s);
         const voiceAge = adj(p.last_seen_voice_age_s);
         const faceLabel = (p.last_seen_face_age_s != null)
-          ? (onCam ? 'on camera' : 'seen ' + fmtAge(faceAge) + ' ago') : 'never seen';
+          ? (onCam ? 'On camera' : 'Seen ' + fmtAge(faceAge) + ' ago') : 'Not seen yet';
         const voiceLabel = (p.last_seen_voice_age_s != null)
-          ? 'heard ' + fmtAge(voiceAge) + ' ago' : 'never heard';
+          ? 'Heard ' + fmtAge(voiceAge) + ' ago' : 'Not heard yet';
+        // Last-known pose as trailing "pan°, tilt°" values (Dan's preferred
+        // layout: ages first, pose as the final Y, Z on the same metrics line).
         let poseStr = '';
         if (p.last_pose && p.last_pose.pan != null) {
-          poseStr = 'pan ' + Math.round(p.last_pose.pan) + '° / tilt '
+          poseStr = Math.round(p.last_pose.pan) + '°, '
             + Math.round(p.last_pose.tilt) + '°';
         }
+        const dot = '<span style="color:var(--bone-faint); margin:0 8px;">·</span>';
         const li = document.createElement('li');
         li.style.marginBottom = '16px';
         li.innerHTML =
@@ -919,14 +922,13 @@
             + (onCam ? 'var(--signal)' : 'var(--bone-ghost)') + ';">'
             + (onCam ? '●' : '○') + '</span>'
           + capName(p.name)
-          + (poseStr ? '<div style="' + sub + ' font-size:15px; '
-              + 'letter-spacing:0.03em; color:var(--bone-mid); margin-top:3px;">'
-              + poseStr + '</div>' : '')
           + '<div style="' + sub + ' font-size:16px; letter-spacing:0.01em; '
               + 'margin-top:4px;">'
             + '<span style="color:' + ageColour(faceAge) + ';">' + faceLabel + '</span>'
-            + '<span style="color:var(--bone-faint); margin:0 8px;">·</span>'
+            + dot
             + '<span style="color:' + ageColour(voiceAge) + ';">' + voiceLabel + '</span>'
+            + (poseStr ? dot + '<span style="color:var(--bone-faint);">' + poseStr
+                + '</span>' : '')
           + '</div>';
         ctxWho.appendChild(li);
       }
