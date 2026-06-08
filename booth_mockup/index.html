@@ -424,9 +424,10 @@
         <div class="when" id="ts">17:42 EDT</div>
       </div>
 
-      <!-- Three context panels — populated from LT /api/last_payload ephemeral_block.
-           Parsed and split: [WHO IS PRESENT] -> TL, GROUND TRUTH -> BL,
-           Relevant memories -> TR. MOOD + Current time are not rendered. -->
+      <!-- Context panels. TR + BL are populated from LT /api/last_payload
+           ephemeral_block (GROUND TRUTH -> BL, Relevant memories -> TR; MOOD +
+           Current time not rendered). TL "who is present" is driven separately
+           by the structured room ledger /lt/api/presence (see pollPresence). -->
       <div class="context-panel tl" aria-hidden="true">
         <div class="panel-tag">who is present</div>
         <div class="panel-scroll"><ul id="ctx-who"></ul></div>
@@ -822,7 +823,9 @@
       if (sig === lastCtxSig) return;
       lastCtxSig = sig;
       const s = parseSections(block);
-      fillList(ctxWho,    s.who);
+      // ctxWho is no longer filled here — the TL "who is present" panel is now
+      // driven by the structured room ledger (/lt/api/presence) via
+      // pollPresence() below, which carries last-seen / last-heard ages + pose.
       fillList(ctxMem,    s.mem);
       fillList(ctxGround, s.ground);
       updatePanelDrift();
@@ -841,6 +844,115 @@
     }
     setInterval(pollContext, 4000);
     pollContext();
+
+    // ----- live "who is present" panel from LT /lt/api/presence -----
+    // The TL panel (#ctx-who) is driven by the structured room ledger
+    // (RoomLedger.current_state via LT GET /api/presence), proxied through
+    // /lt/. Per present person we show last-seen (face), last-heard (voice)
+    // and last servo pose (raw pan/tilt degrees). Logic ported from
+    // little_timmy_os pollPresence(); restyled into the booth's bone /
+    // Cormorant palette. Poll every 2s; a 1s ticker ages the labels locally
+    // off the fetch time so the panel reads live between fetches.
+    let presenceData = null;
+    let presenceFetchMs = 0;
+
+    const fmtAge = (s) => {
+      if (s == null) return '';
+      if (s < 60) return Math.round(s) + 's';
+      if (s < 3600) return Math.round(s / 60) + 'm';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      return m ? (h + 'h' + String(m).padStart(2, '0') + 'm') : (h + 'h');
+    };
+    // Booth age tiers, legibility floor raised per commit f4d432a (text over
+    // the busy shop feed): fresh (<60s) full bone, drifting (<5m) mid, cold
+    // (>5m / never) faint — never ghost for actual data. Warm --signal is
+    // reserved for the on-camera dot.
+    const ageColour = (age) => {
+      if (age == null) return 'var(--bone-faint)';
+      if (age < 60)   return 'var(--bone-strong)';
+      if (age < 300)  return 'var(--bone-mid)';
+      return 'var(--bone-faint)';
+    };
+    const capName = (s) => (s || '').replace(/^\w/, (c) => c.toUpperCase());
+
+    function renderPresence() {
+      if (!presenceData) return;
+      const d = presenceData;
+      const elapsed = (Date.now() - presenceFetchMs) / 1000; // tick locally
+      const adj = (a) => (a == null ? null : a + elapsed);
+      ctxWho.innerHTML = '';
+      if (!d.enabled || !Array.isArray(d.present)) { updatePanelDrift(); return; }
+      const people = d.present.filter((p) => {
+        const n = (p.name || '').toLowerCase();
+        return n && !n.startsWith('unknown');
+      });
+      if (people.length === 0 && !d.unknown_voices_recent) {
+        const li = document.createElement('li');
+        li.style.opacity = '0.6';
+        li.textContent = 'no one detected yet';
+        ctxWho.appendChild(li);
+        updatePanelDrift();
+        return;
+      }
+      // Sub-rows: 500-weight Inter with the dark-halo text-shadow so they read
+      // over the live feed (the small-tier legibility fix from commit f4d432a).
+      const sub = "font-family:'Inter',sans-serif; font-style:normal; "
+        + "font-weight:500; text-shadow:var(--shadow-strong);";
+      for (const p of people) {
+        const onCam = p.on_camera_now;
+        const faceAge = adj(p.last_seen_face_age_s);
+        const voiceAge = adj(p.last_seen_voice_age_s);
+        const faceLabel = (p.last_seen_face_age_s != null)
+          ? (onCam ? 'on camera' : 'seen ' + fmtAge(faceAge) + ' ago') : 'never seen';
+        const voiceLabel = (p.last_seen_voice_age_s != null)
+          ? 'heard ' + fmtAge(voiceAge) + ' ago' : 'never heard';
+        let poseStr = '';
+        if (p.last_pose && p.last_pose.pan != null) {
+          poseStr = 'pan ' + Math.round(p.last_pose.pan) + '° / tilt '
+            + Math.round(p.last_pose.tilt) + '°';
+        }
+        const li = document.createElement('li');
+        li.style.marginBottom = '16px';
+        li.innerHTML =
+          '<span style="font-style:normal; margin-right:8px; color:'
+            + (onCam ? 'var(--signal)' : 'var(--bone-ghost)') + ';">'
+            + (onCam ? '●' : '○') + '</span>'
+          + capName(p.name)
+          + (poseStr ? '<div style="' + sub + ' font-size:15px; '
+              + 'letter-spacing:0.03em; color:var(--bone-mid); margin-top:3px;">'
+              + poseStr + '</div>' : '')
+          + '<div style="' + sub + ' font-size:16px; letter-spacing:0.01em; '
+              + 'margin-top:4px;">'
+            + '<span style="color:' + ageColour(faceAge) + ';">' + faceLabel + '</span>'
+            + '<span style="color:var(--bone-faint); margin:0 8px;">·</span>'
+            + '<span style="color:' + ageColour(voiceAge) + ';">' + voiceLabel + '</span>'
+          + '</div>';
+        ctxWho.appendChild(li);
+      }
+      if (d.unknown_voices_recent) {
+        const li = document.createElement('li');
+        li.style.opacity = '0.7';
+        li.style.fontSize = '16px';
+        li.textContent = '+ ' + d.unknown_voices_recent + ' unknown voice'
+          + (d.unknown_voices_recent === 1 ? '' : 's') + ' heard recently';
+        ctxWho.appendChild(li);
+      }
+      updatePanelDrift();
+    }
+
+    async function pollPresence() {
+      try {
+        const r = await fetch('/lt/api/presence', { cache: 'no-store' });
+        if (!r.ok) return;
+        presenceData = await r.json();
+        presenceFetchMs = Date.now();
+        renderPresence();
+      } catch (_) { /* LT temporarily unreachable; leave last content */ }
+    }
+    setInterval(pollPresence, 2000);
+    setInterval(renderPresence, 1000);
+    pollPresence();
   </script>
 </body>
 </html>
