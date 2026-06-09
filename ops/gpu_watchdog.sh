@@ -65,6 +65,25 @@ INFERENCE_PATH="${WATCHDOG_INFERENCE_PATH:-/completion}"        # llama.cpp nati
 INFERENCE_PAYLOAD="${WATCHDOG_INFERENCE_PAYLOAD:-DEFAULT}"
 [[ "$INFERENCE_PAYLOAD" == DEFAULT ]] && INFERENCE_PAYLOAD='{"prompt":"ping","n_predict":1,"temperature":0,"cache_prompt":false}'
 
+# --- GPU telemetry ring buffer (freeze forensics) ---------------------------
+# The 2026-06-08 hard freeze left no GPU fingerprints because nothing was
+# sampling the card. This rolls a few amdgpu sysfs fields (VRAM, busy%, temp,
+# power, sclk) into a capped file so the NEXT wedge has a trail. On a detected
+# wedge, handle_wedge() dumps the tail into events.log next to the restart line.
+#
+# ON by default, unlike the inference probe: sampling is pure sysfs reads (no GPU
+# forward pass, no KV-cache eviction, no side effects), so it is safe to always
+# run. Disable with WATCHDOG_GPU_SAMPLE=0. Source of truth for which card/fields
+# is ops/gpu_sysfs.py -- the SAME helper LT-OS /api/host uses, so they never drift.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GPU_SAMPLE="${WATCHDOG_GPU_SAMPLE:-1}"                          # 1 = roll the telemetry buffer
+GPU_SAMPLE_HELPER="${WATCHDOG_GPU_SAMPLE_HELPER:-$_SCRIPT_DIR/gpu_sysfs.py}"  # CLI emitting one JSON line
+GPU_SAMPLE_PYTHON="${WATCHDOG_GPU_SAMPLE_PYTHON:-python3}"      # interpreter (helper is pure stdlib)
+GPU_SAMPLE_INTERVAL="${WATCHDOG_GPU_SAMPLE_INTERVAL:-15}"       # seconds between samples
+GPU_SAMPLE_FILE="${WATCHDOG_GPU_SAMPLE_FILE:-$MARKER_DIR/gpu_samples.jsonl}"  # ring buffer path
+GPU_SAMPLE_KEEP="${WATCHDOG_GPU_SAMPLE_KEEP:-240}"             # max lines kept (~1h at 15s)
+GPU_DUMP_LINES="${WATCHDOG_GPU_DUMP_LINES:-40}"               # tail lines dumped to events.log on a wedge (~10min)
+
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 log() { echo "$(date '+%F %T') [gpu-watchdog] $*"; }
 
@@ -79,6 +98,36 @@ probe() { curl -fsS -m "$TIMEOUT" -o /dev/null "http://localhost:$1/health" 2>/d
 inference_probe() {  # $1=port ; 0 if the completion returns within INFERENCE_TIMEOUT
   curl -fsS -m "$INFERENCE_TIMEOUT" -H 'Content-Type: application/json' \
     -d "$INFERENCE_PAYLOAD" -o /dev/null "http://localhost:$1$INFERENCE_PATH" 2>/dev/null
+}
+
+# Append one timestamped GPU telemetry sample, then trim the ring buffer in place.
+# Pure sysfs reads via the shared helper -- no GPU work, safe at any cadence. A
+# helper failure (empty/garbage) is skipped silently so sampling never wedges the
+# watchdog. -m bounds the read in case a sysfs file itself blocks during a wedge.
+sample_gpu() {
+  local json ts tmp
+  json=$(timeout 5 "$GPU_SAMPLE_PYTHON" "$GPU_SAMPLE_HELPER" 2>/dev/null) || return 0
+  [[ "$json" == \{* ]] || return 0                      # must be a JSON object
+  ts=$(date -Is)
+  # Splice the timestamp in as the first key (strip the helper's leading '{').
+  printf '{"t":"%s",%s\n' "$ts" "${json#\{}" >>"$GPU_SAMPLE_FILE"
+  # Trim to the last KEEP lines (write-to-temp + mv = atomic, no torn reads).
+  if (( $(wc -l <"$GPU_SAMPLE_FILE" 2>/dev/null || echo 0) > GPU_SAMPLE_KEEP )); then
+    tmp="$GPU_SAMPLE_FILE.tmp"
+    tail -n "$GPU_SAMPLE_KEEP" "$GPU_SAMPLE_FILE" >"$tmp" 2>/dev/null && mv "$tmp" "$GPU_SAMPLE_FILE"
+  fi
+}
+
+# Dump the recent telemetry tail into events.log next to a wedge record, so the
+# freeze forensics live with the restart that noticed them.
+dump_gpu_buffer() {  # $1=context label
+  (( GPU_SAMPLE )) || return 0
+  [[ -s "$GPU_SAMPLE_FILE" ]] || return 0
+  {
+    echo "--- gpu telemetry (last ${GPU_DUMP_LINES} samples before: $1) @ $(date '+%F %T') ---"
+    tail -n "$GPU_DUMP_LINES" "$GPU_SAMPLE_FILE"
+    echo "--- end gpu telemetry (full buffer: $GPU_SAMPLE_FILE) ---"
+  } >>"$MARKER_DIR/events.log"
 }
 
 wait_for_recover() {  # $1=port $2=unit ; 0 if healthy within RECOVER_TIMEOUT
@@ -109,6 +158,7 @@ under_cap() {  # $1=unit ; prunes the window, returns 0 if a restart is still al
 
 handle_wedge() {  # $1=port $2=unit $3=reason (for logs). Caller resets its own fail counter afterward.
   local port="$1" unit="$2" reason="$3" now
+  dump_gpu_buffer "$unit wedge -- $reason"   # forensic snapshot at the moment of detection
   if ! under_cap "$unit"; then
     log "CRITICAL: $unit wedged ($reason) but already restarted ${MAX_RESTARTS}x within ${MAX_WINDOW}s -- NOT restarting. GPU likely hard-hung; manual reboot may be required."
     echo "$(date '+%F %T') giveup $unit" >>"$MARKER_DIR/events.log"
@@ -131,9 +181,19 @@ if (( INFERENCE_PROBE )); then
 else
   log "inference probe disabled (set WATCHDOG_INFERENCE_PROBE=1 to catch GPU-compute wedges /health misses)"
 fi
+if (( GPU_SAMPLE )); then
+  log "gpu telemetry ON -- sampling ${GPU_SAMPLE_HELPER##*/} every ${GPU_SAMPLE_INTERVAL}s -> ${GPU_SAMPLE_FILE} (keep ${GPU_SAMPLE_KEEP}); dump ${GPU_DUMP_LINES} on wedge"
+else
+  log "gpu telemetry disabled (set WATCHDOG_GPU_SAMPLE=1 to roll a freeze-forensics buffer)"
+fi
 for spec in $TARGETS; do FAILS["${spec%%:*}"]=0; done
 IFAILS=0          # consecutive inference-probe failures
 LAST_INFERENCE=0  # epoch of last inference probe (set after grace below)
+LAST_GPU_SAMPLE=0 # epoch of last gpu telemetry sample
+
+# Seed one telemetry sample immediately so the buffer is non-empty even if a
+# wedge happens during the grace window (sampling is side-effect-free).
+if (( GPU_SAMPLE )); then sample_gpu; LAST_GPU_SAMPLE=$(date +%s); fi
 
 # Boot/startup grace: don't flag a slow model load as a wedge. In-script (not
 # ExecStartPre) so it doesn't count against systemd's start timeout.
@@ -158,6 +218,15 @@ while true; do
       fi
     fi
   done
+
+  # Roll the GPU telemetry buffer on its own cadence (cheap; pure sysfs reads).
+  if (( GPU_SAMPLE )); then
+    now=$(date +%s)
+    if (( now - LAST_GPU_SAMPLE >= GPU_SAMPLE_INTERVAL )); then
+      LAST_GPU_SAMPLE=$now
+      sample_gpu
+    fi
+  fi
 
   # Optional GPU-compute liveness probe, on its own (lower) cadence.
   if (( INFERENCE_PROBE )); then

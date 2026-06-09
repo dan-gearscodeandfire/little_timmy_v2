@@ -206,14 +206,17 @@ async def get_log():
 async def get_host_metrics():
     """Lightweight host snapshot for the LT-OS dashboard's Host Metrics panel.
 
-    Currently exposes CPU %, system RAM, disk on /, and load average.
-    VRAM is intentionally absent: Strix Halo's UMA GPU partition needs
-    radeontop / rocm-smi / amdgpu sysfs reads (not portable enough for a
-    quick psutil-only endpoint). Add separately when we wire AMD-specific
-    tooling in.
+    CPU %, system RAM, disk on /, load average (psutil), plus AMD GPU telemetry.
+    GPU fields come from ops.gpu_sysfs.read_gpu() — the single source of truth
+    shared with ops/gpu_watchdog.sh's freeze-forensics ring buffer, so the live
+    dashboard and the wedge dump never drift on which card / which fields.
+    The first four GPU keys (vram_used_gb, vram_total_gb, vram_percent,
+    gpu_busy_percent) preserve this endpoint's historical schema; the helper
+    also surfaces temp_c, power_w, sclk_mhz, mem_busy_percent.
     """
     import psutil
     import os
+    from ops import gpu_sysfs
     try:
         cpu_pct = psutil.cpu_percent(interval=None)
         vm = psutil.virtual_memory()
@@ -222,25 +225,6 @@ async def get_host_metrics():
             load1, load5, load15 = os.getloadavg()
         except (AttributeError, OSError):
             load1 = load5 = load15 = None
-        # AMD GPU (Strix Halo) via amdgpu sysfs. card1 on okdemerzel.
-        # mem_info_vram_* reports bytes; gpu_busy_percent reports 0-100.
-        vram_used_gb = vram_total_gb = vram_percent = gpu_busy = None
-        try:
-            with open('/sys/class/drm/card1/device/mem_info_vram_used') as f:
-                vram_used = int(f.read().strip())
-            with open('/sys/class/drm/card1/device/mem_info_vram_total') as f:
-                vram_total = int(f.read().strip())
-            if vram_total > 0:
-                vram_used_gb = round(vram_used / (1024 ** 3), 2)
-                vram_total_gb = round(vram_total / (1024 ** 3), 2)
-                vram_percent = round(100 * vram_used / vram_total, 1)
-        except (FileNotFoundError, PermissionError, ValueError):
-            pass
-        try:
-            with open('/sys/class/drm/card1/device/gpu_busy_percent') as f:
-                gpu_busy = int(f.read().strip())
-        except (FileNotFoundError, PermissionError, ValueError):
-            pass
         return {
             "available": True,
             "cpu_percent": round(cpu_pct, 1),
@@ -254,10 +238,8 @@ async def get_host_metrics():
             "load_1m": round(load1, 2) if load1 is not None else None,
             "load_5m": round(load5, 2) if load5 is not None else None,
             "load_15m": round(load15, 2) if load15 is not None else None,
-            "vram_used_gb": vram_used_gb,
-            "vram_total_gb": vram_total_gb,
-            "vram_percent": vram_percent,
-            "gpu_busy_percent": gpu_busy,
+            # GPU telemetry (amdgpu sysfs) via the shared helper.
+            **gpu_sysfs.read_gpu(),
         }
     except Exception as e:
         return {"available": False, "error": str(e)[:120]}
