@@ -135,6 +135,32 @@ async def get_last_payload_route():
     return {"available": True, **p}
 
 
+@app.post("/api/announce")
+async def announce(payload: dict | None = None):
+    """Speak operational text out of Timmy's speaker WITHOUT touching
+    conversation history or STT. Used by Claude (the "supervisor"/"couple's
+    therapist") to talk to Dan through Timmy so he isn't tied to the CC window.
+
+    - Does NOT append a turn or broadcast a "turn" event, so it stays out of
+      /api/chatlog, /api/conversation, and the supervisor WS feed.
+    - tts.speak() queues PCM and sets capture.suppressed during playback, so
+      Timmy never hears it via STT (no loopback turn).
+    - Server-side prefix guarantees self-identification; reuses Timmy's voice.
+
+    Body: {"text": "<instruction for Dan>"}
+    """
+    from fastapi.responses import JSONResponse
+    if _orchestrator is None or getattr(_orchestrator, "tts", None) is None:
+        return JSONResponse({"spoken": False, "error": "tts_unavailable"}, status_code=503)
+    body = payload or {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"spoken": False, "error": "empty_text"}, status_code=400)
+    spoken_text = text if text.lower().startswith("this is claude") else f"This is Claude talking. {text}"
+    await _orchestrator.tts.speak(spoken_text)
+    return {"spoken": True, "text": spoken_text}
+
+
 @app.get("/api/mood")
 async def get_mood():
     """Current 2-axis mood state.
