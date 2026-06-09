@@ -388,6 +388,20 @@ async def get_timmy_mood():
         return {"error": f"timmy unreachable: {e}"}
 
 
+@app.get("/api/timmy/audio_diag")
+async def get_timmy_audio_diag():
+    """Proxy LT's live capture diagnostics (last_peak / last_vad_prob) for the
+    mic VU meter. Polled by the dashboard at a few Hz, so keep the timeout
+    short and never raise -- a missing reading just leaves the meter idle."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/audio/diag")
+            return r.json()
+    except Exception as e:
+        return {"error": f"timmy unreachable: {e}"}
+
+
 @app.post("/api/timmy/mood/override")
 async def set_timmy_mood_override(payload: dict | None = None):
     """Forward a manual mood override (or release) from the dashboard to Timmy."""
@@ -1114,6 +1128,22 @@ header .uptime {
             <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
             <span class="slider"></span>
           </label>
+        </div>
+        <!-- Mic VU meter: current level + peak-hold marker. Data from LT's
+             /api/audio/diag (last_peak 0..1, last_vad_prob 0..1). -->
+        <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div class="service-name">
+              Mic Level (VU)
+              <span id="vu-speech-dot" title="VAD speech-active"
+                    style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#30363d; margin-left:6px; vertical-align:middle;"></span>
+            </div>
+            <div class="service-detail" id="vu-readout" style="font-family:monospace; font-size:11px;">cur -- · pk -- · vad --</div>
+          </div>
+          <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
+            <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
+            <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
+          </div>
         </div>
         <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
@@ -2531,6 +2561,56 @@ async function pollHostMetrics() {
 }
 pollHostMetrics();
 setInterval(pollHostMetrics, 5000);
+
+// --- Mic VU meter ---------------------------------------------------------
+// last_peak / last_vad_prob come from LT's /api/audio/diag (peak = max-abs
+// amplitude, 0..1 where 1.0 == clipping). Peak-hold is computed client-side:
+// jump up instantly, decay slowly so the "most recent peak" stays visible.
+// VAD_SPEECH_THRESHOLD mirrors config.VAD_THRESHOLD (static until the Phase 1
+// live knob lands); the dot just shows whether capture currently calls it speech.
+const VU_POLL_MS = 120;
+const VU_DECAY_PER_TICK = 0.035;     // ~0.29/sec hold decay -> ~3s visible peak
+const VAD_SPEECH_THRESHOLD = 0.4;
+let vuPeakHold = 0;
+function vuColor(level) {
+  if (level >= 0.85) return '#f85149';   // clip zone
+  if (level >= 0.60) return '#f0883e';   // hot
+  return '#3fb950';                       // nominal
+}
+async function pollAudioMeter() {
+  const fill = document.getElementById('vu-fill');
+  const peak = document.getElementById('vu-peak');
+  const dot = document.getElementById('vu-speech-dot');
+  const out = document.getElementById('vu-readout');
+  if (!fill) return;
+  try {
+    const r = await fetch('/api/timmy/audio_diag');
+    const d = await r.json();
+    if (d.error || d.last_peak == null) {
+      if (out) out.textContent = 'mic unreachable';
+      fill.style.width = '0%';
+      vuPeakHold = 0;
+      return;
+    }
+    const cur = Math.max(0, Math.min(1, d.last_peak));
+    const vad = d.last_vad_prob != null ? d.last_vad_prob : 0;
+    // peak-hold: instant attack, slow decay
+    vuPeakHold = cur > vuPeakHold ? cur : Math.max(cur, vuPeakHold - VU_DECAY_PER_TICK);
+    fill.style.width = (cur * 100).toFixed(1) + '%';
+    fill.style.background = vuColor(cur);
+    peak.style.left = (vuPeakHold * 100).toFixed(1) + '%';
+    peak.style.background = vuColor(vuPeakHold);
+    const speaking = vad >= VAD_SPEECH_THRESHOLD;
+    dot.style.background = speaking ? '#3fb950' : '#30363d';
+    dot.style.boxShadow = speaking ? '0 0 4px #3fb950' : 'none';
+    if (out) out.textContent =
+      'cur ' + cur.toFixed(3) + ' · pk ' + vuPeakHold.toFixed(3) + ' · vad ' + vad.toFixed(2);
+  } catch(e) {
+    if (out) out.textContent = 'mic unreachable';
+  }
+}
+pollAudioMeter();
+setInterval(pollAudioMeter, VU_POLL_MS);
 
 let recIsActive = false;
 async function pollRecording() {

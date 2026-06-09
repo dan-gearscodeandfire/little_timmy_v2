@@ -38,6 +38,15 @@ _DEFAULTS: dict = {
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the
     # static master switch) -- BOTH must be true. Default False (opt-in).
     "proactive_speech_enabled": False,
+    # --- Near-field / party-capture knobs (2026-06-09) ---------------------
+    # Foundation only at this stage: persisted + readable, but the capture loop
+    # does not consume them yet (that's the Phase 1/2 wiring in
+    # docs/plans/party-mode-near-field-capture.md). Defaults reproduce current
+    # behaviour exactly, so adding them is a no-op until something reads them.
+    "capture_vad_threshold": 0.4,        # Silero onset prob floor (seeds config.VAD_THRESHOLD)
+    "capture_energy_floor": 0.0,         # peak-amplitude floor for onset; 0.0 == disabled
+    "party_mode_enabled": False,         # master switch for near-field + allowlist gating
+    "speaker_allowlist": ["dan"],        # names allowed to get a reply when party mode is on; [] == allow all
 }
 
 _lock = threading.Lock()
