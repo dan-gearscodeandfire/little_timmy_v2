@@ -74,10 +74,16 @@ async def maybe_rollup(conversation) -> bool:
     conversation.hot_turns = conversation.hot_turns[split:]
     log.info("Rolled up %d turns -> warm summary (%d chars)", split, len(summary))
 
-    # If warm tier is too large, promote oldest to cold (stored in DB)
+    # If warm tier is too large, promote oldest to cold (stored in DB).
+    # Skip persistence for the hard-ceiling backstop placeholder — it carries
+    # no content, just a marker that turns were dropped under load.
     if len(conversation.warm_summaries) > config.WARM_MAX_SUMMARIES:
         cold = conversation.warm_summaries.pop(0)
-        await store_memory("conversation_summary", cold.text)
-        log.info("Promoted warm summary to cold storage")
+        if cold.text == getattr(config, "HARD_CEILING_PLACEHOLDER",
+                                "[earlier turns omitted under load]"):
+            log.info("Dropped backstop placeholder from warm tier (not persisted)")
+        else:
+            await store_memory("conversation_summary", cold.text)
+            log.info("Promoted warm summary to cold storage")
 
     return True

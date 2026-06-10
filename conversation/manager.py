@@ -74,6 +74,64 @@ class ConversationManager:
         delay = getattr(config, "ROLLUP_IDLE_DELAY_SECONDS", 20)
         self._idle_rollup_task = asyncio.create_task(self._idle_then_rollup(delay))
 
+    def _enforce_hard_ceiling(self) -> None:
+        """Synchronous, non-LLM backstop for the runaway-active-burst case.
+
+        The idle-window rollup (_schedule_rollup_after_idle) is the QUALITY
+        path, but it only fires after ROLLUP_IDLE_DELAY_SECONDS of silence.
+        During a rapid back-and-forth (turns arriving faster than that delay)
+        it is perpetually re-armed and never runs, so hot_turns grows
+        unbounded — even though token totals stay well under ctx. Precision
+        decays from turn DEPTH, not token count (Qwen3.6 ~3B active params is
+        weak at many-turn needle-tracking; handoff 2026-06-10).
+
+        This drops the oldest HALF of the hot buffer the instant it blows past
+        HOT_HARD_CEILING_TOKENS, replacing it with a cheap non-LLM placeholder
+        warm summary. Chunky (half at a time, mirroring maybe_rollup) so the
+        KV-cache prefix shifts only once per drop instead of every turn — the
+        whole reason we don't sliding-window-clip in build_history_messages.
+        Runs entirely within one event-loop tick (no await), so it cannot
+        interleave with the async idle rollup mid-slice.
+
+        Accepts minor content loss (placeholder, not a real summary) ONLY in
+        this rare active-burst the idle gate structurally cannot serve. The
+        idle LLM rollup remains the normal path.
+        """
+        ceiling = getattr(config, "HOT_HARD_CEILING_TOKENS", 4000)
+        hot_tokens = sum(t.token_count for t in self.state.hot_turns)
+        if hot_tokens <= ceiling or len(self.state.hot_turns) < 2:
+            return
+        # Don't race the idle LLM rollup: if it holds the lock it is already
+        # collapsing the buffer with a REAL summary — let that win.
+        if self._rollup_lock.locked():
+            return
+
+        from conversation.models import WarmSummary
+        split = max(1, len(self.state.hot_turns) // 2)
+        dropped = self.state.hot_turns[:split]
+        self.state.hot_turns = self.state.hot_turns[split:]
+
+        # Coalesce consecutive placeholders so a long burst doesn't fill the
+        # warm tier with markers (and so the rendered prefix stays stable).
+        marker = getattr(config, "HARD_CEILING_PLACEHOLDER",
+                         "[earlier turns omitted under load]")
+        if (self.state.warm_summaries
+                and self.state.warm_summaries[-1].text == marker):
+            last = self.state.warm_summaries[-1]
+            last.turn_count += len(dropped)
+            last.timestamp = time.time()
+        else:
+            self.state.warm_summaries.append(WarmSummary(
+                text=marker,
+                timestamp=time.time(),
+                turn_count=len(dropped),
+            ))
+        log.warning(
+            "Hard-ceiling backstop: dropped %d hot turns (%d tok > %d ceiling) "
+            "— idle rollup starved by active burst",
+            len(dropped), hot_tokens, ceiling,
+        )
+
     async def add_user_turn(self, text: str, speaker: str | None = None):
         # Strip-on-store discipline: the [CONTEXT]/[UTTERANCE] wrap is a
         # render-time decoration in llm/prompt_builder.wrap_user_message().
@@ -103,6 +161,8 @@ class ConversationManager:
         # scheduling defers the actual generate_summary call until N
         # seconds of conversation silence (config.ROLLUP_IDLE_DELAY_SECONDS).
         self._schedule_rollup_after_idle()
+        # Synchronous backstop for the burst case the idle gate can't serve.
+        self._enforce_hard_ceiling()
 
     async def add_assistant_turn(self, text: str):
         turn = Turn(
@@ -113,6 +173,7 @@ class ConversationManager:
         )
         self.state.hot_turns.append(turn)
         self._schedule_rollup_after_idle()
+        self._enforce_hard_ceiling()
 
     def build_history_messages(self) -> list[dict]:
         """Build conversation history for prompt prefix (KV-cacheable).

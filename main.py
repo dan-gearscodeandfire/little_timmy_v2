@@ -1080,7 +1080,13 @@ async def main():
     # mid-utterance (don't barge in). No-op unless TIMMY_AUTO_ENROLL_ENABLED.
     async def face_enroll_monitor():
         if not orch._face_enroller.cfg.enabled:
-            log.info("[AUTOENROLL] disabled (TIMMY_AUTO_ENROLL_ENABLED unset)")
+            # cfg.enabled = TIMMY_AUTO_ENROLL_ENABLED AND NOT TIMMY_PARTY_MODE
+            # (face_enroller.py:122). Name the actual reason so future debugging
+            # doesn't chase an "unset" var that's really set-but-overridden.
+            if os.environ.get("TIMMY_PARTY_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+                log.info("[AUTOENROLL] disabled (overridden by TIMMY_PARTY_MODE)")
+            else:
+                log.info("[AUTOENROLL] disabled (TIMMY_AUTO_ENROLL_ENABLED unset)")
             return
         log.info("[AUTOENROLL] armed: polling /faces every %.2fs",
                  config.AUTO_ENROLL_POLL_INTERVAL_S)

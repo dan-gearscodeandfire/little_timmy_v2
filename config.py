@@ -45,6 +45,8 @@ HOT_MAX_TOKENS = 2500          # token budget for hot tier
 WARM_MAX_SUMMARIES = 3         # max warm summaries in prompt
 ROLLUP_AGE_SECONDS = 1800      # 30 min — trigger rollup for old turns (was 600; bumped for Qwen 3.6 KV-cache reuse)
 ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing rollup; prevents priority-gate starvation when conversation is active
+HOT_HARD_CEILING_TOKENS = 4000 # backstop ceiling (~1.6x HOT_MAX): when a rapid burst starves the idle rollup, drop oldest half synchronously (non-LLM placeholder). Bounds turn-DEPTH attention dilution that grows even while well under ctx (handoff 2026-06-10).
+HARD_CEILING_PLACEHOLDER = "[earlier turns omitted under load]"  # marker WarmSummary text written by the backstop; matched verbatim to skip cold-storage persistence
 
 # --- Memory extraction queue (2026-06-03) ---
 # Per-exchange fact/memory extraction is fire-and-forget but shares the single
