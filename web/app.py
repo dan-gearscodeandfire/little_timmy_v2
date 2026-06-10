@@ -392,10 +392,31 @@ async def audio_diagnostics():
         "chunks_processed": cap.diag_chunks_processed,
         "last_peak": round(cap.diag_last_peak, 4),
         "last_vad_prob": round(cap.diag_last_vad_prob, 4),
+        "energy_floor": round(getattr(cap, "energy_floor", 0.0), 4),
         "overflows": cap.diag_overflows,
         "suppressed": cap.suppressed,
         "device": cap.diag_device_name,
     }
+
+
+@app.get("/api/capture/energy_floor")
+async def get_energy_floor():
+    """Read the near-field onset energy floor (peak amplitude, 0.0..1.0).
+    0.0 == disabled (VAD-only onset)."""
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"energy_floor": 0.0, "error": "not initialized"}
+    return {"energy_floor": round(getattr(_orchestrator.capture, "energy_floor", 0.0), 4)}
+
+
+@app.post("/api/capture/energy_floor")
+async def set_energy_floor(payload: dict | None = None):
+    """Set the near-field onset energy floor. Takes effect on the next chunk
+    and persists across restarts. Body: {"value": 0.06}."""
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"ok": False, "error": "orchestrator not ready"}
+    cap = _orchestrator.capture
+    cap.set_energy_floor((payload or {}).get("value", 0.0))
+    return {"ok": True, "energy_floor": round(cap.energy_floor, 4)}
 
 @app.get("/api/health")
 async def health_check():

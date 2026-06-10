@@ -402,6 +402,19 @@ async def get_timmy_audio_diag():
         return {"error": f"timmy unreachable: {e}"}
 
 
+@app.post("/api/timmy/capture/energy_floor")
+async def set_timmy_energy_floor(payload: dict | None = None):
+    """Proxy: set LT's near-field onset energy floor. Body: {"value": 0.06}."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/capture/energy_floor",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/mood/override")
 async def set_timmy_mood_override(payload: dict | None = None):
     """Forward a manual mood override (or release) from the dashboard to Timmy."""
@@ -1143,6 +1156,17 @@ header .uptime {
           <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
             <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
             <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
+            <!-- Energy floor: onset below this peak is ignored as background. -->
+            <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
+          </div>
+          <!-- Energy-floor control: peak-amplitude onset gate. 0 == off. Set
+               between the room floor and your speaking peak (watch the bar). -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px; font-size:11px; color:#8b949e;">
+            <span style="white-space:nowrap;">Onset floor</span>
+            <input type="range" id="vu-floor-slider" min="0" max="0.30" step="0.005" value="0"
+                   oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
+                   style="flex:1; accent-color:#f0883e; cursor:pointer;">
+            <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
           </div>
         </div>
         <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
@@ -2562,20 +2586,48 @@ async function pollHostMetrics() {
 pollHostMetrics();
 setInterval(pollHostMetrics, 5000);
 
-// --- Mic VU meter ---------------------------------------------------------
-// last_peak / last_vad_prob come from LT's /api/audio/diag (peak = max-abs
-// amplitude, 0..1 where 1.0 == clipping). Peak-hold is computed client-side:
-// jump up instantly, decay slowly so the "most recent peak" stays visible.
-// VAD_SPEECH_THRESHOLD mirrors config.VAD_THRESHOLD (static until the Phase 1
-// live knob lands); the dot just shows whether capture currently calls it speech.
+// --- Mic VU meter + energy floor -----------------------------------------
+// last_peak / last_vad_prob / energy_floor come from LT's /api/audio/diag
+// (peak = max-abs amplitude, 0..1 where 1.0 == clipping). Peak-hold is
+// computed client-side: jump up instantly, decay slowly so the "most recent
+// peak" stays visible. The orange floor marker is the onset energy gate:
+// VAD-positive audio whose peak is left of it is ignored as background. Drag
+// the slider to sit it between the room floor and your speaking peak.
 const VU_POLL_MS = 120;
 const VU_DECAY_PER_TICK = 0.035;     // ~0.29/sec hold decay -> ~3s visible peak
 const VAD_SPEECH_THRESHOLD = 0.4;
 let vuPeakHold = 0;
+let vuFloor = 0;                     // last-known server floor (0..1)
+let vuFloorHoldUntil = 0;           // suppress poll->slider sync briefly after a user edit
 function vuColor(level) {
   if (level >= 0.85) return '#f85149';   // clip zone
   if (level >= 0.60) return '#f0883e';   // hot
   return '#3fb950';                       // nominal
+}
+function renderFloorMarker() {
+  const fl = document.getElementById('vu-floor');
+  if (fl) fl.style.left = (vuFloor * 100).toFixed(1) + '%';
+  const val = document.getElementById('vu-floor-val');
+  if (val) val.textContent = vuFloor.toFixed(3);
+}
+// Live drag: update label + marker only (no network until release).
+function onFloorInput(v) {
+  vuFloor = Math.max(0, Math.min(1, parseFloat(v) || 0));
+  vuFloorHoldUntil = Date.now() + 2000;
+  renderFloorMarker();
+}
+// Release: persist to LT (which applies it on the next audio chunk).
+async function commitFloor(v) {
+  const value = Math.max(0, Math.min(1, parseFloat(v) || 0));
+  vuFloorHoldUntil = Date.now() + 2000;
+  try {
+    const r = await fetch('/api/timmy/capture/energy_floor', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value: value})
+    });
+    const d = await r.json();
+    if (d && d.energy_floor != null) { vuFloor = d.energy_floor; renderFloorMarker(); }
+  } catch(e) {}
 }
 async function pollAudioMeter() {
   const fill = document.getElementById('vu-fill');
@@ -2594,6 +2646,13 @@ async function pollAudioMeter() {
     }
     const cur = Math.max(0, Math.min(1, d.last_peak));
     const vad = d.last_vad_prob != null ? d.last_vad_prob : 0;
+    // Sync the floor from the server unless the user just touched the slider.
+    if (d.energy_floor != null && Date.now() > vuFloorHoldUntil) {
+      vuFloor = d.energy_floor;
+      const sl = document.getElementById('vu-floor-slider');
+      if (sl && document.activeElement !== sl) sl.value = vuFloor;
+      renderFloorMarker();
+    }
     // peak-hold: instant attack, slow decay
     vuPeakHold = cur > vuPeakHold ? cur : Math.max(cur, vuPeakHold - VU_DECAY_PER_TICK);
     fill.style.width = (cur * 100).toFixed(1) + '%';
@@ -2601,8 +2660,10 @@ async function pollAudioMeter() {
     peak.style.left = (vuPeakHold * 100).toFixed(1) + '%';
     peak.style.background = vuColor(vuPeakHold);
     const speaking = vad >= VAD_SPEECH_THRESHOLD;
-    dot.style.background = speaking ? '#3fb950' : '#30363d';
-    dot.style.boxShadow = speaking ? '0 0 4px #3fb950' : 'none';
+    // The dot reflects what capture will ACT on: VAD-positive AND above floor.
+    const wouldFire = speaking && cur >= vuFloor;
+    dot.style.background = wouldFire ? '#3fb950' : (speaking ? '#f0883e' : '#30363d');
+    dot.style.boxShadow = wouldFire ? '0 0 4px #3fb950' : 'none';
     if (out) out.textContent =
       'cur ' + cur.toFixed(3) + ' · pk ' + vuPeakHold.toFixed(3) + ' · vad ' + vad.toFixed(2);
   } catch(e) {

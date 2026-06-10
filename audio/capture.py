@@ -40,6 +40,13 @@ class AudioCapture:
         # hard-coding unmuted so a manual mute survives a reboot.
         from persistence import runtime_toggles as _toggles
         self.hearing_muted = not _toggles.get("hearing_enabled")
+        # Near-field energy floor (2026-06-09): peak-amplitude gate applied at
+        # speech ONSET only. A body-worn lavalier makes the wearer's voice peak
+        # far above background chatter, so a floor between ambient (~0.02) and
+        # near-field speech (~0.18 measured) rejects the room without touching
+        # the wearer. 0.0 == disabled (default) -> exact pre-existing behaviour.
+        # Cached here (not re-read per chunk) and updated live via set_energy_floor().
+        self.energy_floor = float(_toggles.get("capture_energy_floor"))
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -266,12 +273,22 @@ class AudioCapture:
 
                 if not recording:
                     pre_speech_ring.append(audio)
-                    if is_speech:
+                    # Energy floor gates ONSET only: a VAD-positive chunk whose
+                    # peak is below the floor is treated as background (distant
+                    # voice / room noise) and does not start a capture. The
+                    # is_speech endpointing logic below (while recording) is
+                    # untouched, so a quiet syllable mid-utterance never finalizes
+                    # early. energy_floor == 0.0 -> onset_ok == is_speech (no-op).
+                    onset_ok = is_speech and self.diag_last_peak >= self.energy_floor
+                    if is_speech and not onset_ok and self.diag_chunks_processed % 10 == 0:
+                        log.debug("Onset rejected by energy floor (peak=%.4f < %.4f)",
+                                  self.diag_last_peak, self.energy_floor)
+                    if onset_ok:
                         recording = True
                         self.user_speaking = True
                         silence_count = 0
                         audio_buffer = list(pre_speech_ring) + [audio]
-                        log.debug("Speech onset detected (prob=%.2f)", vad_prob)
+                        log.debug("Speech onset detected (prob=%.2f, peak=%.4f)", vad_prob, self.diag_last_peak)
                         # Kick a fresh vision capture now (speech start), not at
                         # STT-end -- gives the VLM a head start so the cached
                         # scene is fresher when the reply is built. Thread-safe.
@@ -397,6 +414,25 @@ class AudioCapture:
     @property
     def is_hearing_enabled(self) -> bool:
         return not self.hearing_muted
+
+    def set_energy_floor(self, value: float):
+        """Set the near-field onset energy floor (peak amplitude, 0.0..1.0).
+        Takes effect on the next chunk and persists across restarts. 0.0
+        disables the floor (pre-existing VAD-only onset behaviour)."""
+        try:
+            v = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            log.warning("set_energy_floor: bad value %r, ignoring", value)
+            return
+        if v == self.energy_floor:
+            return
+        self.energy_floor = v
+        log.info("Energy floor set to %.4f", v)
+        try:
+            from persistence import runtime_toggles as _toggles
+            _toggles.set("capture_energy_floor", v)
+        except Exception as e:
+            log.warning("energy_floor persist failed: %s", e)
 
     async def start(self, loop: asyncio.AbstractEventLoop):
         """Start the capture thread."""
