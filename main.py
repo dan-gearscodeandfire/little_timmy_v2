@@ -152,6 +152,7 @@ class Orchestrator:
             verify_faces=self._faces_client.fetch_fresh_results,
             turn_lock=self._turn_lock,
             on_enrolled=self._record_auto_enroll,
+            hold_head=self._hold_head_for_enroll,
         )
 
     async def _fetch_face_safe(self):
@@ -304,6 +305,31 @@ class Orchestrator:
                             event_type = None
                     elif not line.strip():
                         event_type = None
+
+    async def _hold_head_for_enroll(self, timeout_ms: int) -> bool:
+        """Freeze-frame seam for the auto-enroller (FaceEnroller._maybe_hold).
+
+        Leases a Pi behavior 'hold' so servo moves stop starving the face
+        thread's detection passes (it skips passes while servos move; measured
+        21s blackout 2026-06-10). Priority must be critical: track/engage run
+        at HIGH and an equal-priority command only queues. Never holds over
+        sleep — check status first and back off. Returns True if posted."""
+        try:
+            r = await self._face_http.get(config.STREAMERPI_BEHAVIOR_URL)
+            if r.status_code != 200 or r.json().get("mode") == "sleep":
+                return False
+        except Exception:
+            return False  # can't see the Pi -> don't push servo commands blind
+        try:
+            r = await self._face_http.post(
+                config.STREAMERPI_BEHAVIOR_MODE_URL,
+                json={"mode": "hold", "priority": "critical",
+                      "timeout_ms": int(timeout_ms)},
+            )
+            return r.status_code == 200
+        except Exception:
+            log.debug("[AUTOENROLL] behavior hold post failed", exc_info=True)
+            return False
 
     def _record_auto_enroll(self, name: str, meta: dict) -> None:
         """Append an auto-enrolled identity to the provenance file (source:auto)

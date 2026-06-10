@@ -259,6 +259,9 @@ PRESENCE_ENABLED = os.getenv("TIMMY_PRESENCE_ENABLED", "true").lower() == "true"
 STREAMERPI_BEHAVIOR_URL = os.getenv(
     "TIMMY_BEHAVIOR_URL", "https://192.168.1.110:8080/behavior/status"
 )
+STREAMERPI_BEHAVIOR_MODE_URL = os.getenv(
+    "TIMMY_BEHAVIOR_MODE_URL", "https://192.168.1.110:8080/behavior/mode"
+)
 FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
 HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
 PRESENCE_TTL_SEC = int(os.getenv("TIMMY_PRESENCE_TTL_SEC", "900"))

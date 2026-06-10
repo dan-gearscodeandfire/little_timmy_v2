@@ -136,6 +136,16 @@ class EnrollerConfig:
     # A verify face counts as "recognises now" if its label matches OR its
     # distance dips below this (mirrors streamerpi match threshold).
     verify_match_dist: float = _f("TIMMY_AE_VERIFY_MATCH_DIST", 0.45)
+    # Freeze-frame: lease a Pi behavior "hold" while a track is still earning
+    # samples (WARMING/SPARSE) or an enroll dialog/capture is in flight. The
+    # Pi's face thread SKIPS detection passes while servos move (measured 21s
+    # blackout 2026-06-10), so head-centering starves the trigger below
+    # MIN_SAMPLES — the head chases the very face it is sampling. Holds are
+    # short leases re-armed while still wanted: if this process dies, the Pi
+    # auto-restores its previous mode and the head is never left frozen.
+    hold_enabled: bool = _b("TIMMY_AE_HOLD_ENABLED", True)
+    hold_timeout_ms: int = _i("TIMMY_AE_HOLD_TIMEOUT_MS", 6000)
+    hold_rearm_s: float = _f("TIMMY_AE_HOLD_REARM_S", 4.0)
 
 
 @dataclass(frozen=True)
@@ -154,6 +164,7 @@ SpeakFn = Callable[[str], Awaitable]        # fixed TTS line
 EnrollStreamFn = Callable[..., "AsyncIterator"]  # (name, count, interval_s, mode) -> async iter of (evt, payload)
 VerifyFn = Callable[[], Awaitable]          # () -> list[face dict]
 OnEnrolledFn = Callable[[str, dict], None]
+HoldFn = Callable[[int], Awaitable]         # (timeout_ms) -> posted ok (bool-ish)
 
 
 class FaceEnroller:
@@ -170,6 +181,7 @@ class FaceEnroller:
         cfg: Optional[EnrollerConfig] = None,
         trigger: Optional[NewFaceTrigger] = None,
         name_extractor: Optional[Callable[[str], Optional[str]]] = None,
+        hold_head: Optional[HoldFn] = None,
     ):
         import time as _time
         self._say = say
@@ -182,6 +194,8 @@ class FaceEnroller:
         self.cfg = cfg or EnrollerConfig()
         self._trigger = trigger or NewFaceTrigger(TriggerConfig())
         self._extract_name = name_extractor or _extract_name_from_response
+        self._hold_head = hold_head
+        self._hold_rearm_at: float = 0.0
 
         self.state = State.IDLE
         self._candidate_track: Optional[int] = None
@@ -230,6 +244,11 @@ class FaceEnroller:
             self._reset(cooldown=True)
             return
 
+        # Freeze-frame while samples accumulate / a dialog is in flight (see
+        # EnrollerConfig.hold_enabled). Runs in every state on purpose: the
+        # warm-up needs it to reach MIN_SAMPLES, the capture needs a still head.
+        await self._maybe_hold(decisions, engaged, now)
+
         # Only originate a new offer from IDLE, when engaged, off cooldown, and
         # while no spoken turn is in flight (mirrors the proactive-speech guard).
         if self.state != State.IDLE:
@@ -249,6 +268,33 @@ class FaceEnroller:
         log.info("[AUTOENROLL] CANDIDATE trk%d (min_dist=%.2f, h=%.0fpx) -> offering consent",
                  fresh.track_id, fresh.min_dist, fresh.median_h)
         await self._make_offer()
+
+    async def _maybe_hold(self, decisions: list, engaged: bool, now: float) -> None:
+        """Lease a Pi behavior 'hold' (head freeze) when it would help the FSM.
+
+        Wanted while: (a) any dialog/capture is in flight (busy), or (b) IDLE +
+        engaged + off-cooldown with a live track still earning samples
+        (WARMING/SPARSE). Rate-limited to one POST per hold_rearm_s; each POST
+        carries a hold_timeout_ms lease the Pi enforces, so a crashed process
+        never leaves the head frozen. Failures are logged-and-ignored — a hold
+        is an optimisation, never a correctness dependency."""
+        if not self.cfg.hold_enabled or self._hold_head is None:
+            return
+        if self.busy:
+            want = True  # consent dialog or capture: keep the head still
+        else:
+            if not engaged or now < self._cooldown_until:
+                return
+            want = any(d.verdict in ("WARMING", "SPARSE") for d in decisions)
+        if not want or now < self._hold_rearm_at:
+            return
+        self._hold_rearm_at = now + self.cfg.hold_rearm_s
+        try:
+            posted = await self._hold_head(self.cfg.hold_timeout_ms)
+            if posted:
+                log.debug("[AUTOENROLL] head hold leased (%dms)", self.cfg.hold_timeout_ms)
+        except Exception:
+            log.debug("[AUTOENROLL] head hold failed", exc_info=True)
 
     async def _make_offer(self) -> None:
         """Acquire the turn lock and speak the consent question."""
@@ -523,14 +569,22 @@ def _run_selftest() -> int:
             self.t += dt
 
     class Harness:
-        def __init__(self, clock, enroll_saved=True, verify_name=True):
+        def __init__(self, clock, enroll_saved=True, verify_name=True, hold_raises=False):
             self.said = []
             self.spoke = []
             self.enrolled = []
+            self.holds = []
             self._enroll_saved = enroll_saved
             self._verify_name = verify_name
+            self._hold_raises = hold_raises
             self.lock = aio.Lock()
             self.clock = clock
+
+        async def hold_head(self, timeout_ms):
+            if self._hold_raises:
+                raise RuntimeError("pi unreachable")
+            self.holds.append(timeout_ms)
+            return True
 
         async def say(self, prompt):
             self.said.append(prompt)
@@ -555,12 +609,14 @@ def _run_selftest() -> int:
         def on_enrolled(self, name, meta):
             self.enrolled.append((name, meta))
 
-    def build(clock, **kw):
+    def build(clock, hold_enabled=True, **kw):
         h = Harness(clock, **kw)
         cfg = EnrollerConfig(enabled=True, verify_polls=2, verify_interval_s=0.0,
                              capture_count=6, capture_interval_s=0.0,
                              cooldown_s=90.0, response_timeout_s=25.0,
-                             engagement_window_s=12.0)
+                             engagement_window_s=12.0,
+                             hold_enabled=hold_enabled, hold_rearm_s=4.0,
+                             hold_timeout_ms=6000)
         # Name extractor stub mirroring the real conservative one for tests.
         import re
 
@@ -577,7 +633,7 @@ def _run_selftest() -> int:
             say=h.say, speak=h.speak, enroll_stream=h.enroll_stream,
             verify_faces=h.verify_faces, turn_lock=h.lock,
             on_enrolled=h.on_enrolled, now=clock, cfg=cfg,
-            name_extractor=extract,
+            name_extractor=extract, hold_head=h.hold_head,
         )
         return h, e
 
@@ -689,6 +745,35 @@ def _run_selftest() -> int:
         check("hedged line spoken", any("not certain it took" in s.lower() for s in h.spoke))
         check("back to IDLE", e.state == State.IDLE)
 
+    async def scenario_hold():
+        print("Scenario G: head hold leased during warm-up + dialog, rate-limited")
+        clock = Clock()
+        h, e = build(clock)
+        await feed_stranger(e, clock)
+        # Warm-up to CANDIDATE takes ~5s of 0.25s ticks; rearm=4s -> 2 leases.
+        check("holds leased during warm-up", len(h.holds) >= 1)
+        check("holds rate-limited (not per-tick)", len(h.holds) <= 3)
+        check("lease carries timeout", all(t == 6000 for t in h.holds))
+        # Dialog in flight (OFFERING) keeps re-arming even past rearm window.
+        n = len(h.holds)
+        clock.tick(4.5)
+        await e.observe_faces([], (W, H), engaged=True)
+        check("hold re-armed while dialog busy", len(h.holds) == n + 1)
+
+        print("Scenario G2: no holds when not engaged / disabled / seam raises")
+        clock = Clock()
+        h, e = build(clock)
+        await feed_stranger(e, clock, engaged=False)
+        check("no holds when not engaged", not h.holds)
+        clock = Clock()
+        h, e = build(clock, hold_enabled=False)
+        fired = await feed_stranger(e, clock)
+        check("hold_enabled=False posts nothing, flow intact", not h.holds and fired)
+        clock = Clock()
+        h, e = build(clock, hold_raises=True)
+        fired = await feed_stranger(e, clock)
+        check("seam raising never blocks the offer", fired)
+
     async def run_all():
         await scenario_happy()
         await scenario_decline()
@@ -696,6 +781,7 @@ def _run_selftest() -> int:
         await scenario_not_engaged()
         await scenario_timeout()
         await scenario_verify_fail()
+        await scenario_hold()
 
     aio.run(run_all())
     print(f"\n{passed} passed, {failed} failed")
