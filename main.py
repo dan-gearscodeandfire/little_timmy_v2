@@ -584,19 +584,30 @@ class Orchestrator:
             )
             streak_hit = self._face_hint_streak.observe(streak_face_name, streak_temp_id)
             if streak_hit is not None:
-                ok = self.speaker_id_module.assign_name(
-                    streak_hit.voice_temp_id, streak_hit.face_hint_name
-                )
-                if ok:
+                if config.PARTY_MODE:
+                    # Party master switch: suppress voiceprint auto-enroll. A
+                    # crowd makes face_hint streaks unreliable (false-accepts),
+                    # and binding a voiceprint off a bad streak corrupts speaker
+                    # attribution at scale. Still reset so the streak doesn't
+                    # accumulate stale across turns.
                     log.info(
-                        "[PRESENCE] AUTO-ENROLL: voiceprint for %s trained from %d-turn face_hint streak (was %s)",
-                        streak_hit.face_hint_name, streak_hit.count, streak_hit.voice_temp_id,
+                        "[PRESENCE] auto-enroll SUPPRESSED (PARTY_MODE): %s -> %s (%d-turn streak)",
+                        streak_hit.voice_temp_id, streak_hit.face_hint_name, streak_hit.count,
                     )
                 else:
-                    log.warning(
-                        "[PRESENCE] auto-enroll declined for %s -> %s (name reserved or taken)",
-                        streak_hit.voice_temp_id, streak_hit.face_hint_name,
+                    ok = self.speaker_id_module.assign_name(
+                        streak_hit.voice_temp_id, streak_hit.face_hint_name
                     )
+                    if ok:
+                        log.info(
+                            "[PRESENCE] AUTO-ENROLL: voiceprint for %s trained from %d-turn face_hint streak (was %s)",
+                            streak_hit.face_hint_name, streak_hit.count, streak_hit.voice_temp_id,
+                        )
+                    else:
+                        log.warning(
+                            "[PRESENCE] auto-enroll declined for %s -> %s (name reserved or taken)",
+                            streak_hit.voice_temp_id, streak_hit.face_hint_name,
+                        )
                 self._face_hint_streak.reset()
 
             # Look-at-speaker: voice-confident off-camera speaker w/ fresh pose -> pan head
