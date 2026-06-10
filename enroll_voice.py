@@ -85,7 +85,7 @@ def cross_distances(emb: np.ndarray, exclude_name: str) -> list[tuple[str, float
     for ks in si._known_speakers:
         if ks.name == exclude_name:
             continue
-        out.append((ks.name, float(cosine(emb, ks.embedding))))
+        out.append((ks.name, ks.distance(emb)))   # min cosine over prototype set
     return sorted(out, key=lambda t: t[1])
 
 

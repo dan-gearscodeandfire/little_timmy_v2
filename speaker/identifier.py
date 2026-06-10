@@ -53,6 +53,27 @@ TIGHT_DRIFT_THRESHOLD = 0.20       # only matches under this contribute to drift
 DRIFT_BATCH_SIZE = 30              # samples per drift update
 DRIFT_NEW_WEIGHT = 0.30            # EMA weight for new samples vs existing voiceprint
 
+# K-prototype matching. An identity is a SET of prototype embeddings (shape
+# (K, D)); a live utterance matches on the MINIMUM cosine distance across them.
+# This mirrors the SFace face-ID fix (26bab94): one averaged prototype can't
+# span the distance/loudness/pose variation of a real room, but min-over-K
+# recognizes any covered look. Old single-vector .npy files load as (1, D).
+PROTOTYPE_DEDUP_DIST = 0.05        # a new prototype within this of an existing one is a dup → skip
+MAX_PROTOTYPES = 12               # cap per identity (keep most recent beyond this)
+
+# Online (in-conversation) voiceprint learning master switch. When False, the
+# three live-enrollment triggers (T1 auto-persist on naming, T2 voice-command
+# re-enroll, T3 drift) do NOT write prototypes to disk or mutate an identity's
+# prototype set — deliberate enrollment via enroll_prototypes.py is the only way
+# voiceprints change. Kept False for the party so short/noisy utterances can't
+# pollute identities mid-event. (T3 also independently gated by
+# config.SPEAKER_DRIFT_LEARNING.)
+ONLINE_LEARNING_ENABLED = False
+
+# Minimum collected samples before T1 will auto-persist a freshly-named speaker
+# (guards against enrolling a one-word filler like "Glad").
+MIN_ENROLL_SAMPLES = 3
+
 # Names we refuse to persist as voiceprints (reserved or easy footguns).
 RESERVED_NAMES = {
     "timmy", "system", "unknown", "the", "a", "an",
@@ -63,13 +84,45 @@ RESERVED_NAMES = {
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
 
+def _build_prototypes(embeddings: list) -> np.ndarray:
+    """Turn a list of raw embeddings into a deduped, capped (K, D) prototype set.
+
+    Each embedding is L2-normalized; one is dropped if it sits within
+    PROTOTYPE_DEDUP_DIST cosine of an already-kept prototype (near-duplicate
+    pose/distance). Capped at MAX_PROTOTYPES. Falls back to the mean if every
+    sample deduped away.
+    """
+    kept: list[np.ndarray] = []
+    for e in embeddings:
+        e = e / np.linalg.norm(e)
+        if any(cosine(e, k) < PROTOTYPE_DEDUP_DIST for k in kept):
+            continue
+        kept.append(e)
+        if len(kept) >= MAX_PROTOTYPES:
+            break
+    if not kept:
+        m = np.mean(embeddings, axis=0)
+        m /= np.linalg.norm(m)
+        kept = [m]
+    return np.vstack(kept)
+
+
 @dataclass
 class KnownSpeaker:
-    """A permanently enrolled speaker."""
+    """A permanently enrolled speaker.
+
+    ``prototypes`` is a 2-D array of shape (K, D) holding K L2-normalized
+    embeddings that span this speaker's recorded variation. A live utterance
+    is matched on the MINIMUM cosine distance across the set.
+    """
     speaker_id: int
     name: str
-    embedding: np.ndarray
+    prototypes: np.ndarray   # shape (K, D), L2-normalized rows
     persistent: bool = True  # loaded from disk every session
+
+    def distance(self, emb: np.ndarray) -> float:
+        """Minimum cosine distance from ``emb`` to any of this speaker's prototypes."""
+        return float(min(cosine(emb, p) for p in self.prototypes))
 
 
 @dataclass
@@ -187,17 +240,19 @@ class SpeakerIdentifier:
                 dirty = True
                 log.info("Allocated new speaker_id=%d for %s", speaker_id, name)
             try:
-                emb = np.load(path)
+                protos = np.load(path)
             except Exception as e:
                 log.warning("Failed to load voiceprint %s: %s", path.name, e)
                 continue
+            if protos.ndim == 1:           # legacy single-vector file → (1, D)
+                protos = protos[None, :]
             self._known_speakers.append(KnownSpeaker(
                 speaker_id=speaker_id,
                 name=name,
-                embedding=emb,
+                prototypes=protos,
             ))
-            log.info("Loaded voiceprint: %s (speaker_id=%d) from %s",
-                     name, speaker_id, path.name)
+            log.info("Loaded voiceprint: %s (speaker_id=%d, %d prototype(s)) from %s",
+                     name, speaker_id, protos.shape[0], path.name)
 
         if id_map.get("_next_id") != next_id:
             id_map["_next_id"] = next_id
@@ -229,26 +284,31 @@ class SpeakerIdentifier:
 
     # ---------- Persistence primitive (shared by all three triggers) ----------
 
-    def persist_voiceprint(self, name: str, embedding: np.ndarray,
+    def persist_voiceprint(self, name: str, prototypes: np.ndarray,
                            *, backup: bool = True) -> Path:
-        """Atomic write to ``VOICEPRINT_DIR/<name>_resemblyzer.npy``.
+        """Atomic write of a prototype set to ``VOICEPRINT_DIR/<name>_resemblyzer.npy``.
 
+        Accepts a single embedding (shape (D,)) or a prototype set (shape
+        (K, D)); always stored on disk as 2-D so older callers stay valid.
         Refuses reserved/empty/malformed names. Backs up any existing file
         as ``.bak.<unix_ts>`` if backup=True.
         """
         clean = (name or "").strip().lower()
         if clean in RESERVED_NAMES or not _NAME_RE.match(clean):
             raise ValueError(f"refusing to persist voiceprint as {clean!r}")
-        if not isinstance(embedding, np.ndarray) or embedding.ndim != 1:
-            raise ValueError("embedding must be a 1-D ndarray")
+        if not isinstance(prototypes, np.ndarray) or prototypes.ndim not in (1, 2):
+            raise ValueError("prototypes must be a 1-D or 2-D ndarray")
+        if prototypes.ndim == 1:
+            prototypes = prototypes[None, :]
         VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
         out = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy"
         if backup and out.exists():
             bak = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy.bak.{int(time.time())}"
             out.rename(bak)
             log.info("Backed up existing voiceprint: %s -> %s", out.name, bak.name)
-        np.save(out, embedding.astype(np.float32))
-        log.info("Persisted voiceprint: %s (%d-dim)", out, embedding.shape[0])
+        np.save(out, prototypes.astype(np.float32))
+        log.info("Persisted voiceprint: %s (%d prototype(s), %d-dim)",
+                 out, prototypes.shape[0], prototypes.shape[1])
         return out
 
     def _next_known_id(self) -> int:
@@ -271,7 +331,7 @@ class SpeakerIdentifier:
         best_known = None
         best_known_dist = float("inf")
         for ks in self._known_speakers:
-            dist = cosine(emb, ks.embedding)
+            dist = ks.distance(emb)   # min cosine across this speaker's prototypes
             if dist < best_known_dist:
                 best_known_dist = dist
                 best_known = ks
@@ -408,24 +468,35 @@ class SpeakerIdentifier:
                 us.name_asked = True
                 log.info("Assigned name '%s' to %s", us.name, us.temp_id)
 
-                # Trigger 1: persist + promote.
+                # Trigger 1: promote in-memory ALWAYS (so the speaker is
+                # recognized for the rest of the session), but only write to
+                # disk when online learning is enabled AND we have enough
+                # samples to trust — guards against persisting a one-word
+                # filler. The unknown's collected embeddings become the
+                # initial prototype set.
                 if us.avg_embedding is not None and len(us.embeddings) >= 1:
-                    try:
-                        self.persist_voiceprint(clean, us.avg_embedding)
-                        new_id = self._next_known_id()
-                        self._known_speakers.append(KnownSpeaker(
-                            speaker_id=new_id,
-                            name=clean,
-                            embedding=us.avg_embedding.copy(),
-                        ))
-                        self._unknown_speakers.remove(us)
-                        log.info("[T1] Promoted %s (was %s) to known speaker_id=%d "
-                                 "with %d-sample voiceprint",
-                                 clean, us.temp_id, new_id, len(us.embeddings))
-                    except Exception as e:
-                        log.warning("[T1] persist/promote failed for %s: %s", clean, e)
+                    protos = _build_prototypes(us.embeddings)
+                    new_id = self._next_known_id()
+                    self._known_speakers.append(KnownSpeaker(
+                        speaker_id=new_id,
+                        name=clean,
+                        prototypes=protos,
+                    ))
+                    self._unknown_speakers.remove(us)
+                    log.info("[T1] Promoted %s (was %s) to known speaker_id=%d "
+                             "with %d prototype(s) from %d samples",
+                             clean, us.temp_id, new_id, protos.shape[0], len(us.embeddings))
+                    if ONLINE_LEARNING_ENABLED and len(us.embeddings) >= MIN_ENROLL_SAMPLES:
+                        try:
+                            self.persist_voiceprint(clean, protos)
+                        except Exception as e:
+                            log.warning("[T1] persist failed for %s: %s", clean, e)
+                    else:
+                        log.info("[T1] persist skipped for %s (online_learning=%s, "
+                                 "samples=%d) — session-only",
+                                 clean, ONLINE_LEARNING_ENABLED, len(us.embeddings))
                 else:
-                    log.warning("[T1] cannot persist %s: no avg_embedding yet", clean)
+                    log.warning("[T1] cannot promote %s: no avg_embedding yet", clean)
                 return True
         return False
 
@@ -491,6 +562,9 @@ class SpeakerIdentifier:
         name = a["name"]
         new_embs = a["embeddings"]
         self._active_reenrollment = None
+        if not ONLINE_LEARNING_ENABLED:
+            log.info("[T2] re-enrollment for %s discarded (online_learning disabled)", name)
+            return
         if not new_embs:
             log.warning("[T2] re-enrollment for %s expired with 0 samples", name)
             return
@@ -498,18 +572,35 @@ class SpeakerIdentifier:
         if target is None:
             log.warning("[T2] target %s no longer known at finalize", name)
             return
-        new_avg = np.mean(new_embs, axis=0)
-        new_avg /= np.linalg.norm(new_avg)
-        blended = 0.5 * target.embedding + 0.5 * new_avg
-        blended /= np.linalg.norm(blended)
-        drift_dist = float(cosine(target.embedding, blended))
-        try:
-            self.persist_voiceprint(name, blended)
-            target.embedding = blended
-            log.info("[T2] re-enrollment finalized for %s: %d new samples blended, "
-                     "drift_dist=%.4f", name, len(new_embs), drift_dist)
-        except Exception as e:
-            log.warning("[T2] finalize/persist failed for %s: %s", name, e)
+        added = self._add_prototype_set(target, new_embs, persist=True)
+        log.info("[T2] re-enrollment finalized for %s: %d/%d new prototype(s) added (now %d)",
+                 name, added, len(new_embs), target.prototypes.shape[0])
+
+    def _add_prototype_set(self, ks: KnownSpeaker, embeddings: list,
+                           *, persist: bool) -> int:
+        """Append new embeddings to ``ks.prototypes`` as additional prototypes,
+        deduping against existing ones (within PROTOTYPE_DEDUP_DIST) and capping
+        at MAX_PROTOTYPES (keeping the most recent). Returns how many were added;
+        persists the updated set to disk when ``persist`` is True."""
+        protos = ks.prototypes
+        added = 0
+        for e in embeddings:
+            e = e / np.linalg.norm(e)
+            if any(cosine(e, p) < PROTOTYPE_DEDUP_DIST for p in protos):
+                continue
+            protos = np.vstack([protos, e[None, :]])
+            added += 1
+        if added == 0:
+            return 0
+        if protos.shape[0] > MAX_PROTOTYPES:
+            protos = protos[-MAX_PROTOTYPES:]
+        ks.prototypes = protos
+        if persist:
+            try:
+                self.persist_voiceprint(ks.name, protos)
+            except Exception as e:
+                log.warning("prototype persist failed for %s: %s", ks.name, e)
+        return added
 
     # ---------- Trigger 3 — continuous drift correction ----------
 
@@ -532,21 +623,14 @@ class SpeakerIdentifier:
         embs = self._drift_buffers.pop(name, [])
         if not embs:
             return
+        if not ONLINE_LEARNING_ENABLED:
+            return
         target = next((ks for ks in self._known_speakers if ks.name == name), None)
         if target is None:
             return
-        new_avg = np.mean(embs, axis=0)
-        new_avg /= np.linalg.norm(new_avg)
-        blended = (1 - DRIFT_NEW_WEIGHT) * target.embedding + DRIFT_NEW_WEIGHT * new_avg
-        blended /= np.linalg.norm(blended)
-        drift_dist = float(cosine(target.embedding, blended))
-        try:
-            self.persist_voiceprint(name, blended)
-            target.embedding = blended
-            log.info("[T3] drift learning applied for %s: %d samples folded, "
-                     "drift_dist=%.4f", name, len(embs), drift_dist)
-        except Exception as e:
-            log.warning("[T3] persist failed for %s: %s", name, e)
+        added = self._add_prototype_set(target, embs, persist=True)
+        log.info("[T3] drift learning applied for %s: %d/%d prototype(s) added (now %d)",
+                 name, added, len(embs), target.prototypes.shape[0])
 
     # ---------- Existing helpers (unchanged) ----------
 
