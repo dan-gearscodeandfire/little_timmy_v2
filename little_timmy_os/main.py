@@ -415,6 +415,21 @@ async def set_timmy_energy_floor(payload: dict | None = None):
         return JSONResponse({"ok": False, "error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+@app.post("/api/timmy/announce")
+async def timmy_announce(payload: dict | None = None):
+    """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
+    "no_prefix": true}. Used by the auto-calibrate flow to voice its prompts
+    (no_prefix -> Timmy just says the output, no "This is Claude" prefix)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/announce",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"spoken": False, "error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/mood/override")
 async def set_timmy_mood_override(payload: dict | None = None):
     """Forward a manual mood override (or release) from the dashboard to Timmy."""
@@ -1167,6 +1182,14 @@ header .uptime {
                    oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
                    style="flex:1; accent-color:#f0883e; cursor:pointer;">
             <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
+          </div>
+          <!-- Auto-calibrate: phase 1 measures the room (stay quiet), phase 2
+               measures the voice (talk), then sets the floor between them. -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px;">
+            <button id="vu-cal-btn" onclick="autoCalibrateFloor()"
+                    style="font-size:11px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer; white-space:nowrap;">
+              Auto-calibrate floor</button>
+            <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
           </div>
         </div>
         <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
@@ -2629,12 +2652,101 @@ async function commitFloor(v) {
     if (d && d.energy_floor != null) { vuFloor = d.energy_floor; renderFloorMarker(); }
   } catch(e) {}
 }
+// Auto-calibrate: phase 1 samples the room (quiet), phase 2 samples the voice
+// (talking), then sets the floor between them — same heuristic as the
+// server-side hand calibration (between ambient max and speech median).
+function vuMedian(a){ if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; }
+async function vuSample(durMs, statusFn) {
+  const peaks=[], speech=[];
+  const end = Date.now()+durMs;
+  while (Date.now() < end) {
+    try {
+      const d = await (await fetch('/api/timmy/audio_diag')).json();
+      if (d && d.last_peak != null) {
+        peaks.push(d.last_peak);
+        if ((d.last_vad_prob||0) >= VAD_SPEECH_THRESHOLD) speech.push(d.last_peak);
+      }
+    } catch(e) {}
+    if (statusFn) statusFn(Math.ceil((end-Date.now())/1000));
+    await new Promise(r=>setTimeout(r,100));
+  }
+  return {peaks, speech};
+}
+// Speak text out of Timmy's speaker (no "This is Claude" prefix — the tool
+// just voices its own prompts).
+async function ttsSay(text) {
+  try {
+    await fetch('/api/timmy/announce', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text: text, no_prefix: true})});
+  } catch(e) {}
+}
+// tts.speak is non-blocking (queues PCM), so wait for playback to finish
+// before sampling — else Timmy's own voice bleeds into the mic and inflates
+// the measurement. /api/audio/diag.suppressed is True while TTS plays: wait
+// for it to go true (started) then false (ended), capped at maxMs.
+async function waitForPlayback(maxMs) {
+  const start = Date.now(); let started=false;
+  while (Date.now()-start < maxMs) {
+    let sup=false;
+    try { sup = !!(await (await fetch('/api/timmy/audio_diag')).json()).suppressed; } catch(e){}
+    if (sup) started=true; else if (started) break;
+    await new Promise(r=>setTimeout(r,120));
+  }
+  await new Promise(r=>setTimeout(r,250));   // brief settle after playback
+}
+let vuCalRunning=false;
+let vuCalLastResult='';   // sticky: re-asserted by pollAudioMeter if the span blanks
+async function autoCalibrateFloor() {
+  if (vuCalRunning) return;
+  vuCalRunning=true;
+  const btn=document.getElementById('vu-cal-btn');
+  const st=document.getElementById('vu-cal-status');
+  const setSt=(t)=>{ if(st) st.textContent=t; };
+  if (btn){ btn.disabled=true; btn.style.opacity=0.6; }
+  try {
+    // Phase 1 — room (Timmy voices the prompt, we wait for it to finish).
+    setSt('Measuring room — stay quiet…');
+    await ttsSay('Measuring the room. Please stay quiet for a few seconds.');
+    await waitForPlayback(6000);
+    const room = await vuSample(4000, s=>setSt('Measuring room — stay quiet ('+s+'s)'));
+    const ambientMax = room.peaks.length ? Math.max(...room.peaks) : 0;
+    // Phase 2 — voice.
+    setSt('Get ready to talk…');
+    await ttsSay('Now talk normally for about six seconds.');
+    await waitForPlayback(6000);
+    const voice = await vuSample(6000, s=>setSt('Talk normally now ('+s+'s)'));
+    const speechMed = vuMedian(voice.speech);
+    if (voice.speech.length < 5 || speechMed <= ambientMax) {
+      const msg='Didn\'t hear enough speech — try again and talk a bit louder.';
+      setSt(msg); vuCalLastResult=msg;
+      await ttsSay('I did not hear enough speech. Please try again and talk a little louder.');
+      return;
+    }
+    let rec = Math.max(ambientMax*1.5, ambientMax + 0.45*(speechMed-ambientMax));
+    rec = Math.min(rec, speechMed*0.7);
+    rec = Math.round(rec*1000)/1000;
+    const sl=document.getElementById('vu-floor-slider');
+    if (sl) sl.value = rec;
+    await commitFloor(rec);
+    const result='Set floor to '+rec.toFixed(3)+'  (room '+ambientMax.toFixed(3)+' · voice '+speechMed.toFixed(3)+')';
+    setSt(result); vuCalLastResult=result;
+    const pct=(rec*100).toFixed(1);
+    await ttsSay('Onset floor set to '+pct+' percent. Your voice is well above it.');
+  } finally {
+    if (btn){ btn.disabled=false; btn.style.opacity=1; }
+    vuCalRunning=false;
+  }
+}
 async function pollAudioMeter() {
   const fill = document.getElementById('vu-fill');
   const peak = document.getElementById('vu-peak');
   const dot = document.getElementById('vu-speech-dot');
   const out = document.getElementById('vu-readout');
   if (!fill) return;
+  // Sticky calibration result: if the status span is blank but we have a
+  // result and aren't mid-run, restore it so it stays visible.
+  const calSt=document.getElementById('vu-cal-status');
+  if (calSt && !calSt.textContent && vuCalLastResult && !vuCalRunning) calSt.textContent=vuCalLastResult;
   try {
     const r = await fetch('/api/timmy/audio_diag');
     const d = await r.json();

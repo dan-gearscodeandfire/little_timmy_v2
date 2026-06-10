@@ -147,7 +147,10 @@ async def announce(payload: dict | None = None):
       Timmy never hears it via STT (no loopback turn).
     - Server-side prefix guarantees self-identification; reuses Timmy's voice.
 
-    Body: {"text": "<instruction for Dan>"}
+    Body: {"text": "<instruction for Dan>", "no_prefix": false}
+    - no_prefix/raw: skip the "This is Claude talking." prefix. For tool voice
+      (e.g. auto-calibrate prompts) that should just speak the output, not
+      announce Claude. Default false (supervisor speech still self-identifies).
     """
     from fastapi.responses import JSONResponse
     if _orchestrator is None or getattr(_orchestrator, "tts", None) is None:
@@ -156,7 +159,11 @@ async def announce(payload: dict | None = None):
     text = (body.get("text") or "").strip()
     if not text:
         return JSONResponse({"spoken": False, "error": "empty_text"}, status_code=400)
-    spoken_text = text if text.lower().startswith("this is claude") else f"This is Claude talking. {text}"
+    no_prefix = bool(body.get("no_prefix") or body.get("raw"))
+    if no_prefix or text.lower().startswith("this is claude"):
+        spoken_text = text
+    else:
+        spoken_text = f"This is Claude talking. {text}"
     await _orchestrator.tts.speak(spoken_text)
     return {"spoken": True, "text": spoken_text}
 
