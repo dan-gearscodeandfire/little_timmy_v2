@@ -222,7 +222,12 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
 
 
 async def generate_summary(turns_text: str) -> str:
-    """Summarize conversation turns using Qwen3.6 thinking-on at LLM_MEMORY_URL.
+    """Summarize conversation turns using Qwen3.6 thinking-OFF at LLM_MEMORY_URL.
+
+    Thinking must stay OFF here: llama.cpp ignores thinking_budget for Qwen3,
+    so with thinking on the model burns the entire max_tokens budget in
+    reasoning_content and content comes back empty (finish_reason=length) —
+    every rollup was a silent no-op that still occupied the shared :8083 slot.
 
     Phase 1 priority gate: when conversation and memory share a server, this
     call blocks until conversation is idle and registers itself so a future
@@ -243,7 +248,7 @@ async def generate_summary(turns_text: str) -> str:
             "max_tokens": 800,
             "temperature": 0.3,
             "stream": False,
-            "chat_template_kwargs": {"enable_thinking": True},
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         resp = await client.post(
             f"{config.LLM_MEMORY_URL}/v1/chat/completions",
@@ -251,7 +256,13 @@ async def generate_summary(turns_text: str) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-        content = data["choices"][0]["message"].get("content", "").strip()
+        content = (data["choices"][0]["message"].get("content") or "").strip()
+        if not content:
+            log.warning(
+                "Summary call returned empty content (finish_reason=%s, usage=%s)",
+                data["choices"][0].get("finish_reason"),
+                data.get("usage"),
+            )
         await _maybe_emit_reasoning("summary", data, content)
         return content
     finally:

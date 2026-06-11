@@ -106,7 +106,7 @@ SERVICES = {
         "systemd": "qwen36-server.service",
         "start_cmd": None,
         "description": (
-            "Brain server: fact extraction (thinking=on) + DWU router first "
+            "Brain server: fact extraction (thinking=off) + DWU router first "
             "tier + local Claude Code. Shared with non-LT consumers."
         ),
     },
