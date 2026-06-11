@@ -5,7 +5,20 @@
 Add operator-facing knobs on LT-OS (incl. a live VAD-threshold control) and a simple
 VU meter (current volume + peak-hold) so the floors can be calibrated live.
 
-**Author:** Demerzel session 2026-06-09. **Status:** proposed.
+**Author:** Demerzel session 2026-06-09. **Status:** CLOSED 2026-06-10 — outcome below.
+
+> **Outcome (2026-06-10, Dan's calls):**
+> - **"Party mode" as a mode is retired.** The capture knobs (VU meter, VAD
+>   threshold, energy floor) shipped **always-on and mode-independent** — the
+>   knob's value is the switch (energy floor 0.0 == off). Phase 0/1 live.
+> - **Phase 2 speaker allowlist: built, then SHELVED.** Speaker-ID isn't
+>   reliable enough to gate replies on. Predicate `main.speaker_allowlist_drop`
+>   + `tests/test_speaker_allowlist_gate.py` stay; call site commented out in
+>   `process_speech`; `party_mode_enabled`/`speaker_allowlist` toggle keys removed.
+> - **`TIMMY_PARTY_MODE` renamed `TIMMY_AUTO_ENROLL_KILL`** (config
+>   `AUTO_ENROLL_KILL`) — it was only ever the auto-enroll emergency kill
+>   switch. Currently 0: Dan wants auto-enroll ON for the 6-13 party despite
+>   the live mode="add" pollution risk (his call, flagged).
 
 ---
 

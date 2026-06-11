@@ -38,15 +38,17 @@ _DEFAULTS: dict = {
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the
     # static master switch) -- BOTH must be true. Default False (opt-in).
     "proactive_speech_enabled": False,
-    # --- Near-field / party-capture knobs (2026-06-09) ---------------------
-    # Foundation only at this stage: persisted + readable, but the capture loop
-    # does not consume them yet (that's the Phase 1/2 wiring in
-    # docs/plans/party-mode-near-field-capture.md). Defaults reproduce current
-    # behaviour exactly, so adding them is a no-op until something reads them.
+    # --- Near-field capture knobs (2026-06-09) ------------------------------
+    # Always-on, mode-independent (Dan 2026-06-10: no "party/presenter mode" —
+    # the knob's value IS the switch). Consumed live by audio/capture.py;
+    # exposed via the LT-OS VU meter + sliders.
     "capture_vad_threshold": 0.4,        # Silero onset prob floor (seeds config.VAD_THRESHOLD)
     "capture_energy_floor": 0.0,         # peak-amplitude floor for onset; 0.0 == disabled
-    "party_mode_enabled": False,         # master switch for near-field + allowlist gating
-    "speaker_allowlist": ["dan"],        # names allowed to get a reply when party mode is on; [] == allow all
+    # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
+    # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
+    # predicate lives on as main.speaker_allowlist_drop (gate commented out in
+    # process_speech). Re-add both keys here when re-enabling. Stale keys in
+    # the on-disk JSON are ignored by _load()'s defaults-merge.
 }
 
 _lock = threading.Lock()

@@ -80,13 +80,16 @@ from conversation.reply_filter import (
 )
 
 
-def party_mode_drop(name: str, allowlist) -> bool:
-    """Near-field Phase 2 allowlist predicate (pure, unit-testable).
+def speaker_allowlist_drop(name: str, allowlist) -> bool:
+    """Speaker-allowlist reply-gate predicate (pure, unit-testable).
 
-    True == drop this speaker while party mode is on. An empty/None
-    allowlist allows everyone (party mode then only contributes the
-    Phase 1 energy floor). Unknown speakers are always dropped when an
-    allowlist is set — guests should get neither a reply nor a name prompt.
+    True == drop this speaker. An empty/None allowlist allows everyone.
+    Unknown speakers are always dropped when an allowlist is set — guests
+    should get neither a reply nor a name prompt.
+
+    SHELVED 2026-06-10 (Dan): speaker-ID isn't reliable enough to gate
+    replies on; the call site in process_speech is commented out and the
+    runtime-toggle keys were removed. Kept (with tests) for when it is.
     """
     allow = [n.lower() for n in (allowlist or [])]
     if not allow:
@@ -384,19 +387,20 @@ class Orchestrator:
                       speaker_result.confidence, spk_ms)
             return
 
-        # Party mode (near-field Phase 2): only allowlisted speakers get past
+        # Speaker-allowlist reply gate: only allowlisted speakers get past
         # here. Sits before STT so non-allowlisted guests get neither a reply
         # nor a name-solicitation prompt, and their voices don't accumulate
         # into unknown-speaker clusters.
-        # DISABLED 2026-06-10 (Dan): speaker recognition not reliable enough
+        # SHELVED 2026-06-10 (Dan): speaker recognition not reliable enough
         # yet to gate replies on — false rejects would silently drop Dan.
-        # Re-enable by uncommenting when speaker-ID accuracy is party-ready.
-        # Predicate (party_mode_drop) + tests/test_party_mode_gate.py stay.
-        # if runtime_toggles.get("party_mode_enabled") and party_mode_drop(
+        # To re-enable: uncomment, and re-add "speaker_allowlist_enabled" +
+        # "speaker_allowlist" to persistence/runtime_toggles._DEFAULTS.
+        # Predicate (speaker_allowlist_drop) + tests stay live.
+        # if runtime_toggles.get("speaker_allowlist_enabled") and speaker_allowlist_drop(
         #         speaker_result.name, runtime_toggles.get("speaker_allowlist")):
         #     if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
         #         self.speaker_id_module.undo_last_observation(speaker_result.name)
-        #     log.info("Party mode: dropping non-allowlisted speaker %s (conf=%.2f)",
+        #     log.info("Allowlist gate: dropping non-allowlisted speaker %s (conf=%.2f)",
         #              speaker_result.name, speaker_result.confidence)
         #     return
 
@@ -641,14 +645,14 @@ class Orchestrator:
             )
             streak_hit = self._face_hint_streak.observe(streak_face_name, streak_temp_id)
             if streak_hit is not None:
-                if config.PARTY_MODE:
-                    # Party master switch: suppress voiceprint auto-enroll. A
+                if config.AUTO_ENROLL_KILL:
+                    # Emergency kill switch: suppress voiceprint auto-enroll. A
                     # crowd makes face_hint streaks unreliable (false-accepts),
                     # and binding a voiceprint off a bad streak corrupts speaker
                     # attribution at scale. Still reset so the streak doesn't
                     # accumulate stale across turns.
                     log.info(
-                        "[PRESENCE] auto-enroll SUPPRESSED (PARTY_MODE): %s -> %s (%d-turn streak)",
+                        "[PRESENCE] auto-enroll SUPPRESSED (AUTO_ENROLL_KILL): %s -> %s (%d-turn streak)",
                         streak_hit.voice_temp_id, streak_hit.face_hint_name, streak_hit.count,
                     )
                 else:
@@ -1137,11 +1141,11 @@ async def main():
     # mid-utterance (don't barge in). No-op unless TIMMY_AUTO_ENROLL_ENABLED.
     async def face_enroll_monitor():
         if not orch._face_enroller.cfg.enabled:
-            # cfg.enabled = TIMMY_AUTO_ENROLL_ENABLED AND NOT TIMMY_PARTY_MODE
-            # (face_enroller.py:122). Name the actual reason so future debugging
+            # cfg.enabled = TIMMY_AUTO_ENROLL_ENABLED AND NOT TIMMY_AUTO_ENROLL_KILL
+            # (face_enroller.py). Name the actual reason so future debugging
             # doesn't chase an "unset" var that's really set-but-overridden.
-            if os.environ.get("TIMMY_PARTY_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
-                log.info("[AUTOENROLL] disabled (overridden by TIMMY_PARTY_MODE)")
+            if os.environ.get("TIMMY_AUTO_ENROLL_KILL", "").strip().lower() in ("1", "true", "yes", "on"):
+                log.info("[AUTOENROLL] disabled (overridden by TIMMY_AUTO_ENROLL_KILL)")
             else:
                 log.info("[AUTOENROLL] disabled (TIMMY_AUTO_ENROLL_ENABLED unset)")
             return

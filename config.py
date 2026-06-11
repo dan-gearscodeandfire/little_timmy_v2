@@ -190,15 +190,16 @@ AUTO_ENROLL_POLL_INTERVAL_S = float(os.getenv("TIMMY_AE_POLL_INTERVAL_S", "0.4")
 # Leave OFF in production — there a true stranger is unknown by face AND voice.
 AUTO_ENROLL_ENGAGE_ANY_SPEECH = os.getenv(
     "TIMMY_AE_ENGAGE_ANY_SPEECH", "0").strip().lower() in ("1", "true", "yes", "on")
-# PARTY master switch (TIMMY_PARTY_MODE). When ON, hard-disables BOTH
-# auto-enrollment paths — the interactive face FSM (presence/face_enroller.py)
-# AND the voiceprint face-hint streak (presence/auto_enroll.py) — regardless of
-# their individual flags. Rationale: at a crowded event a recognizer false-accept
-# + mode="add" append corrupts identities at scale (the Dan<->Devon face-DB
-# pollution, 2026-06-09). This is the single lever to make LT party-safe; flip it
-# back off after the event to resume normal stranger auto-enrollment. Forward-
-# looking: future party-only behaviors (near-field Phase 2) can read this too.
-PARTY_MODE = os.getenv("TIMMY_PARTY_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
+# Auto-enroll emergency kill switch (TIMMY_AUTO_ENROLL_KILL; renamed from
+# TIMMY_PARTY_MODE 2026-06-10 — it was never a "mode", just this lever). When
+# ON, hard-disables BOTH auto-enrollment paths — the interactive face FSM
+# (presence/face_enroller.py) AND the voiceprint face-hint streak (main.py) —
+# regardless of their individual flags. Rationale: in a crowd a recognizer
+# false-accept + mode="add" append corrupts identities at scale (the Dan<->Devon
+# face-DB pollution, 2026-06-09). To kill enrollment: set
+# Environment=TIMMY_AUTO_ENROLL_KILL=1 in little-timmy.service.d/auto-enroll.conf,
+# then daemon-reload + restart.
+AUTO_ENROLL_KILL = os.getenv("TIMMY_AUTO_ENROLL_KILL", "0").strip().lower() in ("1", "true", "yes", "on")
 STREAMERPI_EYE_LED_URL = os.getenv(
     "TIMMY_EYE_LED_URL", "https://192.168.1.110:8080/esp32/write"
 )
