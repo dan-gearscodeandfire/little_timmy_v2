@@ -415,6 +415,63 @@ async def set_timmy_energy_floor(payload: dict | None = None):
         return JSONResponse({"ok": False, "error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+# --- P4 face-flap debounce knobs (2026-06-11) -------------------------------
+# Six knobs across two layers: A1/A2 sticky-identity lives on streamerpi
+# (/face_id/config, persisted in face_id_tuning.json there); B3/C5 live in
+# LT's runtime toggles (/api/vision/tuning). All apply live, no restarts.
+
+@app.get("/api/timmy/face_id_tuning")
+async def get_face_id_tuning():
+    """Proxy: streamerpi A1/A2 sticky-identity tuning."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
+            r = await client.get(config.STREAMERPI_URL + "/face_id/config")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"streamerpi unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/face_id_tuning")
+async def set_face_id_tuning(payload: dict | None = None):
+    """Proxy: update streamerpi A1/A2 tuning. Body: any subset of
+    {face_unknown_debounce_frames, face_identity_acquire_dist,
+     face_identity_release_dist}. The Pi validates + persists."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
+            r = await client.post(config.STREAMERPI_URL + "/face_id/config",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"streamerpi unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/timmy/vision/tuning")
+async def get_vision_tuning():
+    """Proxy: LT-side P4 knobs (B3 novelty persistence, C5 enroll gates)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/vision/tuning")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/vision/tuning")
+async def set_vision_tuning(payload: dict | None = None):
+    """Proxy: update LT-side P4 knobs. LT validates + persists."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/vision/tuning",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/announce")
 async def timmy_announce(payload: dict | None = None):
     """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
@@ -1201,6 +1258,35 @@ header .uptime {
             <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
             <span class="slider"></span>
           </label>
+        </div>
+        <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
+             A1/A2 sticky identity (streamerpi /face_id/config) and LT-side
+             B3/C5 gates (runtime toggles). All live, no restart needed. -->
+        <div class="service-card" id="face-tuning-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="margin-bottom:6px;">
+            <div class="service-name">Face ID Debounce (P4)</div>
+            <div class="service-detail" id="face-tuning-status">Loading…</div>
+          </div>
+          <div style="display:grid; grid-template-columns:auto 70px; gap:4px 8px; font-size:11px; color:#8b949e; align-items:center;">
+            <span title="A1: consecutive unknown frames before a held identity is released (Pi)">Unknown debounce (frames)</span>
+            <input type="number" id="ft-debounce" min="1" max="20" step="1"
+                   onchange="commitFaceTuning('pi','face_unknown_debounce_frames',this.value)" style="width:64px;">
+            <span title="A2: latch an identity below this cosine distance (Pi; effective only ≤ the 0.45 match threshold)">Identity acquire dist</span>
+            <input type="number" id="ft-acquire" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('pi','face_identity_acquire_dist',this.value)" style="width:64px;">
+            <span title="A2: release a held identity only past this distance, sustained (Pi)">Identity release dist</span>
+            <input type="number" id="ft-release" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('pi','face_identity_release_dist',this.value)" style="width:64px;">
+            <span title="B3: a person must appear in ≥ ceil(this × 5) of the last 5 scene records to count as new (LT)">People novelty persistence</span>
+            <input type="number" id="ft-persistence" min="0" max="1" step="0.05"
+                   onchange="commitFaceTuning('lt','people_novelty_min_persistence',this.value)" style="width:64px;">
+            <span title="C5: enroll-candidate samples must span at least this many seconds (LT)">Enroll min span (s)</span>
+            <input type="number" id="ft-span" min="0" max="60" step="0.5"
+                   onchange="commitFaceTuning('lt','enroll_candidate_min_span_s',this.value)" style="width:64px;">
+            <span title="C5: most samples must be farther than this from every known identity (LT; shares A2 release value)">Enroll min dist</span>
+            <input type="number" id="ft-enroll-dist" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('lt','enroll_candidate_min_dist',this.value)" style="width:64px;">
+          </div>
         </div>
       </div>
       <div class="model-selector" id="model-selector">
@@ -2574,6 +2660,58 @@ pollStreamerpiMain();
 setInterval(pollStreamerpiMain, 10000);
 pollLTToggles();
 setInterval(pollLTToggles, 10000);
+
+// --- P4 face-flap debounce knobs (Pi A1/A2 + LT B3/C5) ---------------------
+const FT_FIELDS = {
+  pi: { 'face_unknown_debounce_frames': 'ft-debounce',
+        'face_identity_acquire_dist': 'ft-acquire',
+        'face_identity_release_dist': 'ft-release' },
+  lt: { 'people_novelty_min_persistence': 'ft-persistence',
+        'enroll_candidate_min_span_s': 'ft-span',
+        'enroll_candidate_min_dist': 'ft-enroll-dist' },
+};
+
+async function loadFaceTuning() {
+  const st = document.getElementById('face-tuning-status');
+  const errs = [];
+  for (const [scope, url] of [['pi', '/api/timmy/face_id_tuning'],
+                              ['lt', '/api/timmy/vision/tuning']]) {
+    try {
+      const d = await (await fetch(url)).json();
+      if (d.error) { errs.push(scope + ': ' + d.error); continue; }
+      for (const [key, elId] of Object.entries(FT_FIELDS[scope])) {
+        const el = document.getElementById(elId);
+        if (el && d[key] != null && document.activeElement !== el) el.value = d[key];
+      }
+    } catch (e) { errs.push(scope + ' unreachable'); }
+  }
+  if (st) {
+    st.textContent = errs.length ? errs.join(' · ') : 'live (Pi A1/A2 + LT B3/C5)';
+    st.style.color = errs.length ? '#f85149' : '#8b949e';
+  }
+}
+
+async function commitFaceTuning(scope, key, value) {
+  const st = document.getElementById('face-tuning-status');
+  const url = scope === 'pi' ? '/api/timmy/face_id_tuning' : '/api/timmy/vision/tuning';
+  const body = {}; body[key] = parseFloat(value);
+  try {
+    const r = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (st) { st.textContent = 'rejected: ' + (d.error || r.status); st.style.color = '#f85149'; }
+    } else {
+      if (st) { st.textContent = key + ' saved'; st.style.color = '#3fb950'; }
+    }
+  } catch (e) {
+    if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
+  }
+  loadFaceTuning();  // re-sync (also restores a rejected field to server truth)
+}
+
+loadFaceTuning();
+setInterval(loadFaceTuning, 15000);
 
 async function pollHostMetrics() {
   try {

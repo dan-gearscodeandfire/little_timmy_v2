@@ -618,6 +618,45 @@ async def set_hearing(payload: dict | None = None):
     return {"ok": True, "enabled": bool(cap.is_hearing_enabled), "muted": bool(cap.hearing_muted)}
 
 
+# --- P4 face-flap debounce tuning (2026-06-11) -----------------------------
+# The three LT-side knobs. Pi-side A1/A2 knobs (debounce frames, acquire/
+# release dists) live on streamerpi's /face_id/config; LT-OS talks to that
+# endpoint directly.
+_VISION_TUNING_KEYS = {
+    # knob -> (min, max). All consumed live via runtime_toggles.get() —
+    # relevance.classify() per frame, the new-face trigger per decision.
+    "people_novelty_min_persistence": (0.0, 1.0),
+    "enroll_candidate_min_span_s": (0.0, 60.0),
+    "enroll_candidate_min_dist": (0.05, 1.5),
+}
+
+
+@app.get("/api/vision/tuning")
+async def get_vision_tuning():
+    """Read the LT-side P4 debounce knobs (live runtime toggles)."""
+    from persistence import runtime_toggles
+    return {k: runtime_toggles.get(k) for k in _VISION_TUNING_KEYS}
+
+
+@app.post("/api/vision/tuning")
+async def set_vision_tuning(payload: dict | None = None):
+    """Update any subset of the LT-side P4 debounce knobs. Values are floats,
+    range-checked; persisted by runtime_toggles and read per-decision, so they
+    apply live without a restart."""
+    from persistence import runtime_toggles
+    updates = {k: v for k, v in (payload or {}).items() if k in _VISION_TUNING_KEYS}
+    for k, v in updates.items():
+        lo, hi = _VISION_TUNING_KEYS[k]
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"{k} must be numeric"}
+        if not lo <= fv <= hi:
+            return {"ok": False, "error": f"{k} must be {lo}-{hi}"}
+        runtime_toggles.set(k, fv)
+    return {"ok": True, **{k: runtime_toggles.get(k) for k in _VISION_TUNING_KEYS}}
+
+
 @app.get("/api/proactive")
 async def get_proactive():
     """Read the proactive-speech runtime toggle. `enabled` is the live operator
