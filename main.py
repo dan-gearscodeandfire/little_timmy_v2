@@ -80,6 +80,21 @@ from conversation.reply_filter import (
 )
 
 
+def party_mode_drop(name: str, allowlist) -> bool:
+    """Near-field Phase 2 allowlist predicate (pure, unit-testable).
+
+    True == drop this speaker while party mode is on. An empty/None
+    allowlist allows everyone (party mode then only contributes the
+    Phase 1 energy floor). Unknown speakers are always dropped when an
+    allowlist is set — guests should get neither a reply nor a name prompt.
+    """
+    allow = [n.lower() for n in (allowlist or [])]
+    if not allow:
+        return False
+    n = name.lower()
+    return n.startswith("unknown") or n not in allow
+
+
 class Orchestrator:
     def __init__(self):
         self.conversation = ConversationManager()
@@ -367,6 +382,18 @@ class Orchestrator:
         if speaker_result.is_timmy:
             log.debug("Discarding Timmy's own voice (dist confidence=%.2f, %dms)",
                       speaker_result.confidence, spk_ms)
+            return
+
+        # Party mode (near-field Phase 2): only allowlisted speakers get past
+        # here. Sits before STT so non-allowlisted guests get neither a reply
+        # nor a name-solicitation prompt, and their voices don't accumulate
+        # into unknown-speaker clusters.
+        if runtime_toggles.get("party_mode_enabled") and party_mode_drop(
+                speaker_result.name, runtime_toggles.get("speaker_allowlist")):
+            if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
+                self.speaker_id_module.undo_last_observation(speaker_result.name)
+            log.info("Party mode: dropping non-allowlisted speaker %s (conf=%.2f)",
+                     speaker_result.name, speaker_result.confidence)
             return
 
         # --- STT ---
