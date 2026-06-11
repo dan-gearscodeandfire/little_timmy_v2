@@ -551,6 +551,36 @@
     let disconnectGraceTimer = null;
     const DISCONNECT_GRACE_MS = 5000;
 
+    // M4-bis (2026-06-11): bounded takeover. ONE auto-force per quiet period
+    // self-heals an unattended booth (stale holder, kiosk reboot); a second
+    // 409 inside the cooldown means a live peer is fighting back -- the
+    // two-display takeover ping-pong (supervisor log 06-11 18:21) where two
+    // of these pages each auto-forced every ~15s and both feeds black-cycled.
+    // In that case park with a Take Over button (visitor.html M4 semantics)
+    // instead of warring.
+    const FORCE_COOLDOWN_MS = 60000;
+    let lastForceTs = 0;
+
+    function showParkedOverlay() {
+      if (document.getElementById('takeover-parked')) return;
+      const o = document.createElement('div');
+      o.id = 'takeover-parked';
+      o.style.cssText = 'position:fixed; inset:0; z-index:60; display:flex; flex-direction:column;'
+        + 'align-items:center; justify-content:center; gap:14px;'
+        + 'background:rgba(8,10,14,0.82); color:#e6edf3; font-size:20px; text-align:center;';
+      o.innerHTML = '<div>Live feed is in use on another display.</div>';
+      const b = document.createElement('button');
+      b.textContent = 'Take over the feed';
+      b.style.cssText = 'font-size:18px; padding:10px 22px; cursor:pointer;'
+        + 'background:#1f6feb; color:#fff; border:0; border-radius:8px;';
+      b.onclick = () => { hideParkedOverlay(); lastForceTs = Date.now(); startWebRTC({ force: true }); };
+      o.appendChild(b);
+      document.body.appendChild(o);
+    }
+    function hideParkedOverlay() {
+      document.getElementById('takeover-parked')?.remove();
+    }
+
     function attachStream(stream) {
       let v = document.querySelector('video.feed');
       if (!v) {
@@ -624,15 +654,23 @@
           }),
         });
         if (r.status === 409) {
-          // Another client holds the single-client lock — force a takeover
-          // after a brief pause. This tab is the booth display, so we win.
-          setTimeout(() => startWebRTC({ force: true }), 2000);
+          // Another client holds the single-client lock. Auto-force only if
+          // we haven't forced recently; a repeat 409 inside the cooldown is
+          // an active peer (ping-pong) -- park behind the Take Over button.
+          if (Date.now() - lastForceTs > FORCE_COOLDOWN_MS) {
+            lastForceTs = Date.now();
+            setTimeout(() => startWebRTC({ force: true }), 2000);
+          } else {
+            if (pc === thisPc) { try { thisPc.close(); } catch {} pc = null; }
+            showParkedOverlay();
+          }
           return;
         }
         if (!r.ok) throw new Error('offer http ' + r.status);
         const answer = await r.json();
         if (pc !== thisPc) return;
         await thisPc.setRemoteDescription(answer);
+        hideParkedOverlay();
       } catch (e) {
         if (pc !== thisPc) return;
         setTimeout(() => startWebRTC(), 3000);
