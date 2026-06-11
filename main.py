@@ -56,6 +56,7 @@ from presence import (
     LookAtPolicy,
 )
 from presence.face_enroller import FaceEnroller
+from presence.new_face_trigger import NewFaceTrigger, TriggerConfig
 from vision.face_remote import RemoteFaceClient
 from presence.face_client_local import fetch_face_observation_local
 
@@ -171,6 +172,9 @@ class Orchestrator:
             turn_lock=self._turn_lock,
             on_enrolled=self._record_auto_enroll,
             hold_head=self._hold_head_for_enroll,
+            # C5 knobs (enroll_candidate_min_span_s / _min_dist) read live from
+            # runtime_toggles so LT-OS sliders take effect without a restart.
+            trigger=NewFaceTrigger(TriggerConfig(), knobs=runtime_toggles.get),
         )
 
     async def _fetch_face_safe(self):

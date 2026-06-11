@@ -71,6 +71,20 @@ class TriggerConfig:
     assoc_radius_frac: float = _f("TIMMY_AE_ASSOC_RADIUS_FRAC", 0.18)
     # Drop a track unseen for this long.
     track_ttl_s: float = _f("TIMMY_AE_TRACK_TTL_S", 2.0)
+    # --- C5 confident-stranger hardening (2026-06-11) ----------------------
+    # A burst of samples after a servo-blackout can satisfy min_samples while
+    # spanning under 2s of wall clock; require the window's samples to span at
+    # least this long so the discriminator gets a real look. Live-overridable
+    # via runtime toggle "enroll_candidate_min_span_s" when a knobs callable
+    # is injected (see NewFaceTrigger.__init__).
+    min_span_s: float = _f("TIMMY_AE_MIN_SPAN_S", 6.0)
+    # Beyond "no frame ever matched" (new_face_min_dist on the window MINIMUM),
+    # most samples must be CONFIDENTLY strange: distance to the nearest enrolled
+    # identity above this margin (shares A2's release-threshold value). Live
+    # toggle "enroll_candidate_min_dist".
+    confident_stranger_dist: float = _f("TIMMY_AE_CONFIDENT_DIST", 0.60)
+    # Fraction of window samples that must clear confident_stranger_dist.
+    confident_stranger_frac: float = _f("TIMMY_AE_CONFIDENT_FRAC", 0.8)
     # After a track fires (or is explicitly handled), don't re-fire it for this
     # long. In the spike this just stops log spam; v1 uses it for decline cooldown.
     refire_cooldown_s: float = _f("TIMMY_AE_REFIRE_COOLDOWN_S", 120.0)
@@ -160,10 +174,24 @@ class NewFaceTrigger:
     exactly once (then enter refire cooldown).
     """
 
-    def __init__(self, cfg: Optional[TriggerConfig] = None):
+    def __init__(self, cfg: Optional[TriggerConfig] = None, knobs=None):
+        """knobs: optional Callable[[str], object] returning a live override
+        for a named C5 knob (runtime_toggles.get in production) or None.
+        Injected as a seam so this module stays pure logic for the selftest;
+        invalid/missing values fall back to the env-derived cfg default."""
         self.cfg = cfg or TriggerConfig()
+        self._knobs = knobs
         self._tracks: dict = {}
         self._next_id = 1
+
+    def _live_f(self, key: str, default: float) -> float:
+        if self._knobs is None:
+            return default
+        try:
+            v = self._knobs(key)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+        except Exception:
+            return default
 
     @property
     def tracks(self) -> dict:
@@ -232,6 +260,16 @@ class NewFaceTrigger:
             return dec(False, "WARMING", f"age {age:.1f}s < window {cfg.window_s:.0f}s")
         if samples < cfg.min_samples:
             return dec(False, "SPARSE", f"{samples} samples < {cfg.min_samples}")
+        # C5 (2026-06-11): a post-servo-blackout burst can hit min_samples in
+        # under 2s; require the track's samples to span real wall clock so a
+        # known person gets the chance to throw a good (suppressing) frame.
+        # Measured over the FULL retained history, not the analysis window --
+        # the window is capped at window_s (5s), so a >=6s span requirement
+        # would be unsatisfiable there.
+        span = (tr.history[-1].ts - tr.history[0].ts) if tr.history else 0.0
+        span_req = self._live_f("enroll_candidate_min_span_s", cfg.min_span_s)
+        if span < span_req:
+            return dec(False, "SPARSE", f"span {span:.1f}s < {span_req:.1f}s")
         if median_h < cfg.min_face_px:
             return dec(False, "SMALL", f"median h {median_h:.0f}px < {cfg.min_face_px}px")
         # Belt-and-suspenders: a confident known label in-window => enrolled.
@@ -241,7 +279,18 @@ class NewFaceTrigger:
             return dec(False, "KNOWN", f"best dist {min_dist:.2f} < {cfg.known_suppress_dist:.2f}")
         if min_dist < cfg.new_face_min_dist:
             return dec(False, "HOLD", f"best dist {min_dist:.2f} in ambiguous band")
-        return dec(True, "CANDIDATE", f"best dist {min_dist:.2f} >= {cfg.new_face_min_dist:.2f} for {age:.1f}s")
+        # C5: beyond "no frame ever matched", the track must read as a
+        # CONFIDENT stranger -- most samples clear of every enrolled identity
+        # by the release margin. Near-threshold tracks (Dan-ish 0.47-0.58)
+        # can never become candidates.
+        conf_dist = self._live_f("enroll_candidate_min_dist", cfg.confident_stranger_dist)
+        confident = sum(1 for o in win if o.distance > conf_dist)
+        if confident < cfg.confident_stranger_frac * samples:
+            return dec(False, "HOLD",
+                       f"only {confident}/{samples} samples > {conf_dist:.2f} (need {cfg.confident_stranger_frac:.0%})")
+        return dec(True, "CANDIDATE",
+                   f"best dist {min_dist:.2f} >= {cfg.new_face_min_dist:.2f}, "
+                   f"{confident}/{samples} > {conf_dist:.2f}, span {span:.1f}s")
 
     def update(self, faces: list, image_size, now: float) -> list:
         """Ingest one /faces tick.
@@ -375,6 +424,55 @@ def _run_selftest() -> int:
                 tr = t.tracks[x.track_id]
                 fired_names.append("stranger" if tr.last_center[0] < W / 2 else "dan")
     check(f"only stranger fired (fired={fired_names})", fired_names == ["stranger"])
+
+    # --- Scenario 6 (C5): trickle-then-burst around a servo blackout. With the
+    # production drop-in MIN_SAMPLES=4, sample count + age pass while the
+    # samples span only ~4s -> must NOT fire (SPARSE on span). ---
+    print("Scenario 6 (C5): post-blackout burst, min_samples=4 -> must NOT fire yet")
+    cfg4 = TriggerConfig(min_samples=4)
+    t = NewFaceTrigger(cfg4)
+    fired = 0
+    # Sparse keep-alive obs every 1.9s (inside 2s TTL), then a 4 Hz burst.
+    times = [0.0, 1.9, 3.8] + [5.0 + i * 0.25 for i in range(4)]
+    for ts in times:
+        decs = t.update([{"name": "unknown", "distance": 0.85, "confidence": "low",
+                          "bbox": box(W / 2)}], (W, H), 6000.0 + ts)
+        fired += sum(1 for x in decs if x.is_candidate)
+    last = decs[0]
+    check(f"verdict SPARSE on span (got {last.verdict}: {last.reason})",
+          last.verdict == "SPARSE" and "span" in last.reason)
+    check("never fired", fired == 0)
+    # Same track kept alive past the span requirement -> may then fire.
+    for i in range(10):
+        decs = t.update([{"name": "unknown", "distance": 0.85, "confidence": "low",
+                          "bbox": box(W / 2)}], (W, H), 6000.0 + 6.0 + i * 0.25)
+        fired += sum(1 for x in decs if x.is_candidate)
+    check(f"fires once after earning the span (got {fired})", fired == 1)
+
+    # --- Scenario 7 (C5): near-threshold track. Every frame clears the old
+    # min-dist rule (>=0.55) but a third sit in the 0.55-0.60 Dan-ish band ->
+    # not a CONFIDENT stranger, must NOT fire. ---
+    print("Scenario 7 (C5): near-threshold (0.56/0.65 mix) -> HOLD, must NOT fire")
+    t = NewFaceTrigger(cfg)
+    nearish = [(0.56 if i % 3 == 0 else 0.65, "unknown", "low") for i in range(40)]
+    decs = stream(t, nearish, t0=7000.0)
+    check(f"verdict HOLD (got {decs[0].verdict}: {decs[0].reason})",
+          decs[0].verdict == "HOLD" and "samples" in decs[0].reason)
+    check("never fired", all(not x.is_candidate for x in decs))
+
+    # --- Scenario 8 (C5): live knob override via the knobs seam. Raising
+    # enroll_candidate_min_dist above the track's distances must block it. ---
+    print("Scenario 8 (C5): knobs seam raises min_dist -> must NOT fire")
+    knobs = {"enroll_candidate_min_dist": 0.70, "enroll_candidate_min_span_s": 6.0}
+    t = NewFaceTrigger(cfg, knobs=knobs.get)
+    decs = stream(t, [(0.65, "unknown", "low")] * 40, t0=8000.0)
+    check(f"blocked by live knob (got {decs[0].verdict})",
+          decs[0].verdict == "HOLD" and all(not x.is_candidate for x in decs))
+    # And a bogus knob value falls back to cfg default (0.60) -> fires.
+    t = NewFaceTrigger(cfg, knobs={"enroll_candidate_min_dist": "garbage"}.get)
+    decs = stream(t, [(0.65, "unknown", "low")] * 40, t0=9000.0)
+    check("bogus knob value falls back to default and fires",
+          any(True for _ in [1]) and decs[0].verdict in ("CANDIDATE", "COOLDOWN"))
 
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1
