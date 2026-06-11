@@ -1115,7 +1115,16 @@ async def main():
                         await orch.supervisor.on_vision_people_changed([], was_empty=False)
                         last_people = []
                     continue
-                current_people = record.people or []
+                # B3 persistence gate (P4 fix 2026-06-11): diff the debounced
+                # confirmed-people set, not raw record.people -- a single-frame
+                # face-ID flap ('unidentified person' while Dan turns his head)
+                # must not register as a new arrival and fire proactive speech,
+                # nor must a single-frame all-faces miss read as "everyone
+                # left". Falls back to raw people before the first relevance
+                # result (or with the gate toggled off, where they're equal).
+                relevance = orch.vision.get_last_relevance()
+                current_people = (relevance.confirmed_people if relevance is not None
+                                  else (record.people or []))
                 new_names = (set(p.lower() for p in current_people)
                              - set(p.lower() for p in last_people))
                 if set(p.lower() for p in current_people) != set(p.lower() for p in last_people):

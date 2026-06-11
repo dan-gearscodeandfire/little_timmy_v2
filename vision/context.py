@@ -377,5 +377,6 @@ class VisionContext:
                 "filtered_summary": self._last_relevance.filtered_summary,
                 "new_people": self._last_relevance.new_people,
                 "new_actions": self._last_relevance.new_actions,
+                "confirmed_people": self._last_relevance.confirmed_people,
             }
         return result

@@ -14,8 +14,10 @@ plus a filtered summary that omits stale/redundant information.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 
+from persistence import runtime_toggles
 from vision.analyzer import SceneRecord
 
 log = logging.getLogger(__name__)
@@ -24,6 +26,11 @@ log = logging.getLogger(__name__)
 INJECT_THRESHOLD = 0.3       # below this, don't inject vision into prompt at all
 DETAIL_THRESHOLD = 0.6       # above this, include full detail (objects, scene_state)
 SPEAK_THRESHOLD = 0.8        # above this, vision record suggests proactive comment
+
+# B3 people-persistence gate (P4 fix 2026-06-11): window size for the
+# confirmed-people count. The min-persistence fraction itself is a live
+# runtime toggle ("people_novelty_min_persistence").
+PEOPLE_PERSISTENCE_LOOKBACK = 5
 
 
 @dataclass
@@ -39,6 +46,13 @@ class RelevanceResult:
     new_people: list[str] = field(default_factory=list)
     new_actions: list[str] = field(default_factory=list)
     changed: str = ""
+    # Debounced presence set (B3): people seen in enough recent records to be
+    # trusted. Survives a single-frame face-ID flap (Dan in profile -> one
+    # 'unidentified person' frame must NOT look like a new arrival). Downstream
+    # rising-edge consumers (main.vision_people_monitor -> proactive speech)
+    # should diff THIS, not record.people. Equals record.people when the gate
+    # is off (people_novelty_min_persistence <= 0).
+    confirmed_people: list[str] = field(default_factory=list)
 
 
 def _set_overlap(a: list[str], b: list[str]) -> float:
@@ -58,11 +72,53 @@ def _new_items(current: list[str], prior: list[str]) -> list[str]:
     return [x for x in current if x.lower() not in prior_lower]
 
 
-def score_novelty(record: SceneRecord, history: list[SceneRecord]) -> float:
+def _confirmed_people(
+    records: list[SceneRecord],
+    min_persistence: float,
+    lookback: int = PEOPLE_PERSISTENCE_LOOKBACK,
+) -> dict[str, str]:
+    """People appearing in >= ceil(min_persistence * lookback) of the last
+    `lookback` records.
+
+    This is the B3 persistence gate (P4 fix): a single-frame face-ID flap
+    ('unidentified person' for one frame while Dan turns his head) never
+    reaches the confirmed set, and a confirmed person stays confirmed through
+    a one-frame dropout because membership is counted over the window, not
+    decided per-frame.
+
+    Returns {lowercase_name: first-seen original casing}. Required count is
+    computed against the full `lookback` constant (not len(records)), so a
+    cold-start history shorter than the window confirms nobody -- new tracks
+    must earn their frames, mirroring A1's "unconfirmed until N frames".
+    """
+    required = max(1, math.ceil(min_persistence * lookback))
+    counts: dict[str, int] = {}
+    casing: dict[str, str] = {}
+    for r in records[-lookback:]:
+        seen: dict[str, str] = {}
+        for p in r.people:
+            seen.setdefault(p.lower(), p)  # dedupe within one record
+        for low, orig in seen.items():
+            counts[low] = counts.get(low, 0) + 1
+            casing.setdefault(low, orig)
+    return {low: casing[low] for low, c in counts.items() if c >= required}
+
+
+def score_novelty(
+    record: SceneRecord,
+    history: list[SceneRecord],
+    people_now: list[str] | None = None,
+    people_prior: list[str] | None = None,
+) -> float:
     """How different is this record from recent history?
 
     Compares people, actions, objects, and scene_state against the last
     few records. High overlap = low novelty.
+
+    people_now/people_prior: when the B3 persistence gate is on, classify()
+    passes the window-confirmed people sets so the people term reflects
+    confirmed arrivals only -- a single-frame face-ID flap contributes zero
+    people-novelty. None (default) = raw per-record people (gate off).
     """
     if not history:
         return 1.0  # first record is always novel
@@ -70,7 +126,9 @@ def score_novelty(record: SceneRecord, history: list[SceneRecord]) -> float:
     # Compare against most recent record
     prev = history[-1]
 
-    people_overlap = _set_overlap(record.people, prev.people)
+    if people_now is None:
+        people_now, people_prior = record.people, prev.people
+    people_overlap = _set_overlap(people_now, people_prior or [])
     action_overlap = _set_overlap(record.actions, prev.actions)
     object_overlap = _set_overlap(record.objects, prev.objects)
     scene_same = (record.scene_state.lower().strip()
@@ -148,7 +206,22 @@ def classify(record: SceneRecord, history: list[SceneRecord]) -> RelevanceResult
     Returns:
         RelevanceResult with scores and filtered summary.
     """
-    novelty = score_novelty(record, history)
+    # B3 persistence gate (P4 fix 2026-06-11): people-driven novelty and the
+    # "new person" rising edge are computed over window-confirmed people, not
+    # raw per-frame face-ID output. Live-tunable; 0 disables (legacy behavior).
+    min_pers = runtime_toggles.get("people_novelty_min_persistence")
+    gate_on = isinstance(min_pers, (int, float)) and min_pers > 0
+    if gate_on:
+        confirmed_now = _confirmed_people(history + [record], min_pers)
+        confirmed_prev = _confirmed_people(history, min_pers)
+        novelty = score_novelty(
+            record, history,
+            people_now=list(confirmed_now.values()),
+            people_prior=list(confirmed_prev.values()),
+        )
+    else:
+        confirmed_now = confirmed_prev = None
+        novelty = score_novelty(record, history)
     persistence = score_persistence(record, history)
     urgency = score_urgency(record)
 
@@ -174,7 +247,16 @@ def classify(record: SceneRecord, history: list[SceneRecord]) -> RelevanceResult
 
     # Find what's actually new
     prev = history[-1] if history else None
-    new_people = _new_items(record.people, prev.people if prev else [])
+    if gate_on:
+        # "New" = crossed the confirmation threshold this frame. Fires once
+        # per genuine arrival (next frame they're in confirmed_prev too) and
+        # never for a single-frame flap.
+        new_people = [orig for low, orig in confirmed_now.items()
+                      if low not in confirmed_prev]
+        confirmed_people = list(confirmed_now.values())
+    else:
+        new_people = _new_items(record.people, prev.people if prev else [])
+        confirmed_people = list(record.people)
     new_actions = _new_items(record.actions, prev.actions if prev else [])
     changed = record.change_from_prior if record.change_from_prior.lower() != "none" else ""
 
@@ -194,6 +276,7 @@ def classify(record: SceneRecord, history: list[SceneRecord]) -> RelevanceResult
         new_people=new_people,
         new_actions=new_actions,
         changed=changed,
+        confirmed_people=confirmed_people,
     )
 
     log.info(

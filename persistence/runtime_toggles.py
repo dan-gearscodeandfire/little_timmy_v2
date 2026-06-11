@@ -44,6 +44,18 @@ _DEFAULTS: dict = {
     # exposed via the LT-OS VU meter + sliders.
     "capture_vad_threshold": 0.4,        # Silero onset prob floor (seeds config.VAD_THRESHOLD)
     "capture_energy_floor": 0.0,         # peak-amplitude floor for onset; 0.0 == disabled
+    # --- P4 face-ID flap debounce knobs (2026-06-11) ------------------------
+    # B3: a person must appear in >= ceil(this * lookback-5) recent scene
+    # records before they count as "new" for novelty / proactive rising-edge.
+    # 0.4 -> 2 of last 5. 0.0 disables the gate (legacy per-frame behavior).
+    # Consumed live by vision/relevance.py classify().
+    "people_novelty_min_persistence": 0.4,
+    # C5: enroll-candidate hardening (presence/face_enroller.py trigger).
+    # Candidate samples must span >= this many seconds...
+    "enroll_candidate_min_span_s": 6.0,
+    # ...and the track must be a CONFIDENT stranger: min_dist to every known
+    # identity > this on most samples (shares A2's release-threshold value).
+    "enroll_candidate_min_dist": 0.60,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
