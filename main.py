@@ -388,13 +388,17 @@ class Orchestrator:
         # here. Sits before STT so non-allowlisted guests get neither a reply
         # nor a name-solicitation prompt, and their voices don't accumulate
         # into unknown-speaker clusters.
-        if runtime_toggles.get("party_mode_enabled") and party_mode_drop(
-                speaker_result.name, runtime_toggles.get("speaker_allowlist")):
-            if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
-                self.speaker_id_module.undo_last_observation(speaker_result.name)
-            log.info("Party mode: dropping non-allowlisted speaker %s (conf=%.2f)",
-                     speaker_result.name, speaker_result.confidence)
-            return
+        # DISABLED 2026-06-10 (Dan): speaker recognition not reliable enough
+        # yet to gate replies on — false rejects would silently drop Dan.
+        # Re-enable by uncommenting when speaker-ID accuracy is party-ready.
+        # Predicate (party_mode_drop) + tests/test_party_mode_gate.py stay.
+        # if runtime_toggles.get("party_mode_enabled") and party_mode_drop(
+        #         speaker_result.name, runtime_toggles.get("speaker_allowlist")):
+        #     if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
+        #         self.speaker_id_module.undo_last_observation(speaker_result.name)
+        #     log.info("Party mode: dropping non-allowlisted speaker %s (conf=%.2f)",
+        #              speaker_result.name, speaker_result.confidence)
+        #     return
 
         # --- STT ---
         t0 = time.time()
