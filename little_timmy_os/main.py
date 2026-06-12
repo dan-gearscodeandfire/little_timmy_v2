@@ -497,6 +497,31 @@ async def set_situation(payload: dict | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+@app.get("/api/timmy/tts_mute")
+async def get_tts_mute():
+    """Proxy: LT-side mouth-mute (Timmy's conversational voice + fillers)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/tts_mute")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/tts_mute")
+async def set_tts_mute(payload: dict | None = None):
+    """Proxy: mute/unmute Timmy's mouth. LT persists; /api/announce still speaks."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/tts_mute",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/announce")
 async def timmy_announce(payload: dict | None = None):
     """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
@@ -1281,6 +1306,20 @@ header .uptime {
           </div>
           <label class="toggle" id="proactive-speech-toggle">
             <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Mouth-mute (2026-06-12). Silences Timmy's replies + fillers (ears +
+             matcher stay live; /api/announce still speaks). A clean bench for
+             two-voice attribution tests and enrolling guests without Timmy
+             talking over the cues. -->
+        <div class="service-card" id="tts-mute-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Mute Mouth (lab)</div>
+            <div class="service-detail" id="tts-mute-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="tts-mute-toggle">
+            <input type="checkbox" onchange="commitTtsMute(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -2795,6 +2834,50 @@ async function commitSituation(value) {
 
 loadSituation();
 setInterval(loadSituation, 15000);
+
+// Mouth-mute (lab) toggle. Silences replies + fillers; announce still speaks.
+async function loadTtsMute() {
+  const detail = document.getElementById('tts-mute-detail');
+  const toggle = document.querySelector('#tts-mute-toggle input');
+  const card = document.getElementById('tts-mute-card');
+  try {
+    const d = await (await fetch('/api/timmy/tts_mute')).json();
+    if (d.error) {
+      if (detail) { detail.textContent = d.error; detail.style.color = '#f85149'; }
+      return;
+    }
+    const muted = !!d.muted;
+    if (toggle && document.activeElement !== toggle) toggle.checked = muted;
+    if (card) card.style.borderLeftColor = muted ? '#d29922' : '#484f58';
+    if (detail) {
+      detail.textContent = muted
+        ? 'MUTED — replies + fillers off; ears + matcher live; announce still speaks'
+        : 'Speaking normally';
+      detail.style.color = muted ? '#d29922' : '#8b949e';
+    }
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+}
+
+async function commitTtsMute(muted) {
+  const detail = document.getElementById('tts-mute-detail');
+  try {
+    const r = await fetch('/api/timmy/tts_mute', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ muted: !!muted }) });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (detail) { detail.textContent = 'rejected: ' + (d.error || r.status); detail.style.color = '#f85149'; }
+    }
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+  loadTtsMute();
+}
+
+loadTtsMute();
+setInterval(loadTtsMute, 15000);
 
 async function pollHostMetrics() {
   try {

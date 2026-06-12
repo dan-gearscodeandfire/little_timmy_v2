@@ -10,6 +10,17 @@ log = logging.getLogger(__name__)
 _piper_voice = None
 
 
+def _tts_muted() -> bool:
+    """Live read of the mouth-mute toggle. Lazy import keeps this module
+    import-clean; any failure fails OPEN (not muted) so a persistence glitch
+    can never silence Timmy."""
+    try:
+        from persistence import runtime_toggles
+        return bool(runtime_toggles.get("tts_muted"))
+    except Exception:
+        return False
+
+
 def _load_voice(model_path: str):
     """Load Piper voice model (lazy, once)."""
     global _piper_voice
@@ -59,8 +70,15 @@ class TTSEngine:
         self._playback_task = asyncio.create_task(self._playback_loop())
         log.info("TTS engine started")
 
-    async def speak(self, text: str):
-        """Synthesize text and queue raw PCM for playback. Non-blocking."""
+    async def speak(self, text: str, force: bool = False):
+        """Synthesize text and queue raw PCM for playback. Non-blocking.
+
+        force=True bypasses the mouth-mute (tts_muted) — used by the supervisor
+        /api/announce channel so Claude can still speak to Dan while Timmy's own
+        conversational voice is muted. Muted speak() skips the enqueue entirely,
+        so capture.suppressed never fires and the mic stays open."""
+        if not force and _tts_muted():
+            return
         # Replace commas with em dashes for shorter TTS pauses
         text = text.replace(",", " —")
         if not text.strip():
@@ -97,6 +115,8 @@ class TTSEngine:
         cooldown (0.5 s) so the back-to-back-with-main-TTS goal is mostly
         preserved; LLM warm-up usually covers the small gap anyway.
         """
+        if _tts_muted():
+            return
         cached = self._filler_cache.get(text)
         if cached is None:
             await self.speak(text)

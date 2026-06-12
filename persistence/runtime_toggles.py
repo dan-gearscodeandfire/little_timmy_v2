@@ -38,6 +38,15 @@ _DEFAULTS: dict = {
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the
     # static master switch) -- BOTH must be true. Default False (opt-in).
     "proactive_speech_enabled": False,
+    # Mouth-mute (2026-06-12). When True, Timmy's CONVERSATIONAL voice (replies
+    # + THINKING fillers) is silenced — speak()/speak_filler() skip the playback
+    # enqueue, so capture.suppressed never sets and the mic stays fully open.
+    # His EARS + the speaker matcher keep running (unlike hearing_muted, which
+    # gates input). The supervisor /api/announce channel bypasses this (force=
+    # True) so Claude can still talk to Dan. Purpose: a clean bench for two-voice
+    # attribution tests and for enrolling guests without Timmy talking over the
+    # cues. Default False. Read live by the TTS engine — no restart to flip.
+    "tts_muted": False,
     # --- Near-field capture knobs (2026-06-09) ------------------------------
     # Always-on, mode-independent (Dan 2026-06-10: no "party/presenter mode" —
     # the knob's value IS the switch). Consumed live by audio/capture.py;

@@ -164,8 +164,29 @@ async def announce(payload: dict | None = None):
         spoken_text = text
     else:
         spoken_text = f"This is Claude talking. {text}"
-    await _orchestrator.tts.speak(spoken_text)
+    # force=True: the supervisor channel bypasses the mouth-mute (tts_muted) so
+    # Claude can still talk to Dan while Timmy's conversational voice is muted.
+    await _orchestrator.tts.speak(spoken_text, force=True)
     return {"spoken": True, "text": spoken_text}
+
+
+@app.get("/api/tts_mute")
+async def get_tts_mute():
+    """Read the mouth-mute toggle (Timmy's conversational voice + fillers)."""
+    from persistence import runtime_toggles
+    return {"muted": bool(runtime_toggles.get("tts_muted"))}
+
+
+@app.post("/api/tts_mute")
+async def set_tts_mute(payload: dict | None = None):
+    """Mute/unmute Timmy's mouth live. When muted, replies + fillers are
+    silenced (mic stays open, matcher keeps running); /api/announce still
+    speaks. Persisted by runtime_toggles, read live by the TTS engine — no
+    restart."""
+    from persistence import runtime_toggles
+    muted = bool((payload or {}).get("muted", True))
+    runtime_toggles.set("tts_muted", muted)
+    return {"ok": True, "muted": bool(runtime_toggles.get("tts_muted"))}
 
 
 @app.get("/api/mood")
