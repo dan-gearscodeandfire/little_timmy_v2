@@ -178,8 +178,10 @@ class ConversationTurn:
         # Verbatim-repeat guard for proactive remarks (2026-06-12): normalized
         # texts of the last few spoken proactive lines. Rate caps (cooldown /
         # max-per-min) gate frequency, not content — the same "lost puppy" line
-        # fired byte-identical twice in 2 min.
-        self._recent_proactive: deque[str] = deque(maxlen=4)
+        # fired byte-identical twice in 2 min. Window was 4; at the observed
+        # ~3-min remark cadence that only covered ~12 min and a verbatim repeat
+        # slipped through 19 min apart (18:05/18:24 soak) — 12 covers ~35 min.
+        self._recent_proactive: deque[str] = deque(maxlen=12)
 
     # -- front door 1: reactive (voice or text) ----------------------------
     async def respond(self, words: str, who: SpeakerIdentity,
