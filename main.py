@@ -488,6 +488,7 @@ class Orchestrator:
             speaker_name=speaker_name,
             speaker_db_id=speaker_db_id,
             spk_ms=spk_ms,
+            voice_confidence=speaker_result.confidence,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -605,7 +606,8 @@ class Orchestrator:
     async def _generate_response(self, user_text: str, stt_ms: int, t_start: float,
                                   speaker_name: str = "dan",
                                   speaker_db_id: int | None = 1,
-                                  spk_ms: int = 0):
+                                  spk_ms: int = 0,
+                                  voice_confidence: float | None = None):
         """Core response pipeline: presence doorway → delegate to the turn."""
 
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
@@ -646,7 +648,7 @@ class Orchestrator:
                 voice_name=speaker_name,
                 voice_is_unknown=speaker_name.startswith("unknown_"),
                 face=face_obs,
-                voice_confidence=speaker_result.confidence,
+                voice_confidence=voice_confidence,
                 face_conf_threshold=config.FACE_CONF_THRESHOLD,
                 head_steady_min_ms=config.HEAD_STEADY_MS,
             )
