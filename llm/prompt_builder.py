@@ -128,15 +128,6 @@ def build_ephemeral_block(
     # the block itself.
     parts.append(f"Current time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
 
-    if speaker_name and fusion_source == "face_hint" and face_hint_name:
-        parts.append(
-            f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
-            f"Face recognition strongly suggests this is {face_hint_name.title()} "
-            f"(only visible person, head centered on them). "
-            f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
-            f"unless they correct you."
-        )
-
     if presence_state and presence_state.get("present"):
         present_lines = []
         for entry in presence_state["present"]:
@@ -212,6 +203,40 @@ def build_ephemeral_block(
                 + "If someone asks what you see or about visual details, "
                 + "you CAN and SHOULD answer using this information."
             )
+
+    # WHO IS SPEAKING — explicit per-turn addressee steering, deliberately
+    # emitted LAST so it is the final thing the model reads before the
+    # utterance. Earlier placement lost a recency fight: [WHO IS PRESENT] names
+    # "Dan" further down the block, so the most recent name token before the
+    # utterance was "Dan" even when the speaker was a stranger — and the
+    # Dan-anchored persona + all-"[Dan]:" history steamroll a buried directive.
+    # Tail placement puts the "this is NOT Dan / never call a stranger Dan"
+    # instruction closest to generation. (Reordered 2026-06-11 after a live
+    # unknown_1 turn still got addressed as Dan with the directive up top.)
+    sp = (speaker_name or "").lower()
+    if fusion_source == "face_hint" and face_hint_name:
+        parts.append(
+            f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
+            f"Face recognition strongly suggests this is {face_hint_name.title()} "
+            f"(only visible person, head centered on them). "
+            f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
+            f"unless they correct you. Do NOT default to calling them Dan."
+        )
+    elif sp.startswith("unknown"):
+        parts.append(
+            "[WHO IS SPEAKING] This voice does NOT match anyone you know — it is "
+            "someone you have not met before. Do NOT assume this is Dan and do NOT "
+            "invent a name for them. Address them as a guest you are meeting for the "
+            "first time; you may ask who they are. Never call an unrecognized "
+            'speaker "Dan".'
+        )
+    elif sp and sp != "timmy":
+        line = (f"[WHO IS SPEAKING] You are speaking with {sp.title()} right now. "
+                f"Address your reply to {sp.title()}.")
+        if sp != "dan":
+            line += (f" This is {sp.title()}, NOT Dan — do not address Dan or call "
+                     f"the speaker Dan unless Dan himself is the one speaking.")
+        parts.append(line)
 
     return "\n\n".join(parts)
 
