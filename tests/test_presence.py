@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from presence.identity import canonicalize, fuse_identity
+from presence.identity import canonicalize, fuse_identity, IdentityFusion
 from presence.ledger import RoomLedger
 from presence.auto_enroll import FaceHintStreak
 from presence.types import (
@@ -976,3 +976,166 @@ class TestFaceClientLocal:
         # Behavior endpoint failed; face observation must still come back.
         assert result.behavior is None
         assert len(result.predictions) == 1
+
+
+# ---------------------------------------------------------------------------
+# Slice B (2026-06-12): symmetric + temporal fusion (DARK, default-OFF)
+# ---------------------------------------------------------------------------
+
+
+class TestSliceBOffByDefault:
+    """With the new toggles off (defaults), behavior is identical to today."""
+
+    def test_symmetric_off_no_synthesized_hint(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.9)
+        assert v.face_hint_name is None
+        assert v.face_hint_source == "face"   # default provenance
+        assert v.stabilized is False
+        assert v.resolution_source == "voice"
+
+    def test_continuity_off_no_hold(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          prior_identity="dan", prior_identity_fresh=True)
+        assert v.face_hint_name is None
+        assert v.stabilized is False
+
+
+class TestSymmetricFusion:
+    def test_confident_voice_synthesizes_face_hint_when_face_absent(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.9, symmetric_enabled=True)
+        assert v.face_hint_name == "dan"
+        assert v.face_hint_source == "voice"
+        assert v.stabilized is True
+        # INVARIANT: voice still owns final_name + resolution_source.
+        assert v.final_name == "dan"
+        assert v.resolution_source == "voice"
+
+    def test_unknown_voice_does_not_synthesize(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True, face=None,
+                          voice_confidence=0.9, symmetric_enabled=True)
+        assert v.face_hint_name is None
+        assert v.stabilized is False
+
+    def test_low_confidence_voice_does_not_synthesize(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.5, symmetric_enabled=True)
+        assert v.face_hint_name is None
+
+    def test_real_face_hint_not_overwritten_by_synthesis(self):
+        # A present face already gives a hint; symmetric must not clobber it.
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False,
+                          face=_face_obs([_pred("Thea", 0.95)], _good_behavior()),
+                          voice_confidence=0.9, symmetric_enabled=True)
+        assert v.face_hint_name == "thea"
+        assert v.face_hint_source == "face"
+        assert v.stabilized is False
+
+    def test_party_regime_disables_symmetric(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.9, symmetric_enabled=True, regime="party")
+        assert v.face_hint_name is None
+        assert v.stabilized is False
+
+
+class TestTemporalContinuity:
+    def test_fresh_prior_held_when_face_absent(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True, face=None,
+                          continuity_enabled=True, prior_identity="dan",
+                          prior_identity_fresh=True)
+        assert v.face_hint_name == "dan"
+        assert v.face_hint_source == "temporal"
+        assert v.stabilized is True
+
+    def test_stale_prior_not_held(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True, face=None,
+                          continuity_enabled=True, prior_identity="dan",
+                          prior_identity_fresh=False)
+        assert v.face_hint_name is None
+
+    def test_party_regime_disables_continuity(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True, face=None,
+                          continuity_enabled=True, prior_identity="dan",
+                          prior_identity_fresh=True, regime="party")
+        assert v.face_hint_name is None
+
+    def test_symmetric_wins_over_temporal_when_both_apply(self):
+        # Confident voice present -> synthesize from voice, not the stale prior.
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.9, symmetric_enabled=True,
+                          continuity_enabled=True, prior_identity="erin",
+                          prior_identity_fresh=True)
+        assert v.face_hint_name == "dan"
+        assert v.face_hint_source == "voice"
+
+
+class TestIdentityFusionWrapper:
+    def _knobs(self, **over):
+        base = {
+            "identity_fusion_symmetric_enabled": False,
+            "identity_continuity_enabled": False,
+            "identity_continuity_window_s": 2.5,
+            "identity_regime": "normal",
+        }
+        base.update(over)
+        return lambda k: base.get(k)
+
+    def test_defaults_match_pure_fuse_identity(self):
+        f = IdentityFusion(knobs=self._knobs())
+        v = f.resolve(voice_name="dan", voice_is_unknown=False, face=None)
+        assert v.face_hint_name is None and v.stabilized is False
+
+    def test_memory_refreshes_only_from_real_face(self):
+        f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True))
+        # Real face sighting at t=0 -> memory holds "devon".
+        f.resolve(voice_name="unknown_1", voice_is_unknown=True,
+                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
+        # 1s later, face dropped -> temporal hold carries "devon".
+        v = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
+        assert v.face_hint_name == "devon"
+        assert v.face_hint_source == "temporal"
+
+    def test_hold_cannot_self_perpetuate_past_window(self):
+        f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True,
+                                             identity_continuity_window_s=2.5))
+        f.resolve(voice_name="unknown_1", voice_is_unknown=True,
+                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
+        # A held verdict at t=1 must NOT refresh memory...
+        held = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
+        assert held.face_hint_name == "devon"
+        # ...so at t=3 (>2.5s since the REAL sighting at t=0) the hold expires.
+        expired = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=3.0)
+        assert expired.face_hint_name is None
+
+    def test_party_regime_short_circuits_wrapper(self):
+        f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True,
+                                             identity_regime="party"))
+        f.resolve(voice_name="unknown_1", voice_is_unknown=True,
+                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
+        v = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
+        assert v.face_hint_name is None
+
+
+class TestFaceHintProvenance:
+    """Auto-enroll must only ever train from a REAL face (face_hint_source=='face')."""
+
+    def test_real_promotion_is_face_sourced(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True,
+                          face=_face_obs([_pred("Devon", 0.91)], _good_behavior()))
+        assert v.resolution_source == "face_hint"
+        assert v.face_hint_source == "face"
+
+    def test_synthesized_hint_is_not_face_sourced(self):
+        v = fuse_identity(voice_name="dan", voice_is_unknown=False, face=None,
+                          voice_confidence=0.9, symmetric_enabled=True)
+        # resolution_source stays 'voice' so it never reaches the streak path,
+        # and face_hint_source!='face' is the belt-and-suspenders guard.
+        assert v.resolution_source == "voice"
+        assert v.face_hint_source != "face"
+
+    def test_temporal_hint_is_not_face_sourced(self):
+        v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True, face=None,
+                          continuity_enabled=True, prior_identity="dan",
+                          prior_identity_fresh=True)
+        assert v.face_hint_source != "face"

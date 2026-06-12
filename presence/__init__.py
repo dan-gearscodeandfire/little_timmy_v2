@@ -7,7 +7,7 @@ from .types import (
     FusionVerdict,
     PersonRecord,
 )
-from .identity import canonicalize, fuse_identity, translate_pose
+from .identity import canonicalize, fuse_identity, translate_pose, IdentityFusion
 from .ledger import RoomLedger
 from .auto_enroll import FaceHintStreak
 from .look_at import LookAtPolicy, LookAtVerdict
@@ -20,6 +20,7 @@ __all__ = [
     "PersonRecord",
     "canonicalize",
     "fuse_identity",
+    "IdentityFusion",
     "translate_pose",
     "RoomLedger",
     "FaceHintStreak",

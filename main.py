@@ -52,6 +52,7 @@ from vision.supervisor import BehaviorSupervisor
 from presence import (
     RoomLedger,
     fuse_identity,
+    IdentityFusion,
     FaceHintStreak,
     LookAtPolicy,
 )
@@ -126,6 +127,10 @@ class Orchestrator:
             fresh_face_age_sec=config.LOOK_AT_FRESH_FACE_AGE_SEC,
         )
         self._look_at_enabled = config.LOOK_AT_ENABLED
+        # Slice B (DARK): stateful identity fusion (symmetric voice-stabilize +
+        # temporal hold). Reads its toggles live; all default-OFF so resolve()
+        # is identical to today's fuse_identity() until Dan enables it.
+        self._identity_fusion = IdentityFusion()
         # Mutual-exclusion for ALL spoken turns (reactive + proactive). A
         # reactive turn (process_speech / process_text_input) holds this for
         # its whole duration; the proactive path try-acquires non-blocking and
@@ -634,18 +639,28 @@ class Orchestrator:
             self.room_ledger.update_from_voice(speaker_name)
             if face_obs is not None:
                 self.room_ledger.update_from_face(face_obs)
-            verdict = fuse_identity(
+            # Slice B: stateful resolve() (symmetric/temporal fusion). All
+            # toggles default OFF -> identical to fuse_identity() today. Threads
+            # voice confidence so a sure voice can stabilize an absent face.
+            verdict = self._identity_fusion.resolve(
                 voice_name=speaker_name,
                 voice_is_unknown=speaker_name.startswith("unknown_"),
                 face=face_obs,
+                voice_confidence=speaker_result.confidence,
                 face_conf_threshold=config.FACE_CONF_THRESHOLD,
                 head_steady_min_ms=config.HEAD_STEADY_MS,
             )
             # Track face_hint streak for auto voice-enrollment.
             # Use pre-override speaker_name (the unknown_N temp_id).
             streak_temp_id = speaker_name if speaker_name.startswith("unknown_") else None
+            # Gate on face_hint_source=='face': a synthesized/held hint (Slice B
+            # 'voice'/'temporal') must NEVER train a voiceprint — that's the
+            # "calls everyone Dan" corruption vector.
             streak_face_name = (
-                verdict.face_hint_name if verdict.resolution_source == "face_hint" else None
+                verdict.face_hint_name
+                if (verdict.resolution_source == "face_hint"
+                    and verdict.face_hint_source == "face")
+                else None
             )
             streak_hit = self._face_hint_streak.observe(streak_face_name, streak_temp_id)
             if streak_hit is not None:

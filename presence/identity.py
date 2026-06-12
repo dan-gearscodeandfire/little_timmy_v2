@@ -19,6 +19,14 @@ def canonicalize(name: Optional[str]) -> Optional[str]:
     return s or None
 
 
+# Slice B: a confident voice (1 - distance) at or above this stabilizes an
+# absent/low-conf face for the presence/proactive path. Mirrors the matcher's
+# 0.30-distance known threshold (= 0.70 confidence).
+VOICE_STABILIZE_CONF_FLOOR = 0.70
+
+_PARTY_REGIMES = frozenset({"party", "expo"})
+
+
 def fuse_identity(
     *,
     voice_name: str,
@@ -26,6 +34,13 @@ def fuse_identity(
     face: Optional[FaceObservation],
     face_conf_threshold: float = 0.85,
     head_steady_min_ms: int = 2000,
+    # --- Slice B (2026-06-12), all default to today's exact behavior ----------
+    voice_confidence: Optional[float] = None,
+    symmetric_enabled: bool = False,
+    continuity_enabled: bool = False,
+    prior_identity: Optional[str] = None,
+    prior_identity_fresh: bool = False,
+    regime: str = "normal",
 ) -> FusionVerdict:
     """Resolve speaker identity given voice result and optional face observation.
 
@@ -37,6 +52,16 @@ def fuse_identity(
       - head has been steady on the face for >= head_steady_min_ms
 
     Otherwise face is recorded as a presence hint but not promoted to speaker.
+
+    Slice B (default-OFF) adds two ways to fill face_hint_name for the presence/
+    proactive path WITHOUT touching final_name (voice still always wins):
+      - symmetric: a CONFIDENT voice synthesizes its own name as the face hint
+        when the face gave us nothing (face_hint_source='voice').
+      - temporal: a fresh prior identity is held across a 1-2 frame face dropout
+        (face_hint_source='temporal').
+    Both are disabled in PARTY/EXPO regime (a wrong bind beats an abstain there),
+    and neither is ever allowed to train a voiceprint (auto-enroll gates on
+    face_hint_source=='face').
     """
     voice_name = canonicalize(voice_name) or voice_name
     face_hint_name = None
@@ -88,6 +113,36 @@ def fuse_identity(
         final_name = voice_name
         resolution_source = "voice"
 
+    # face_hint_source provenance: a real face prediction is 'face' (the only
+    # source auto-enroll may train from). Default preserves today's behavior.
+    face_hint_source = "face"
+    stabilized = False
+
+    # --- Slice B: synthesize/hold a face hint when the face gave us nothing ---
+    # INVARIANT: only fills face_hint_name (presence/proactive); final_name and
+    # the face_hint promotion above are untouched. PARTY/EXPO disables both.
+    party = str(regime or "normal").strip().lower() in _PARTY_REGIMES
+    if not party and face_hint_name is None:
+        voice_confident = (
+            not voice_is_unknown
+            and (voice_confidence is None or voice_confidence >= VOICE_STABILIZE_CONF_FLOOR)
+        )
+        # NOTE: resolution_source is deliberately LEFT as 'voice'/'face_hint'.
+        # Downstream consumers branch on it (e.g. look-at-speaker fires on
+        # 'voice'); rewriting it would silently change their behavior. The new
+        # provenance rides on stabilized + face_hint_source instead.
+        if symmetric_enabled and voice_confident:
+            # A sure voice stands in for the missing face (e.g. Dan's face
+            # flapped to 'unidentified' on a head-turn but his voice is certain).
+            face_hint_name = voice_name
+            face_hint_source = "voice"
+            stabilized = True
+        elif continuity_enabled and prior_identity is not None and prior_identity_fresh:
+            # Carry the recently-seen identity across a brief face dropout.
+            face_hint_name = prior_identity
+            face_hint_source = "temporal"
+            stabilized = True
+
     return FusionVerdict(
         final_name=final_name,
         resolution_source=resolution_source,
@@ -95,8 +150,85 @@ def fuse_identity(
         face_hint_confidence=face_hint_confidence,
         head_steady=head_steady,
         gates=gates,
+        face_hint_source=face_hint_source,
+        stabilized=stabilized,
     )
 
+
+
+class IdentityFusion:
+    """Stateful wrapper around the pure fuse_identity() (Slice B, DARK).
+
+    Holds the last REAL face-resolved identity for temporal continuity, reads
+    the Slice B toggles live (so they take effect without a restart), computes
+    prior_identity_fresh, and threads voice confidence through.
+
+    Memory-update invariant: _last_identity is refreshed ONLY from a verdict
+    whose face_hint_source == 'face' (a genuine face observation). It is NEVER
+    refreshed from a stabilized/held verdict, so a wrong temporal hold can only
+    persist up to the continuity window from the last real sighting — it can
+    never self-perpetuate. The default knobs make resolve() identical to calling
+    fuse_identity() with today's behavior (all toggles OFF).
+    """
+
+    def __init__(self, knobs=None):
+        # knobs(key) -> value; defaults to the live runtime_toggles reader.
+        if knobs is None:
+            from persistence import runtime_toggles
+            knobs = runtime_toggles.get
+        self._knobs = knobs
+        self._last_identity: Optional[str] = None
+        self._last_seen_ts: float = 0.0
+
+    def resolve(
+        self,
+        *,
+        voice_name: str,
+        voice_is_unknown: bool,
+        face: Optional[FaceObservation],
+        voice_confidence: Optional[float] = None,
+        face_conf_threshold: float = 0.85,
+        head_steady_min_ms: int = 2000,
+        now: Optional[float] = None,
+    ) -> FusionVerdict:
+        import time as _time
+        now = now if now is not None else _time.time()
+
+        symmetric = bool(self._knobs("identity_fusion_symmetric_enabled"))
+        continuity = bool(self._knobs("identity_continuity_enabled"))
+        window = self._knobs("identity_continuity_window_s")
+        try:
+            window = float(window)
+        except (TypeError, ValueError):
+            window = 2.5
+        regime = self._knobs("identity_regime") or "normal"
+
+        prior_fresh = (
+            self._last_identity is not None
+            and (now - self._last_seen_ts) < window
+        )
+
+        verdict = fuse_identity(
+            voice_name=voice_name,
+            voice_is_unknown=voice_is_unknown,
+            face=face,
+            face_conf_threshold=face_conf_threshold,
+            head_steady_min_ms=head_steady_min_ms,
+            voice_confidence=voice_confidence,
+            symmetric_enabled=symmetric,
+            continuity_enabled=continuity,
+            prior_identity=self._last_identity,
+            prior_identity_fresh=prior_fresh,
+            regime=regime,
+        )
+
+        # Refresh memory ONLY from a real face observation — never from a
+        # synthesized/held hint (would let a wrong hold self-perpetuate).
+        if verdict.face_hint_source == "face" and verdict.face_hint_name is not None:
+            self._last_identity = verdict.face_hint_name
+            self._last_seen_ts = now
+
+        return verdict
 
 
 def translate_pose(

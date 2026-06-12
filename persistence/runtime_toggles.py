@@ -72,6 +72,22 @@ _DEFAULTS: dict = {
     # no line emitted (changes nothing until Dan sets it). Whitelist enforced
     # at the web/app.py /api/situation boundary, NOT here. Re-read per turn.
     "situation_regime": "",
+    # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
+    # All default-OFF / today's-behavior. Prototype — enable only after Dan's
+    # live review. Read live per turn by presence.identity.IdentityFusion.
+    #   symmetric: a CONFIDENT voice synthesizes a face-identity HINT (presence/
+    #     proactive path only — voice still always wins final_name) when the face
+    #     is absent/low-conf and was dropped upstream. Kills the P4 "did you
+    #     bring home a stray" misfire when Dan's face flaps but his voice is sure.
+    "identity_fusion_symmetric_enabled": False,
+    #   continuity: carry a recent face-identity across a 1-2 frame dropout.
+    "identity_continuity_enabled": False,
+    #   continuity window (s): how long a held identity stays fresh. Kept shorter
+    #     than identifier.py's 15s so the two windows don't stack a stale tail.
+    "identity_continuity_window_s": 2.5,
+    #   regime: "party" short-circuits BOTH new blocks to today's exact behavior
+    #     (at a party a wrong bind is worse than an abstain).
+    "identity_regime": "normal",
     # --- Short-audio speaker-continuity hardening (2026-06-12, party-prep) ----
     # Live-tunable caps for speaker/identifier.py's short-audio continuity
     # fallback (stamps a brief, non-confident utterance as whoever JUST spoke).

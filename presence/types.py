@@ -32,11 +32,18 @@ class FaceObservation:
 @dataclass(frozen=True)
 class FusionVerdict:
     final_name: str
-    resolution_source: str  # 'voice' | 'face_hint'
+    resolution_source: str  # 'voice' | 'face_hint' (Slice B rides on stabilized)
     face_hint_name: Optional[str]
     face_hint_confidence: Optional[float]
     head_steady: bool
     gates: dict
+    # Slice B (2026-06-12): provenance of face_hint_name. 'face' = a real face
+    # prediction (the ONLY source allowed to train a voiceprint via auto-enroll);
+    # 'voice' = synthesized from a confident voice; 'temporal' = held from a
+    # recent frame. Defaults preserve today's behavior (every existing hint is a
+    # real face). `stabilized` flags the two new synthesized/held paths.
+    face_hint_source: str = "face"
+    stabilized: bool = False
 
 
 @dataclass
