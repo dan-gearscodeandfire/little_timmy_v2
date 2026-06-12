@@ -1187,6 +1187,37 @@ header .uptime {
 @media (max-width: 1000px) {
   .main-content { grid-template-columns: 1fr; }
 }
+
+/* PARTY MODE banner — the single most important party control. Loud on, dim off. */
+#party-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin: 0 0 16px 0; padding: 14px 22px; border-radius: 12px;
+  border: 2px solid #30363d; background: #161b22; cursor: pointer;
+  transition: all .2s ease; user-select: none;
+}
+#party-banner .pb-label {
+  font-size: 22px; font-weight: 800; letter-spacing: 2px;
+  text-transform: uppercase; color: #8b949e;
+}
+#party-banner .pb-sub { font-size: 12px; color: #6e7681; margin-top: 2px; }
+#party-banner .pb-state {
+  font-size: 13px; font-weight: 700; letter-spacing: 1px;
+  padding: 6px 14px; border-radius: 999px;
+  background: #21262d; color: #8b949e; white-space: nowrap;
+}
+/* ON: unmistakable — neon magenta, pulsing glow, bright text. */
+#party-banner.on {
+  border-color: #ff2d95;
+  background: linear-gradient(100deg, #2a0a1f 0%, #3d0f2b 50%, #2a0a1f 100%);
+  animation: partyPulse 1.4s ease-in-out infinite;
+}
+#party-banner.on .pb-label { color: #ff2d95; text-shadow: 0 0 12px rgba(255,45,149,.7); }
+#party-banner.on .pb-sub { color: #ff8ec6; }
+#party-banner.on .pb-state { background: #ff2d95; color: #fff; }
+@keyframes partyPulse {
+  0%,100% { box-shadow: 0 0 8px rgba(255,45,149,.35), inset 0 0 12px rgba(255,45,149,.12); }
+  50%     { box-shadow: 0 0 26px rgba(255,45,149,.75), inset 0 0 20px rgba(255,45,149,.25); }
+}
 </style>
 </head>
 <body>
@@ -1195,6 +1226,17 @@ header .uptime {
   <h1>LITTLE TIMMY OS</h1>
   <span class="uptime" id="uptime">Connecting...</span>
 </header>
+
+<!-- PARTY MODE: one-tap situation_regime=PARTY. Disables the risky matcher
+     continuity path + sets the 'assume strangers' prompt prior. The single
+     most important control during the Open Sauce party. -->
+<div id="party-banner" onclick="togglePartyMode()" title="Tap to toggle PARTY mode (situation_regime)">
+  <div>
+    <div class="pb-label" id="party-label">🎉 Party Mode — Off</div>
+    <div class="pb-sub" id="party-sub">Tap to assume strangers + disable speaker auto-continuity</div>
+  </div>
+  <div class="pb-state" id="party-state">OFF</div>
+</div>
 
 <div class="main-content">
   <div>
@@ -2830,10 +2872,52 @@ async function commitSituation(value) {
     if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
   }
   loadSituation();  // re-sync (also restores a rejected select to server truth)
+  loadPartyMode();  // keep the PARTY banner in sync with the granular select
 }
 
 loadSituation();
 setInterval(loadSituation, 15000);
+
+// PARTY MODE banner — one-tap situation_regime=PARTY (the key party control).
+function applyPartyBanner(regime) {
+  const on = (regime || '').toUpperCase() === 'PARTY';
+  const banner = document.getElementById('party-banner');
+  const label = document.getElementById('party-label');
+  const sub = document.getElementById('party-sub');
+  const state = document.getElementById('party-state');
+  if (banner) banner.classList.toggle('on', on);
+  if (label) label.textContent = on ? '🎉 PARTY MODE — ON' : '🎉 Party Mode — Off';
+  if (state) state.textContent = on ? 'ON' : 'OFF';
+  if (sub) sub.textContent = on
+    ? 'Assuming strangers · speaker auto-continuity DISABLED · prompt prior set'
+    : 'Tap to assume strangers + disable speaker auto-continuity';
+}
+
+async function loadPartyMode() {
+  try {
+    const d = await (await fetch('/api/timmy/situation')).json();
+    if (!d.error) applyPartyBanner(d.situation_regime);
+  } catch (e) { /* keep last state */ }
+}
+
+async function togglePartyMode() {
+  // Read current, flip PARTY <-> "" (off). Optimistic UI, then reconcile.
+  let cur = '';
+  try { cur = (await (await fetch('/api/timmy/situation')).json()).situation_regime || ''; }
+  catch (e) {}
+  const target = cur.toUpperCase() === 'PARTY' ? '' : 'PARTY';
+  applyPartyBanner(target);
+  try {
+    await fetch('/api/timmy/situation', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ situation_regime: target }) });
+  } catch (e) {}
+  loadPartyMode();
+  loadSituation();   // keep the granular regime <select> in sync
+}
+
+loadPartyMode();
+setInterval(loadPartyMode, 15000);
 
 // Mouth-mute (lab) toggle. Silences replies + fillers; announce still speaks.
 async function loadTtsMute() {
