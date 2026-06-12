@@ -87,6 +87,39 @@ def build_static_persona_system() -> str:
     return config.PERSONA.strip() + "\n\n" + PROTOCOL_CLAUSE
 
 
+# Slice A (2026-06-12): NL text per situational-awareness regime. The empty/
+# None case emits NOTHING (mirror of the WHO-IS-PRESENT silent-when-empty
+# idiom) — only a deliberately-set regime adds a [SITUATION] line. Placed at
+# the head of the block (after the time line) so it frames the WHO-IS-PRESENT /
+# WHO-IS-SPEAKING lines below it: at a party the prior flips from SOLO's
+# "low-confidence is probably Dan" to "assume strangers." Whitelist is enforced
+# at the web/app.py boundary; unknown values fall through to no line here.
+_SITUATION_TEXT: dict[str, str] = {
+    "SOLO": (
+        "You are almost certainly alone with Dan. If a voice or face is "
+        "ambiguous, it is most likely Dan."
+    ),
+    "GUEST": (
+        "Dan has one guest over. Expect exactly one person besides Dan who you "
+        "may not recognize; do not assume an unrecognized voice or face is Dan."
+    ),
+    "SMALL_GROUP": (
+        "You are with a small group — Dan plus a few others, some of whom you "
+        "have not met. Do not default an unrecognized voice or face to Dan."
+    ),
+    "PARTY": (
+        "You are in a crowd of mostly people you have NOT met. Assume any "
+        "unrecognized voice or face is a stranger; never default an unknown to "
+        "Dan. Many different people will speak to you."
+    ),
+    "EXPO": (
+        "You are on a show floor surrounded by strangers and constant foot "
+        "traffic. Assume any unrecognized voice or face is someone new you are "
+        "meeting for the first time; never default an unknown to Dan."
+    ),
+}
+
+
 def build_ephemeral_block(
     memories: list[RetrievedMemory],
     facts: list[Fact],
@@ -98,6 +131,7 @@ def build_ephemeral_block(
     presence_state: dict | None = None,
     fusion_source: str | None = None,
     face_hint_name: str | None = None,
+    situation_regime: str | None = None,
 ) -> str:
     """Build the per-turn dynamic context block.
 
@@ -127,6 +161,15 @@ def build_ephemeral_block(
     # but keeping minute resolution is friendly to any future caching of
     # the block itself.
     parts.append(f"Current time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}")
+
+    # [SITUATION] — manual regime prior (Slice A). Emitted high, right after the
+    # time line, so it frames the presence/speaker lines below. Empty/None or an
+    # unrecognized value emits nothing (unknowns are rejected at the API boundary
+    # but we fail safe here too).
+    if situation_regime:
+        regime_text = _SITUATION_TEXT.get(situation_regime.strip().upper())
+        if regime_text:
+            parts.append("[SITUATION] " + regime_text)
 
     if presence_state and presence_state.get("present"):
         present_lines = []

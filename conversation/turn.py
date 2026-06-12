@@ -96,6 +96,10 @@ class TurnContext:
     presence_state: Optional[dict] = None
     fusion_source: Optional[str] = None
     face_hint_name: Optional[str] = None
+    # Slice A: manual situational-awareness regime ("" / None = OFF). Read once
+    # from runtime_toggles at doorway assembly (main.py) so the per-turn read
+    # happens in one place, mirroring how the other live toggles are read there.
+    situation_regime: Optional[str] = None
     on_first_token: Optional[Callable[[], Awaitable[None]]] = None
     on_first_sentence: Optional[Callable[[], Awaitable[None]]] = None
 
@@ -199,6 +203,7 @@ class ConversationTurn:
             presence_state=ctx.presence_state,
             fusion_source=ctx.fusion_source,
             face_hint_name=ctx.face_hint_name,
+            situation_regime=ctx.situation_regime,
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)

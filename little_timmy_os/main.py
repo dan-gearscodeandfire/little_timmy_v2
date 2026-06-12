@@ -472,6 +472,31 @@ async def set_vision_tuning(payload: dict | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+@app.get("/api/timmy/situation")
+async def get_situation():
+    """Proxy: LT-side situational-awareness regime (Slice A)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/situation")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/situation")
+async def set_situation(payload: dict | None = None):
+    """Proxy: set the regime. LT whitelists + persists ('' == OFF)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/situation",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/announce")
 async def timmy_announce(payload: dict | None = None):
     """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
@@ -1258,6 +1283,24 @@ header .uptime {
             <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
             <span class="slider"></span>
           </label>
+        </div>
+        <!-- Slice A: manual situational-awareness regime (2026-06-12). Injects
+             an NL [SITUATION] line into Timmy's prompt; "Off" emits nothing.
+             Live (read per-turn) — no restart needed. -->
+        <div class="service-card" id="situation-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="margin-bottom:6px;">
+            <div class="service-name">Situation Regime</div>
+            <div class="service-detail" id="situation-status">Loading…</div>
+          </div>
+          <select id="situation-select" onchange="commitSituation(this.value)"
+                  style="width:100%; background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:6px; font-size:12px;">
+            <option value="">Off (no situation prior)</option>
+            <option value="SOLO">Solo — alone with Dan</option>
+            <option value="GUEST">Guest — one visitor</option>
+            <option value="SMALL_GROUP">Small group — a few, some unknown</option>
+            <option value="PARTY">Party — crowd of strangers</option>
+            <option value="EXPO">Expo — show floor, constant strangers</option>
+          </select>
         </div>
         <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
              A1/A2 sticky identity (streamerpi /face_id/config) and LT-side
@@ -2712,6 +2755,46 @@ async function commitFaceTuning(scope, key, value) {
 
 loadFaceTuning();
 setInterval(loadFaceTuning, 15000);
+
+// Slice A: situational-awareness regime select (live, read per-turn).
+async function loadSituation() {
+  const st = document.getElementById('situation-status');
+  const sel = document.getElementById('situation-select');
+  try {
+    const d = await (await fetch('/api/timmy/situation')).json();
+    if (d.error) {
+      if (st) { st.textContent = d.error; st.style.color = '#f85149'; }
+      return;
+    }
+    if (sel && document.activeElement !== sel) sel.value = d.situation_regime || '';
+    if (st) {
+      const on = (d.situation_regime || '') !== '';
+      st.textContent = on ? ('active: ' + d.situation_regime) : 'off (no situation prior)';
+      st.style.color = on ? '#3fb950' : '#8b949e';
+    }
+  } catch (e) {
+    if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
+  }
+}
+
+async function commitSituation(value) {
+  const st = document.getElementById('situation-status');
+  try {
+    const r = await fetch('/api/timmy/situation', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ situation_regime: value }) });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (st) { st.textContent = 'rejected: ' + (d.error || r.status); st.style.color = '#f85149'; }
+    }
+  } catch (e) {
+    if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
+  }
+  loadSituation();  // re-sync (also restores a rejected select to server truth)
+}
+
+loadSituation();
+setInterval(loadSituation, 15000);
 
 async function pollHostMetrics() {
   try {

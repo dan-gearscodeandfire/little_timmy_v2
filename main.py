@@ -802,6 +802,9 @@ class Orchestrator:
                 subject_not_in_view=subject_not_in_view,
                 presence_state=presence_state, fusion_source=fusion_source,
                 face_hint_name=face_hint_name,
+                # Slice A: live regime knob, read once here per turn (re-reads
+                # disk so an LT-OS change takes effect without restart).
+                situation_regime=runtime_toggles.get("situation_regime"),
                 on_first_sentence=_on_first_sentence,
             ),
         )

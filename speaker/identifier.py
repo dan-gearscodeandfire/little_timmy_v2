@@ -36,6 +36,19 @@ from scipy.spatial.distance import cosine
 
 log = logging.getLogger(__name__)
 
+
+def _toggle(key, fallback):
+    """Read a runtime toggle, falling back to a static default if persistence
+    is unavailable (keeps this module import-clean and unit-testable). Lazy
+    import avoids any import cycle through persistence."""
+    try:
+        from persistence import runtime_toggles
+        v = runtime_toggles.get(key)
+        return v if v is not None else fallback
+    except Exception:
+        return fallback
+
+
 VOICEPRINT_DIR = Path(os.path.expanduser("~/little_timmy/models/speaker"))
 
 # Thresholds (cosine distance: 0 = identical, 2 = opposite)
@@ -44,9 +57,53 @@ SAME_UNKNOWN_THRESHOLD = 0.30     # below this = same unknown speaker as before
 STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 
 # Short-audio continuity (see top-of-file docstring on identify()).
+# Defaults tightened 2026-06-12 (party-prep) and made live-tunable via
+# runtime_toggles (speaker_continuity_dist_cap / _window_s); these constants are
+# the in-code fallback when toggles are unavailable (e.g. unit tests).
 SHORT_AUDIO_SAMPLES = 80000        # ~5s @ 16kHz; below this is "short"
-SHORT_AUDIO_DIST_CAP = 0.55        # max dist tolerated for short-audio continuity
-CONTINUITY_WINDOW_SEC = 60.0       # last confident match must be this recent
+SHORT_AUDIO_DIST_CAP = 0.40        # was 0.55 — a stranger sat at 0.52 from Dan
+CONTINUITY_WINDOW_SEC = 15.0       # was 60.0 — a guest 15-60s later isn't "Dan continuing"
+
+# Situation regimes (Slice A's situation_regime knob) in which short-audio
+# continuity is disabled OUTRIGHT: in a crowd a wrong bind onto a known name is
+# worse than abstaining to a stranger. Flipping situation_regime to PARTY/EXPO
+# therefore hardens the matcher AND sets the prompt prior in one move.
+CONTINUITY_DISABLED_REGIMES = frozenset({"PARTY", "EXPO"})
+
+
+def continuity_allowed(
+    *,
+    audio_len: int,
+    best_known_name,
+    last_known_name,
+    best_known_dist: float,
+    elapsed_s: float,
+    regime=None,
+    short_audio_samples: int = SHORT_AUDIO_SAMPLES,
+    dist_cap: float = SHORT_AUDIO_DIST_CAP,
+    window_s: float = CONTINUITY_WINDOW_SEC,
+) -> bool:
+    """Pure gate for the short-audio continuity fallback (stamp a brief, non-
+    confident utterance as whoever JUST spoke). Returns True only when EVERY
+    gate passes. Extracted as a pure function so it is deterministically
+    testable without audio/embeddings.
+
+    PARTY/EXPO regime disables it entirely. The remaining gates: audio is short,
+    the closest known identity IS the last confident speaker (and not Timmy),
+    the distance is within the (tightened) cap, and the last match is within the
+    (tightened) window.
+    """
+    if regime and str(regime).strip().upper() in CONTINUITY_DISABLED_REGIMES:
+        return False
+    if best_known_name is None or last_known_name is None:
+        return False
+    return (
+        audio_len < short_audio_samples
+        and best_known_name == last_known_name
+        and best_known_name != "timmy"
+        and best_known_dist < dist_cap
+        and elapsed_s < window_s
+    )
 
 # Trigger 3 (drift learning) constants.
 TIGHT_DRIFT_THRESHOLD = 0.20       # only matches under this contribute to drift
@@ -360,19 +417,29 @@ class SpeakerIdentifier:
                 confidence=1 - best_known_dist,
             )
 
-        # Short-audio continuity fallback.
+        # Short-audio continuity fallback. Caps/window are live runtime toggles
+        # (tightened 2026-06-12) with the module constants as fallback; PARTY/
+        # EXPO regime disables it outright. Gate logic lives in the pure
+        # continuity_allowed() helper so it is deterministically testable.
         audio_len = len(audio_16k)
-        if (audio_len < SHORT_AUDIO_SAMPLES
-                and best_known is not None
-                and self._last_known_speaker is not None
-                and best_known.name == self._last_known_speaker.name
-                and best_known.name != "timmy"
-                and best_known_dist < SHORT_AUDIO_DIST_CAP
-                and (time.time() - self._last_known_seen_ts) < CONTINUITY_WINDOW_SEC):
-            elapsed = time.time() - self._last_known_seen_ts
+        _cont_cap = _toggle("speaker_continuity_dist_cap", SHORT_AUDIO_DIST_CAP)
+        _cont_window = _toggle("speaker_continuity_window_s", CONTINUITY_WINDOW_SEC)
+        _regime = _toggle("situation_regime", "")
+        elapsed = time.time() - self._last_known_seen_ts
+        if (self._last_known_speaker is not None
+                and continuity_allowed(
+                    audio_len=audio_len,
+                    best_known_name=best_known.name if best_known else None,
+                    last_known_name=self._last_known_speaker.name,
+                    best_known_dist=best_known_dist,
+                    elapsed_s=elapsed,
+                    regime=_regime,
+                    dist_cap=_cont_cap,
+                    window_s=_cont_window,
+                )):
             self._last_known_seen_ts = time.time()
             log.info("Speaker continuity applied: %s (dist=%.3f cap=%.2f, audio_len=%d short, last_seen %.0fs ago)",
-                     best_known.name, best_known_dist, SHORT_AUDIO_DIST_CAP,
+                     best_known.name, best_known_dist, _cont_cap,
                      audio_len, elapsed)
             # Continuity-applied matches are explicitly excluded from drift
             # learning (T3) and re-enrollment (T2): they're borderline and

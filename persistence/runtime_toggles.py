@@ -56,6 +56,22 @@ _DEFAULTS: dict = {
     # ...and the track must be a CONFIDENT stranger: min_dist to every known
     # identity > this on most samples (shares A2's release-threshold value).
     "enroll_candidate_min_dist": 0.60,
+    # --- Slice A: manual situational-awareness regime knob (2026-06-12) ------
+    # Human-set operating regime that injects an NL [SITUATION] line into the
+    # ephemeral prompt (llm/prompt_builder.build_ephemeral_block), framing the
+    # WHO-IS-SPEAKING / WHO-IS-PRESENT lines below it. Empty string == OFF ==
+    # no line emitted (changes nothing until Dan sets it). Whitelist enforced
+    # at the web/app.py /api/situation boundary, NOT here. Re-read per turn.
+    "situation_regime": "",
+    # --- Short-audio speaker-continuity hardening (2026-06-12, party-prep) ----
+    # Live-tunable caps for speaker/identifier.py's short-audio continuity
+    # fallback (stamps a brief, non-confident utterance as whoever JUST spoke).
+    # Live test 2026-06-11 showed a stranger clip at 0.52 from Dan on 3s audio
+    # sitting inside the OLD 0.55 cap (Dan self-matches ~0.13-0.21); only an
+    # expired 60s timer saved it. Tightened: cap 0.40, window 15s. Additionally
+    # disabled outright when situation_regime is PARTY/EXPO (see identifier.py).
+    "speaker_continuity_dist_cap": 0.40,    # was hardcoded 0.55
+    "speaker_continuity_window_s": 15.0,    # was hardcoded 60.0
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in

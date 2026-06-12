@@ -657,6 +657,40 @@ async def set_vision_tuning(payload: dict | None = None):
     return {"ok": True, **{k: runtime_toggles.get(k) for k in _VISION_TUNING_KEYS}}
 
 
+# --- Slice A: manual situational-awareness regime (2026-06-12) --------------
+# Live knob (LT-OS-set) injecting an NL [SITUATION] line into the ephemeral
+# prompt. Empty string == OFF (no line). Enum-validated here; prompt_builder
+# also fails safe on an unknown value.
+_SITUATION_REGIMES = {"", "SOLO", "GUEST", "SMALL_GROUP", "PARTY", "EXPO"}
+
+
+@app.get("/api/situation")
+async def get_situation():
+    """Read the live situational-awareness regime ('' == OFF)."""
+    from persistence import runtime_toggles
+    return {
+        "situation_regime": runtime_toggles.get("situation_regime"),
+        "options": sorted(_SITUATION_REGIMES),
+    }
+
+
+@app.post("/api/situation")
+async def set_situation(payload: dict | None = None):
+    """Set the regime. Whitelisted; '' disables (emits no [SITUATION] line).
+    Persisted by runtime_toggles and read per-turn, so it applies live without
+    a restart."""
+    from persistence import runtime_toggles
+    v = (payload or {}).get("situation_regime", "")
+    if not isinstance(v, str):
+        return {"ok": False, "error": "situation_regime must be a string"}
+    v = v.strip().upper() if v.strip() else ""
+    if v not in _SITUATION_REGIMES:
+        return {"ok": False,
+                "error": f"situation_regime must be one of {sorted(_SITUATION_REGIMES)}"}
+    runtime_toggles.set("situation_regime", v)
+    return {"ok": True, "situation_regime": runtime_toggles.get("situation_regime")}
+
+
 @app.get("/api/proactive")
 async def get_proactive():
     """Read the proactive-speech runtime toggle. `enabled` is the live operator
