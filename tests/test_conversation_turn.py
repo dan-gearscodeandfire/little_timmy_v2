@@ -142,3 +142,44 @@ async def test_sentence_cap_truncates_a_long_reply():
 
     assert "Third thing" not in result.text
     assert result.text.count(".") <= 2
+
+
+@pytest.mark.asyncio
+async def test_proactive_speaks_then_suppresses_verbatim_repeat():
+    # Same canned line twice: the first speaks + persists, the second is
+    # dropped BEFORE any TTS (2026-06-12 "lost puppy" repeat). Guard compares
+    # normalized text, so punctuation/case wobble doesn't evade it.
+    tokens = ["You've got ", "company, Dan."]
+    turn, speaker, llm, memory, history = _make_turn(tokens)
+
+    first = await turn.speak_proactively("[SITUATION] someone arrived")
+    assert first.text == "You've got company, Dan."
+    assert speaker.spoken == ["You've got company, Dan."]
+    assert history.assistant_turns == [first.text]
+
+    second = await turn.speak_proactively("[SITUATION] someone arrived")
+    assert second.text == ""                      # suppressed
+    assert speaker.spoken == ["You've got company, Dan."]  # nothing new reached TTS
+    assert history.assistant_turns == [first.text]         # not persisted twice
+
+    # Case/punctuation variants still count as the same remark.
+    llm._tokens = ["you've got company, dan"]
+    third = await turn.speak_proactively("[SITUATION] someone arrived")
+    assert third.text == ""
+    assert speaker.spoken == ["You've got company, Dan."]
+
+
+@pytest.mark.asyncio
+async def test_proactive_distinct_lines_still_speak():
+    # The guard only blocks repeats — a different remark goes through, and
+    # multi-sentence proactive lines keep per-sentence TTS chunking.
+    tokens = ["You've got company, Dan."]
+    turn, speaker, llm, memory, history = _make_turn(tokens)
+
+    await turn.speak_proactively("[SITUATION] someone arrived")
+    llm._tokens = ["New face at the door. ", "Should I be worried?"]
+    result = await turn.speak_proactively("[SITUATION] someone else arrived")
+
+    assert result.text == "New face at the door. Should I be worried?"
+    assert speaker.spoken == ["You've got company, Dan.",
+                              "New face at the door.", "Should I be worried?"]

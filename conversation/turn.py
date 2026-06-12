@@ -24,7 +24,9 @@ turn, voice learning) happen at the doorway, OUTSIDE this module; the resolved
 
 from __future__ import annotations
 
+import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Awaitable, Callable, Optional, Protocol
 
@@ -38,6 +40,16 @@ from conversation.reply_filter import (
     user_invites_longer_reply,
     _REPLY_LONGER_SENTENCES,
 )
+
+log = logging.getLogger(__name__)
+
+
+def _normalize_remark(text: str) -> str:
+    """Casefold + strip punctuation/whitespace so trivial variants ("Hello!"
+    vs "hello") still count as the same proactive remark."""
+    return " ".join(
+        "".join(ch for ch in text.casefold() if ch.isalnum() or ch.isspace()).split()
+    )
 
 
 # --------------------------------------------------------------------------
@@ -163,6 +175,11 @@ class ConversationTurn:
         self._history = history
         self._settings = settings or TurnSettings()
         self._on_event = on_event
+        # Verbatim-repeat guard for proactive remarks (2026-06-12): normalized
+        # texts of the last few spoken proactive lines. Rate caps (cooldown /
+        # max-per-min) gate frequency, not content — the same "lost puppy" line
+        # fired byte-identical twice in 2 min.
+        self._recent_proactive: deque[str] = deque(maxlen=4)
 
     # -- front door 1: reactive (voice or text) ----------------------------
     async def respond(self, words: str, who: SpeakerIdentity,
@@ -239,13 +256,56 @@ class ConversationTurn:
         """
         messages = build_proactive_messages(
             self._history.build_history_messages(), ephemeral_block)
-        result = await self._stream_and_speak(
-            messages, max_sentences=self._settings.proactive_max_sentences)
-        if result.text and result.text.strip():
+        # Proactive lines are unprompted — nobody is waiting on first-token
+        # latency — so unlike respond() we buffer the FULL line before any TTS.
+        # That enables a verbatim-repeat guard the streaming engine can't have:
+        # a repeat is dropped before a single syllable is spoken (2026-06-12:
+        # the same "lost puppy" remark fired byte-identical twice in 2 min;
+        # the rate caps gate frequency, not content).
+        t_start = time.time()
+        first_token_time: float | None = None
+        full_response = ""
+        async for token in filtered_assistant_stream(
+            self._llm.stream(messages),
+            max_sentences=self._settings.proactive_max_sentences,
+        ):
+            if first_token_time is None:
+                first_token_time = time.time()
+            full_response += token
+        text = full_response.strip()
+
+        norm = _normalize_remark(text)
+        if text and norm and norm in self._recent_proactive:
+            log.info("[PROACTIVE] suppressed verbatim repeat: %s", text)
+            text = ""
+
+        first_tts_time: float | None = None
+        if text:
+            self._recent_proactive.append(norm)
+            first_tts_time = time.time()
+            # Same sentence-boundary chunking the streaming engine uses, so
+            # TTS prosody/pacing is unchanged.
+            buf = ""
+            for ch in text:
+                buf += ch
+                stripped = buf.rstrip()
+                if stripped and stripped[-1] in ".?!;:":
+                    sentence = buf.strip()
+                    buf = ""
+                    if sentence:
+                        await self._speaker.speak(sentence)
+            if buf.strip():
+                await self._speaker.speak(buf.strip())
             await self._emit("turn", {"role": "assistant",
-                                      "content": result.text, "proactive": True})
-            await self._history.add_assistant_turn(result.text)
-        return result
+                                      "content": text, "proactive": True})
+            await self._history.add_assistant_turn(text)
+
+        end_time = time.time()
+        return TurnResult(text, {
+            "first_token_ms": int((first_token_time - t_start) * 1000) if first_token_time else None,
+            "first_tts_ms":   int((first_tts_time - t_start) * 1000) if first_tts_time else None,
+            "total_ms":       int((end_time - t_start) * 1000),
+        })
 
     # -- a minimal prompted utterance (sub-dialogs, e.g. Introductions) -----
     async def say(self, prompt_text: str) -> TurnResult:
