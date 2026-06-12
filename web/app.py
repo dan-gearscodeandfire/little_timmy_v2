@@ -709,7 +709,15 @@ async def set_situation(payload: dict | None = None):
         return {"ok": False,
                 "error": f"situation_regime must be one of {sorted(_SITUATION_REGIMES)}"}
     runtime_toggles.set("situation_regime", v)
-    return {"ok": True, "situation_regime": runtime_toggles.get("situation_regime")}
+    # Keep Slice B's identity_regime in lockstep: PARTY/EXPO must also disable
+    # the symmetric/temporal identity fusion (a wrong bind beats an abstain in
+    # a crowd). One banner tap flips both; any other regime restores 'normal'.
+    runtime_toggles.set("identity_regime", "party" if v in ("PARTY", "EXPO") else "normal")
+    return {
+        "ok": True,
+        "situation_regime": runtime_toggles.get("situation_regime"),
+        "identity_regime": runtime_toggles.get("identity_regime"),
+    }
 
 
 @app.get("/api/proactive")
