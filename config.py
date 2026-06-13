@@ -264,7 +264,10 @@ STREAMERPI_BEHAVIOR_URL = os.getenv(
     "TIMMY_BEHAVIOR_URL", "https://192.168.1.110:8080/behavior/status"
 )
 STREAMERPI_BEHAVIOR_MODE_URL = os.getenv(
-    "TIMMY_BEHAVIOR_MODE_URL", "https://192.168.1.110:8080/behavior/mode"
+    # Motor service command route is POST /behavior (was /behavior/mode, removed
+    # — that 404'd silently, killing the enroll head-freeze; 2026-06-13 party).
+    # Payload {mode,priority,timeout_ms} already matches handle_behavior_command.
+    "TIMMY_BEHAVIOR_MODE_URL", "https://192.168.1.110:8080/behavior"
 )
 FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
 HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
