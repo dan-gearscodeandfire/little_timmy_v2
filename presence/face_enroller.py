@@ -162,6 +162,7 @@ class EnrollOutcome:
 # Type aliases for the injected seams.
 SayFn = Callable[[str], Awaitable]          # in-character LLM+TTS line; returns TurnResult-ish
 SpeakFn = Callable[[str], Awaitable]        # fixed TTS line
+RecordActionFn = Callable[[str], Awaitable]  # append a spoken system action to conversation history
 EnrollStreamFn = Callable[..., "AsyncIterator"]  # (name, count, interval_s, mode) -> async iter of (evt, payload)
 VerifyFn = Callable[[], Awaitable]          # () -> list[face dict]
 OnEnrolledFn = Callable[[str, dict], None]
@@ -183,10 +184,12 @@ class FaceEnroller:
         trigger: Optional[NewFaceTrigger] = None,
         name_extractor: Optional[Callable[[str], Optional[str]]] = None,
         hold_head: Optional[HoldFn] = None,
+        record_action: Optional[RecordActionFn] = None,
     ):
         import time as _time
         self._say = say
         self._speak = speak
+        self._record_action = record_action
         self._enroll_stream = enroll_stream
         self._verify = verify_faces
         self._turn_lock = turn_lock
@@ -541,10 +544,20 @@ class FaceEnroller:
 
     async def _safe_speak(self, text: str):
         try:
-            return await self._speak(text)
+            result = await self._speak(text)
         except Exception:
             log.exception("[AUTOENROLL] speak failed")
             return None
+        # Record the fixed line in conversation history so the LLM knows it
+        # said it (theme B — the consent ask / pose cues otherwise never reach
+        # hot_turns and the model contradicts its own enroll requests). The
+        # _safe_say path already records via ConversationTurn.say().
+        if self._record_action is not None:
+            try:
+                await self._record_action(text)
+            except Exception:
+                log.exception("[AUTOENROLL] record_action failed")
+        return result
 
 
 # --------------------------------------------------------------------------

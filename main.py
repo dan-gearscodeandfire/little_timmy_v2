@@ -177,6 +177,7 @@ class Orchestrator:
             turn_lock=self._turn_lock,
             on_enrolled=self._record_auto_enroll,
             hold_head=self._hold_head_for_enroll,
+            record_action=self.conversation.add_system_action_turn,
             # C5 knobs (enroll_candidate_min_span_s / _min_dist) read live from
             # runtime_toggles so LT-OS sliders take effect without a restart.
             trigger=NewFaceTrigger(TriggerConfig(), knobs=runtime_toggles.get),
