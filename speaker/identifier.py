@@ -63,12 +63,21 @@ STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 SHORT_AUDIO_SAMPLES = 80000        # ~5s @ 16kHz; below this is "short"
 SHORT_AUDIO_DIST_CAP = 0.40        # was 0.55 — a stranger sat at 0.52 from Dan
 CONTINUITY_WINDOW_SEC = 15.0       # was 60.0 — a guest 15-60s later isn't "Dan continuing"
+# The last speaker must beat the 2nd-nearest KNOWN identity by this margin to be
+# "continued". Without it, continuity latches a different speaker who is merely
+# coincidentally near the last speaker's prototype — live 2026-06-15, a boy
+# (Archer) stamped `thea` at 0.33 because Thea was last and within the cap, with
+# no check that Thea was still decisively his nearest. In a crowd of similar
+# (e.g. kids') voices the margin collapses, so continuity abstains -> unknown
+# instead of holding the wrong name. Live-tunable via runtime_toggles.
 
 # Situation regimes (Slice A's situation_regime knob) in which short-audio
 # continuity is disabled OUTRIGHT: in a crowd a wrong bind onto a known name is
 # worse than abstaining to a stranger. Flipping situation_regime to PARTY/EXPO
 # therefore hardens the matcher AND sets the prompt prior in one move.
 CONTINUITY_DISABLED_REGIMES = frozenset({"PARTY", "EXPO"})
+
+CONTINUITY_MARGIN = 0.10           # min (2nd_best_known - best_known) to allow continuity
 
 
 def continuity_allowed(
@@ -79,9 +88,11 @@ def continuity_allowed(
     best_known_dist: float,
     elapsed_s: float,
     regime=None,
+    second_best_known_dist: float = float("inf"),
     short_audio_samples: int = SHORT_AUDIO_SAMPLES,
     dist_cap: float = SHORT_AUDIO_DIST_CAP,
     window_s: float = CONTINUITY_WINDOW_SEC,
+    margin: float = CONTINUITY_MARGIN,
 ) -> bool:
     """Pure gate for the short-audio continuity fallback (stamp a brief, non-
     confident utterance as whoever JUST spoke). Returns True only when EVERY
@@ -90,8 +101,11 @@ def continuity_allowed(
 
     PARTY/EXPO regime disables it entirely. The remaining gates: audio is short,
     the closest known identity IS the last confident speaker (and not Timmy),
-    the distance is within the (tightened) cap, and the last match is within the
-    (tightened) window.
+    the distance is within the (tightened) cap, the last match is within the
+    (tightened) window, AND the last speaker is still decisively the nearest
+    known identity (beats the 2nd-nearest by `margin`) — the latter prevents
+    latching a different speaker who merely sits near the last speaker's
+    prototype in a crowd.
     """
     if regime and str(regime).strip().upper() in CONTINUITY_DISABLED_REGIMES:
         return False
@@ -103,6 +117,7 @@ def continuity_allowed(
         and best_known_name != "timmy"
         and best_known_dist < dist_cap
         and elapsed_s < window_s
+        and (second_best_known_dist - best_known_dist) >= margin
     )
 
 # Trigger 3 (drift learning) constants.
@@ -387,14 +402,22 @@ class SpeakerIdentifier:
 
         best_known = None
         best_known_dist = float("inf")
+        second_best_known_dist = float("inf")  # nearest DIFFERENT known identity
         for ks in self._known_speakers:
             dist = ks.distance(emb)   # min cosine across this speaker's prototypes
             if dist < best_known_dist:
+                second_best_known_dist = best_known_dist
                 best_known_dist = dist
                 best_known = ks
+            elif dist < second_best_known_dist:
+                second_best_known_dist = dist
 
-        log.info("Speaker distances: best=%s dist=%.4f threshold=%.2f audio_len=%d (%dms)",
+        # margin = how decisively the winner beats the runner-up; small margin =
+        # ambiguous (multiple known identities about equally close), which is when
+        # continuity must NOT latch. Logged for tuning the gate on real audio.
+        log.info("Speaker distances: best=%s dist=%.4f 2nd=%.4f margin=%.4f threshold=%.2f audio_len=%d (%dms)",
                  best_known.name if best_known else "none", best_known_dist,
+                 second_best_known_dist, second_best_known_dist - best_known_dist,
                  KNOWN_SPEAKER_THRESHOLD, len(audio_16k), extract_ms)
 
         if best_known and best_known_dist < KNOWN_SPEAKER_THRESHOLD:
@@ -424,6 +447,7 @@ class SpeakerIdentifier:
         audio_len = len(audio_16k)
         _cont_cap = _toggle("speaker_continuity_dist_cap", SHORT_AUDIO_DIST_CAP)
         _cont_window = _toggle("speaker_continuity_window_s", CONTINUITY_WINDOW_SEC)
+        _cont_margin = _toggle("speaker_continuity_margin", CONTINUITY_MARGIN)
         _regime = _toggle("situation_regime", "")
         elapsed = time.time() - self._last_known_seen_ts
         if (self._last_known_speaker is not None
@@ -434,13 +458,15 @@ class SpeakerIdentifier:
                     best_known_dist=best_known_dist,
                     elapsed_s=elapsed,
                     regime=_regime,
+                    second_best_known_dist=second_best_known_dist,
                     dist_cap=_cont_cap,
                     window_s=_cont_window,
+                    margin=_cont_margin,
                 )):
             self._last_known_seen_ts = time.time()
-            log.info("Speaker continuity applied: %s (dist=%.3f cap=%.2f, audio_len=%d short, last_seen %.0fs ago)",
-                     best_known.name, best_known_dist, _cont_cap,
-                     audio_len, elapsed)
+            log.info("Speaker continuity applied: %s (dist=%.3f 2nd=%.3f margin>=%.2f cap=%.2f, audio_len=%d short, last_seen %.0fs ago)",
+                     best_known.name, best_known_dist, second_best_known_dist,
+                     _cont_margin, _cont_cap, audio_len, elapsed)
             # Continuity-applied matches are explicitly excluded from drift
             # learning (T3) and re-enrollment (T2): they're borderline and
             # could pollute the voiceprint.

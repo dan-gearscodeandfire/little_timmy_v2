@@ -31,6 +31,7 @@ from speaker.identifier import (
     continuity_allowed,
     SHORT_AUDIO_DIST_CAP,
     CONTINUITY_WINDOW_SEC,
+    CONTINUITY_MARGIN,
     SHORT_AUDIO_SAMPLES,
 )
 
@@ -87,6 +88,46 @@ def test_dan_real_short_utterance_still_accepted():
         best_known_dist=0.21, elapsed_s=4.0, regime="",
     )
     assert continuity_allowed(**dan_short) is True
+
+
+# --- margin-aware continuity (anti-latch), added 2026-06-15 ------------------
+
+def test_latch_rejected_when_runnerup_is_close():
+    """The live Archer->thea latch: a kid whose nearest known IS the last speaker
+    (thea, within the cap) but who sits nearly as close to ANOTHER known identity
+    must NOT be continued — the small margin means we can't be sure it's thea
+    continuing rather than a different similar voice."""
+    params = dict(
+        audio_len=40000, best_known_name="thea", last_known_name="thea",
+        best_known_dist=0.33, elapsed_s=4.0, regime="",
+    )
+    # Without runner-up info (default inf) the old gate would have latched:
+    assert continuity_allowed(**params) is True
+    # Ambiguous: another known (e.g. erin) at 0.36 -> margin 0.03 < 0.10 -> abstain.
+    assert continuity_allowed(**params, second_best_known_dist=0.36) is False
+
+
+def test_continuity_held_when_last_speaker_is_decisively_nearest():
+    """Genuine 1-on-1 continuity is preserved: the last speaker is clearly the
+    nearest and no other known identity is close, so the margin is wide."""
+    params = dict(
+        audio_len=40000, best_known_name="dan", last_known_name="dan",
+        best_known_dist=0.21, elapsed_s=4.0, regime="",
+    )
+    assert continuity_allowed(**params, second_best_known_dist=0.55) is True
+
+
+def test_continuity_margin_boundary():
+    params = dict(
+        audio_len=40000, best_known_name="dan", last_known_name="dan",
+        best_known_dist=0.20, elapsed_s=4.0, regime="",
+    )
+    assert CONTINUITY_MARGIN == 0.10
+    # Comfortably above the margin -> allowed; clearly below -> rejected.
+    # (Avoid testing the exact 0.10 edge: float cancellation makes 0.30-0.20
+    # evaluate to 0.0999… — real distances never land on the precise boundary.)
+    assert continuity_allowed(**params, second_best_known_dist=0.32) is True
+    assert continuity_allowed(**params, second_best_known_dist=0.27) is False
 
 
 def test_long_audio_never_uses_continuity():

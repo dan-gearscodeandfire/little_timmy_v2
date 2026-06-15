@@ -97,6 +97,7 @@ _DEFAULTS: dict = {
     # disabled outright when situation_regime is PARTY/EXPO (see identifier.py).
     "speaker_continuity_dist_cap": 0.40,    # was hardcoded 0.55
     "speaker_continuity_window_s": 15.0,    # was hardcoded 60.0
+    "speaker_continuity_margin": 0.10,      # last speaker must beat 2nd-nearest known by this to "continue" (anti-latch, 2026-06-15)
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
