@@ -8,7 +8,7 @@ from .types import (
     PersonRecord,
 )
 from .identity import canonicalize, fuse_identity, translate_pose, IdentityFusion
-from .ledger import RoomLedger
+from .ledger import RoomLedger, anyone_present
 from .auto_enroll import FaceHintStreak
 from .look_at import LookAtPolicy, LookAtVerdict
 
@@ -23,6 +23,7 @@ __all__ = [
     "IdentityFusion",
     "translate_pose",
     "RoomLedger",
+    "anyone_present",
     "FaceHintStreak",
     "LookAtPolicy",
     "LookAtVerdict",

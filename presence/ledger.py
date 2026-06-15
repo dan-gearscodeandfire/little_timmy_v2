@@ -13,6 +13,17 @@ from .types import FaceObservation, PersonRecord
 log = logging.getLogger(__name__)
 
 
+def anyone_present(state: Optional[dict]) -> bool:
+    """True if a RoomLedger.current_state() snapshot shows anyone present — a
+    named or unknown-face person on the `present` list, or a recent unknown
+    voice (`unknown_voices_recent`). Used to gate proactive speech so Timmy
+    stays silent in an empty room; proactive otherwise fires off VLM
+    person-detection flapping even when the ledger has aged everyone out."""
+    if not state:
+        return False
+    return bool(state.get("present")) or state.get("unknown_voices_recent", 0) > 0
+
+
 class RoomLedger:
     """Tracks presence of named (and stable-unknown) people in the room.
 

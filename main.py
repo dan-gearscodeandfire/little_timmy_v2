@@ -51,6 +51,7 @@ from conversation.enroll_intent import detect_enroll_intent
 from vision.supervisor import BehaviorSupervisor
 from presence import (
     RoomLedger,
+    anyone_present,
     fuse_identity,
     IdentityFusion,
     FaceHintStreak,
@@ -539,6 +540,20 @@ class Orchestrator:
         if record is None:
             return
 
+        # Occupancy gate (theme D): don't monologue into an empty room. The room
+        # ledger is the authoritative TTL-windowed presence signal; proactive
+        # otherwise fires off VLM person-detection flapping (is_new_arrival) even
+        # when nobody is actually present -- 89 remarks into an empty workshop
+        # overnight (2026-06-13) while the ledger had aged everyone out. When
+        # presence tracking is on and the ledger shows no one, stay silent.
+        # (Presence off -> we can't tell -> preserve prior behaviour.) Snapshot
+        # is reused below to flavour the prompt, so we take it once here.
+        presence_state = (
+            self.room_ledger.current_state() if self._presence_enabled else None
+        )
+        if self._presence_enabled and not anyone_present(presence_state):
+            return
+
         relevance = self.vision.get_last_relevance()
         urgent = bool(record.speak_now) or (
             relevance is not None
@@ -574,9 +589,7 @@ class Orchestrator:
 
         self.vision.pause_polling()  # free the GPU while we stream (mirrors main loop)
         try:
-            presence_state = (
-                self.room_ledger.current_state() if self._presence_enabled else None
-            )
+            # presence_state was snapshotted at the occupancy gate above.
             ephemeral = build_ephemeral_block(
                 memories=[],
                 facts=[],
