@@ -232,6 +232,7 @@ class ConversationTurn:
             messages, max_sentences=cap,
             on_first_token=ctx.on_first_token,
             on_first_sentence=ctx.on_first_sentence,
+            user_text=words,
         )
 
         await self._emit("turn", {"role": "assistant", "content": result.text})
@@ -328,9 +329,14 @@ class ConversationTurn:
     async def _stream_and_speak(self, messages: list[dict], *,
                                 max_sentences: int | None,
                                 on_first_token=None,
-                                on_first_sentence=None) -> TurnResult:
+                                on_first_sentence=None,
+                                user_text: str | None = None) -> TurnResult:
         """Ported verbatim from main.Orchestrator._stream_to_tts, with the LLM
-        and TTS as injected seams and broadcast via the event hook."""
+        and TTS as injected seams and broadcast via the event hook.
+
+        `user_text` (the live user utterance, when this is a prompted reply)
+        feeds the echo-as-reply guard in filtered_assistant_stream so a reply
+        that is a verbatim echo of the user is suppressed before TTS."""
         t_start = time.time()
         full_response = ""
         sentence_buffer = ""
@@ -339,6 +345,7 @@ class ConversationTurn:
 
         async for token in filtered_assistant_stream(
             self._llm.stream(messages), max_sentences=max_sentences,
+            user_text=user_text,
         ):
             if first_token_time is None:
                 first_token_time = time.time()

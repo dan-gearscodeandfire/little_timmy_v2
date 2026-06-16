@@ -10,6 +10,7 @@ Pure logic, no LT services — safe to unit-test in isolation.
 """
 
 import logging
+import re
 
 # Same named logger as main ("timmy"), so relocated log lines stay on the
 # existing handler/format and are indistinguishable in /tmp/little_timmy.log.
@@ -97,7 +98,72 @@ def _trim_at_nth_terminator(s: str, n: int) -> str:
     return s
 
 
-async def filtered_assistant_stream(token_iter, max_sentences: int | None = None):
+# --- Echo-as-reply guard ---
+# 2026-06-13 18:09: Timmy spoke the user's STT back verbatim as its own reply
+# ("He just tracked, tracked, so." → identical reply) — a degenerate/empty
+# generation that surfaced the input transcript as output. The streaming engine
+# can't catch this (tokens reach TTS as they arrive), so the public
+# filtered_assistant_stream wraps the core filter and holds output ONLY while
+# the running reply still matches the user's words — a normal reply diverges on
+# the first token and streams with zero added latency; a full verbatim echo is
+# suppressed before TTS.
+_ECHO_MIN_WORDS = 3  # don't guard trivial turns: "yes"/"okay" can legitimately echo
+
+
+def _normalize_echo(s: str) -> str:
+    """Lowercase, drop punctuation, collapse whitespace — so a reply is judged
+    an echo of the user turn regardless of casing or trailing punctuation."""
+    if not s:
+        return ""
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", s.lower()).split())
+
+
+async def filtered_assistant_stream(token_iter, max_sentences: int | None = None,
+                                    user_text: str | None = None):
+    """Public post-filter: the sentence-cap / narration core, wrapped with an
+    echo-as-reply guard.
+
+    When `user_text` is the live user utterance, a reply that is a verbatim echo
+    of it is suppressed entirely (an echo is a degenerate non-reply). Output is
+    held only while the running (already core-filtered) reply is still a prefix
+    of the user's words; the moment it diverges — which a genuine reply does
+    immediately — the held tokens are released and streaming resumes. Trivial
+    user turns (< _ECHO_MIN_WORDS) are not guarded, so a one-word agreement
+    isn't mistaken for an echo. With no `user_text`, this is a pass-through.
+    """
+    core = _filtered_core(token_iter, max_sentences)
+    target = _normalize_echo(user_text) if user_text else ""
+    if not target or len(target.split()) < _ECHO_MIN_WORDS:
+        async for tok in core:
+            yield tok
+        return
+
+    held: list[str] = []
+    accum = ""
+    guarding = True
+    async for tok in core:
+        if guarding:
+            held.append(tok)
+            accum += tok
+            na = _normalize_echo(accum)
+            if na == target or target.startswith(na):
+                continue  # still a (full or partial) prefix of the user's words
+            guarding = False  # diverged → not an echo
+            for h in held:
+                yield h
+            held = []
+            continue
+        yield tok
+    if guarding:
+        if _normalize_echo(accum) == target:
+            log.warning("[POST-FILTER] vetoed echo-as-reply (reply == user STT): %r",
+                        accum[:80])
+            return  # suppress entirely
+        for h in held:  # partial prefix, never a full echo → release
+            yield h
+
+
+async def _filtered_core(token_iter, max_sentences: int | None = None):
     """Post-filter the conversation-tier token stream before TTS sees it.
 
     Two veto paths:

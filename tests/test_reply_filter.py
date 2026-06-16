@@ -212,3 +212,59 @@ def test_user_invites_longer_reply_negative_cases():
     assert not user_invites_longer_reply("what time is it")
     assert not user_invites_longer_reply("")
     assert not user_invites_longer_reply("describe the room")  # narration test, not length permission
+
+
+# ---------------------------------------------------------------------------
+# echo-as-reply guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_echo_reply_verbatim_is_suppressed():
+    # The 2026-06-13 18:09 defect: reply == the user's STT, verbatim.
+    user = "He just tracked, tracked, so."
+    tokens = ["He just ", "tracked, ", "tracked, so."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), user_text=user))
+    assert out == []  # suppressed entirely — nothing reaches TTS
+
+
+@pytest.mark.asyncio
+async def test_echo_guard_ignores_casing_and_punctuation():
+    user = "what is the torque spec on this bolt"
+    tokens = ["What is the torque spec on this bolt?"]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), user_text=user))
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_genuine_reply_passes_through_with_user_text():
+    # A real reply diverges immediately → released, no suppression, no loss.
+    user = "He just tracked, tracked, so."
+    tokens = ["Yeah, ", "I locked onto ", "you for a second."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), user_text=user))
+    assert "".join(out) == "Yeah, I locked onto you for a second."
+
+
+@pytest.mark.asyncio
+async def test_reply_that_starts_like_user_then_continues_is_kept():
+    # Echo PREFIX but then continues — a real (if odd) reply, not a pure echo.
+    user = "are you a robot"
+    tokens = ["Are you a robot? ", "No, I'm a skeleton."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), user_text=user))
+    assert "skeleton" in "".join(out)
+
+
+@pytest.mark.asyncio
+async def test_trivial_user_turn_not_guarded():
+    # A one/two-word turn under _ECHO_MIN_WORDS: "Yes." echoing "yes" is fine.
+    user = "yes"
+    tokens = ["Yes."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens), user_text=user))
+    assert "".join(out) == "Yes."
+
+
+@pytest.mark.asyncio
+async def test_no_user_text_is_pure_passthrough():
+    tokens = ["Sure. ", "Got it."]
+    out = await _collect(filtered_assistant_stream(_agen(tokens)))
+    assert "".join(out) == "Sure. Got it."
