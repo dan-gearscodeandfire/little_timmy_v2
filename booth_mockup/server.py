@@ -125,8 +125,13 @@ def main() -> None:
     server_ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
     log.info("booth-mockup serving on https://0.0.0.0:%d "
              "(proxying offer to %s)", PORT, STREAMERPI_URL)
+    # access_log=None disables aiohttp's per-request access logging: the booth
+    # client polls /streamerpi/faces (4 Hz) + /lt/api/presence (0.5 Hz) +
+    # /lt/api/last_payload (0.25 Hz) continuously, which otherwise grew
+    # server.log unbounded (~409 MB observed 2026-06-15). Warnings/errors
+    # (offer-proxy failures etc.) still log via the module logger.
     web.run_app(app, host="0.0.0.0", port=PORT,
-                ssl_context=server_ctx, print=None)
+                ssl_context=server_ctx, print=None, access_log=None)
 
 
 if __name__ == "__main__":

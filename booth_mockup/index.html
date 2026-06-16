@@ -248,6 +248,17 @@
     text-shadow: var(--shadow-light);
     text-transform: uppercase;
   }
+  .corner-state {
+    position: absolute;
+    top: 52px; left: 49px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.30em;
+    color: var(--signal);
+    text-shadow: var(--shadow-light);
+    text-transform: uppercase;
+  }
   .corner-id .dot {
     display: inline-block;
     width: 5px; height: 5px;
@@ -417,6 +428,9 @@
 
       <!-- corner id -->
       <div class="corner-id"><span class="dot"></span>observing</div>
+      <!-- live streamerpi behavior mode (track/scan/engage/idle), polled from
+           /streamerpi/behavior/status; sits directly under "observing" -->
+      <div class="corner-state" id="corner-state"></div>
 
       <!-- top-right stamp -->
       <div class="stamp">
@@ -796,6 +810,35 @@
     setInterval(pollFaces, POLL_MS);
     pollFaces();
 
+    // ----- streamerpi behavior mode under the "observing" corner id -----
+    // /streamerpi/behavior/status -> {mode: track|scan|engage|idle, params:{face_identity}}.
+    // Show the live mode; when locked onto a known face, append the name.
+    const cornerState = document.getElementById('corner-state');
+    const MODE_COLOUR = {
+      track:  'var(--signal)',
+      engage: 'var(--signal)',
+      scan:   'var(--bone-strong)',
+      idle:   'var(--bone-faint)',
+    };
+    async function pollBehavior() {
+      try {
+        const r = await fetch('/streamerpi/behavior/status', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d || !d.mode || !cornerState) return;
+        let txt = d.mode;
+        const who = d.params && d.params.face_identity;
+        if ((d.mode === 'track' || d.mode === 'engage')
+            && who && !String(who).toLowerCase().startsWith('unknown')) {
+          txt += ' · ' + who;
+        }
+        cornerState.textContent = txt;
+        cornerState.style.color = MODE_COLOUR[d.mode] || 'var(--bone-strong)';
+      } catch (_) { /* streamerpi unreachable; leave last mode shown */ }
+    }
+    setInterval(pollBehavior, 1500);
+    pollBehavior();
+
     // ----- live injected-context panels from LT /api/last_payload -----
     // ephemeral_block is the [CONTEXT]...[/CONTEXT] body. We parse it into
     // three sections (who-is-present, ground-truth, relevant-memories) and
@@ -919,6 +962,11 @@
       const d = presenceData;
       const elapsed = (Date.now() - presenceFetchMs) / 1000; // tick locally
       const adj = (a) => (a == null ? null : a + elapsed);
+      // Stale guard: if no successful poll for >3x the 2s interval, the data is
+      // frozen (LT stall / throttled background tab). Dim the panel and flag it
+      // so a frozen frame reads as frozen, not as authoritative live truth.
+      const staleP = elapsed > 6;
+      ctxWho.style.opacity = staleP ? '0.4' : '';
       ctxWho.innerHTML = '';
       if (!d.enabled || !Array.isArray(d.present)) { updatePanelDrift(); return; }
       const people = d.present.filter((p) => {
@@ -978,6 +1026,14 @@
           + (d.unknown_voices_recent === 1 ? '' : 's') + ' heard recently';
         ctxWho.appendChild(li);
       }
+      if (staleP) {
+        const li = document.createElement('li');
+        li.style.opacity = '0.7';
+        li.style.fontSize = '14px';
+        li.style.marginTop = '12px';
+        li.textContent = '⟳ reconnecting…';
+        ctxWho.appendChild(li);
+      }
       updatePanelDrift();
     }
 
@@ -993,6 +1049,23 @@
     setInterval(pollPresence, 2000);
     setInterval(renderPresence, 1000);
     pollPresence();
-  </script>
+
+    // ----- wake-up re-poll -----
+    // Background/occluded tabs throttle setInterval hard (~1/min, frozen after
+    // ~5min), so without this every panel sits on the last pre-throttle frame
+    // until a manual reload — the "stale until I refreshed" booth bug. Re-poll
+    // everything the instant the tab regains visibility / focus / the network.
+    function repollAll() {
+      pollPresence();
+      pollContext();
+      pollFaces();
+      pollBehavior();
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) repollAll();
+    });
+    window.addEventListener('focus', repollAll);
+    window.addEventListener('online', repollAll);
+</script>
 </body>
 </html>
