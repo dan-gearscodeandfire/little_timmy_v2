@@ -117,6 +117,7 @@ class Orchestrator:
             on_camera_fresh_threshold_sec=config.ON_CAMERA_FRESH_SEC,
             face_confirm_min=config.FACE_CONFIRM_MIN,
             unconfirmed_face_ttl_sec=config.UNCONFIRMED_FACE_TTL_SEC,
+            face_reconfirm_gap_sec=config.FACE_RECONFIRM_GAP_SEC,
             save_path=config.LEDGER_SAVE_PATH,
         )
         self._face_http = httpx.AsyncClient(verify=False, timeout=1.5)

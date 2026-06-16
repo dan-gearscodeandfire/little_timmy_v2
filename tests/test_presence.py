@@ -308,6 +308,45 @@ class TestRoomLedger:
         # Past the unconfirmed TTL but well under the full TTL -> still present.
         assert any(p["name"] == "dan" for p in led.current_state(now_ts=t0 + 300)["present"])
 
+    def test_stray_rehit_after_gap_does_not_relight_full_ttl(self):
+        # Residual fix: a confirmed person leaves; a single stray false-accept
+        # frame lands long after their last sighting. It must NOT refresh the
+        # full 15min TTL — the streak resets, reverting to provisional, so the
+        # ghost ages out on the short unconfirmed TTL instead.
+        led = RoomLedger(
+            presence_ttl_sec=900,
+            unconfirmed_face_ttl_sec=60,
+            face_reconfirm_gap_sec=120,
+        )
+        t0 = 1000.0
+        # Confirmed (>=2 close frames).
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0 + 2)
+        # Person has left; a stray frame re-hits 300s later (gap > 120s).
+        t_rehit = t0 + 300
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t_rehit)
+        state = led.current_state(now_ts=t_rehit + 5)
+        dan = next(p for p in state["present"] if p["name"] == "dan")
+        assert dan["provisional"] is True
+        # Ages out on the short TTL from the stray frame, NOT a fresh 900s.
+        assert all(
+            p["name"] != "dan"
+            for p in led.current_state(now_ts=t_rehit + 70)["present"]
+        )
+
+    def test_continuous_sightings_stay_confirmed_across_long_window(self):
+        # A genuinely-present person seen on a steady cadence never trips the
+        # reconfirm gap, so they stay confirmed (full TTL) indefinitely.
+        led = RoomLedger(presence_ttl_sec=900, face_reconfirm_gap_sec=120)
+        t0 = 1000.0
+        for i in range(20):  # every 60s for 20 min, under the 120s gap
+            led.update_from_face(
+                _face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0 + i * 60
+            )
+        state = led.current_state(now_ts=t0 + 20 * 60)
+        dan = next(p for p in state["present"] if p["name"] == "dan")
+        assert dan["provisional"] is False
+
     def test_voice_corroboration_confirms_single_face(self):
         led = RoomLedger(presence_ttl_sec=900, unconfirmed_face_ttl_sec=60)
         t0 = 1000.0

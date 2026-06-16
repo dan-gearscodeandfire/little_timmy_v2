@@ -53,5 +53,11 @@ class PersonRecord:
     last_seen_voice_ts: Optional[float] = None
     on_camera_now: bool = False
     last_pose: Optional[dict] = None  # {pan, tilt, bbox_center_norm, ts}
-    times_seen_face: int = 0
+    times_seen_face: int = 0  # lifetime face sightings (monotonic)
     times_heard_voice: int = 0
+    # Consecutive face sightings with no gap longer than the reconfirm window.
+    # Resets to 1 when a sighting lands after a long absence, so a stray frame
+    # re-hitting a record the person has left reverts it to provisional rather
+    # than re-lighting the full presence TTL. (Lifetime count stays in
+    # times_seen_face.)
+    face_confirm_streak: int = 0

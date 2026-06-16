@@ -280,6 +280,13 @@ UNKNOWN_VOICE_TTL_SEC = int(os.getenv("TIMMY_UNKNOWN_VOICE_TTL_SEC", "120"))
 # ~1 min instead of lingering as a ghost guest for 15 min.
 FACE_CONFIRM_MIN = int(os.getenv("TIMMY_FACE_CONFIRM_MIN", "2"))
 UNCONFIRMED_FACE_TTL_SEC = float(os.getenv("TIMMY_UNCONFIRMED_FACE_TTL_SEC", "60.0"))
+# A face sighting landing more than this long after the record's previous face
+# sighting is treated as a re-acquisition: the confirm streak resets, so a stray
+# late false-accept frame on a record the person has left reverts to provisional
+# (short TTL) instead of refreshing the full presence TTL. Must comfortably
+# exceed normal detection blink / engage-hold gaps so a continuously-present
+# person never resets. Voice always promotes regardless.
+FACE_RECONFIRM_GAP_SEC = float(os.getenv("TIMMY_FACE_RECONFIRM_GAP_SEC", "120.0"))
 FACE_HINT_AUTO_ENROLL_TURNS = int(os.getenv("TIMMY_FACE_HINT_AUTO_ENROLL_TURNS", "3"))
 CAMERA_PAN_FOV_STEPS = float(os.getenv("TIMMY_CAMERA_PAN_FOV_STEPS", "80.0"))
 CAMERA_TILT_FOV_STEPS = float(os.getenv("TIMMY_CAMERA_TILT_FOV_STEPS", "50.0"))

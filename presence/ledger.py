@@ -49,6 +49,7 @@ class RoomLedger:
         on_camera_fresh_threshold_sec: float = 30.0,
         face_confirm_min: int = 2,
         unconfirmed_face_ttl_sec: float = 60.0,
+        face_reconfirm_gap_sec: float = 120.0,
         save_path: Optional[str] = None,
     ):
         self._records: dict[str, PersonRecord] = {}
@@ -56,6 +57,7 @@ class RoomLedger:
         self._unknown_ttl = unknown_voice_ttl_sec
         self._face_confirm_min = face_confirm_min
         self._unconfirmed_face_ttl = unconfirmed_face_ttl_sec
+        self._face_reconfirm_gap = face_reconfirm_gap_sec
         self._pan_fov = camera_pan_fov_steps
         self._tilt_fov = camera_tilt_fov_steps
         self._on_camera_fresh = on_camera_fresh_threshold_sec
@@ -109,6 +111,15 @@ class RoomLedger:
         for pred in observation.predictions:
             key = self._key_for_face(pred)
             rec = self._ensure(key)
+            # Reconfirm streak: a sighting landing after a long gap is a
+            # re-acquisition -> reset to 1 (provisional again) so a stray late
+            # false-accept frame can't refresh the full TTL of a record the
+            # person has left. Continuous presence keeps incrementing.
+            prev_face_ts = rec.last_seen_face_ts
+            if prev_face_ts is not None and (ts - prev_face_ts) > self._face_reconfirm_gap:
+                rec.face_confirm_streak = 1
+            else:
+                rec.face_confirm_streak += 1
             rec.last_seen_face_ts = ts
             rec.on_camera_now = True
             rec.times_seen_face += 1
@@ -152,23 +163,28 @@ class RoomLedger:
         self._save_to_disk()
 
     def _is_provisional(self, rec: PersonRecord) -> bool:
-        """A named, face-only record not yet confirmed by a 2nd face sighting
-        (or any voice).
+        """A named, face-only record not yet confirmed by a 2nd consecutive face
+        sighting (or any voice).
 
         Such a record is still admitted to `present` immediately — so a genuine
         arrival shows without delay — but ages out on the short unconfirmed TTL
         instead of the full presence TTL. This is the presence-side debounce for
         single-frame face false-accepts: a party-enrolled prototype that acts as
         an attractor and matches one stray frame creates a record with
-        times_seen_face==1, which now purges in ~1 min rather than lingering as a
-        ghost guest on the attendee display for 15 min. Unknown records are
-        excluded (they already use the tighter unknown TTL).
+        face_confirm_streak==1, which now purges in ~1 min rather than lingering
+        as a ghost guest on the attendee display for 15 min.
+
+        Confirmation is by recent *streak*, not lifetime count, so a stray late
+        frame re-hitting a record the person has already left (gap >
+        face_reconfirm_gap) resets the streak and reverts to provisional rather
+        than re-lighting the full TTL. Unknown records are excluded (they already
+        use the tighter unknown TTL); any voice corroboration promotes.
         """
         if rec.name.startswith("unknown"):
             return False
         if rec.last_seen_voice_ts:
             return False
-        return rec.times_seen_face < self._face_confirm_min
+        return rec.face_confirm_streak < self._face_confirm_min
 
     def _is_present(self, rec: PersonRecord, now_ts: float) -> bool:
         """Within the presence TTL on either signal?
@@ -273,6 +289,7 @@ class RoomLedger:
                         "last_pose": rec.last_pose,
                         "times_seen_face": rec.times_seen_face,
                         "times_heard_voice": rec.times_heard_voice,
+                        "face_confirm_streak": rec.face_confirm_streak,
                     }
                     for name, rec in self._records.items()
                 },
@@ -318,6 +335,12 @@ class RoomLedger:
                     last_pose=data.get("last_pose"),
                     times_seen_face=int(data.get("times_seen_face", 0)),
                     times_heard_voice=int(data.get("times_heard_voice", 0)),
+                    # Back-compat: pre-streak ledger files derive the streak from
+                    # the lifetime count so a long-confirmed person reloads as
+                    # confirmed rather than provisional.
+                    face_confirm_streak=int(
+                        data.get("face_confirm_streak", data.get("times_seen_face", 0))
+                    ),
                 )
                 self._records[key] = rec
                 loaded += 1
