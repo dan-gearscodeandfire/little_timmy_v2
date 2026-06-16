@@ -257,6 +257,24 @@ def build_ephemeral_block(
                 + "you CAN and SHOULD answer using this information."
             )
 
+    # SCENE GROUNDING — forbid inventing room occupants. Emitted near the tail
+    # (after presence/vision, before WHO IS SPEAKING) so it has recency over the
+    # higher-up [WHO IS PRESENT] block, which on 2026-06-16 listed only Dan yet
+    # the mean persona still announced "the guest who just walked in" for insult
+    # color (no such guest — face/vision/presence all showed Dan alone). This is
+    # a NEGATIVE constraint: it bans positive invention of arrivals/occupants. It
+    # deliberately does NOT assert who IS present (sensors under-observe — a real
+    # unsensed person must not be denied), so Timmy simply won't fabricate people
+    # either direction. Sibling of the averted-gaze vision guard.
+    if getattr(config, "SCENE_GROUNDING_GUARD", True):
+        parts.append(
+            "[SCENE GROUNDING] The only people you actually know about are those "
+            "named in [WHO IS PRESENT] or visible in [WHAT YOU SEE] above. Do NOT "
+            "announce or imply that anyone has just walked in, arrived, or is in "
+            "the room unless they appear there. Be as cutting as you like, but "
+            "never invent guests, arrivals, or bystanders for effect."
+        )
+
     # WHO IS SPEAKING — explicit per-turn addressee steering, deliberately
     # emitted LAST so it is the final thing the model reads before the
     # utterance. Earlier placement lost a recency fight: [WHO IS PRESENT] names

@@ -239,6 +239,13 @@ VISION_SCENE_ILLUM_INVARIANT = os.getenv("TIMMY_SCENE_ILLUM_INVARIANT", "false")
 VISION_AVERTED_GAZE_GUARD = os.getenv("TIMMY_VISION_AVERTED_GAZE_GUARD", "true").lower() == "true"
 # Delay before the background recapture so the look-at pan has time to land.
 VISION_RECAPTURE_DELAY_S = float(os.getenv("TIMMY_VISION_RECAPTURE_DELAY_S", "0.6"))
+# Scene-grounding guard: a tail-of-context directive forbidding the persona from
+# INVENTING people in the room (e.g. "the guest who just walked in" — 2026-06-16,
+# no such guest; face/vision/presence all showed only Dan). A negative constraint
+# only — it bans positive invention of arrivals/occupants, it does NOT make Timmy
+# deny possibly-real unsensed people (sensors under-observe). Sibling of the
+# averted-gaze guard; same "deflect/ground, don't confabulate" family.
+SCENE_GROUNDING_GUARD = os.getenv("TIMMY_SCENE_GROUNDING_GUARD", "true").lower() == "true"
 
 # Block-on-fresh for direct visual questions (2026-06-07). A visual question
 # ("what am I holding?") about a just-presented object can't be answered from a
