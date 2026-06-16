@@ -47,11 +47,15 @@ class RoomLedger:
         camera_pan_fov_steps: float = 80.0,
         camera_tilt_fov_steps: float = 50.0,
         on_camera_fresh_threshold_sec: float = 30.0,
+        face_confirm_min: int = 2,
+        unconfirmed_face_ttl_sec: float = 60.0,
         save_path: Optional[str] = None,
     ):
         self._records: dict[str, PersonRecord] = {}
         self._ttl = presence_ttl_sec
         self._unknown_ttl = unknown_voice_ttl_sec
+        self._face_confirm_min = face_confirm_min
+        self._unconfirmed_face_ttl = unconfirmed_face_ttl_sec
         self._pan_fov = camera_pan_fov_steps
         self._tilt_fov = camera_tilt_fov_steps
         self._on_camera_fresh = on_camera_fresh_threshold_sec
@@ -147,13 +151,37 @@ class RoomLedger:
         rec.times_heard_voice += 1
         self._save_to_disk()
 
+    def _is_provisional(self, rec: PersonRecord) -> bool:
+        """A named, face-only record not yet confirmed by a 2nd face sighting
+        (or any voice).
+
+        Such a record is still admitted to `present` immediately — so a genuine
+        arrival shows without delay — but ages out on the short unconfirmed TTL
+        instead of the full presence TTL. This is the presence-side debounce for
+        single-frame face false-accepts: a party-enrolled prototype that acts as
+        an attractor and matches one stray frame creates a record with
+        times_seen_face==1, which now purges in ~1 min rather than lingering as a
+        ghost guest on the attendee display for 15 min. Unknown records are
+        excluded (they already use the tighter unknown TTL).
+        """
+        if rec.name.startswith("unknown"):
+            return False
+        if rec.last_seen_voice_ts:
+            return False
+        return rec.times_seen_face < self._face_confirm_min
+
     def _is_present(self, rec: PersonRecord, now_ts: float) -> bool:
         """Within the presence TTL on either signal?
 
-        Unknown_N voice records use a tighter TTL since they accumulate fast.
+        Unknown_N voice records use a tighter TTL since they accumulate fast;
+        provisional (unconfirmed face-only) records use the unconfirmed TTL.
         """
-        is_unknown = rec.name.startswith("unknown")
-        ttl = self._unknown_ttl if is_unknown else self._ttl
+        if rec.name.startswith("unknown"):
+            ttl = self._unknown_ttl
+        elif self._is_provisional(rec):
+            ttl = self._unconfirmed_face_ttl
+        else:
+            ttl = self._ttl
 
         latest = max(
             rec.last_seen_face_ts or 0.0,
@@ -200,6 +228,7 @@ class RoomLedger:
                 "last_seen_face_age_s": round(face_age, 1) if face_age is not None else None,
                 "last_seen_voice_age_s": round(voice_age, 1) if voice_age is not None else None,
                 "source": source,
+                "provisional": self._is_provisional(rec),
                 "last_pose": rec.last_pose,
                 "times_seen_face": rec.times_seen_face,
                 "times_heard_voice": rec.times_heard_voice,

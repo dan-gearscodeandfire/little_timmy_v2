@@ -273,6 +273,13 @@ FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
 HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
 PRESENCE_TTL_SEC = int(os.getenv("TIMMY_PRESENCE_TTL_SEC", "900"))
 UNKNOWN_VOICE_TTL_SEC = int(os.getenv("TIMMY_UNKNOWN_VOICE_TTL_SEC", "120"))
+# Presence debounce: a named, face-only record is "provisional" until a 2nd
+# face sighting (or any voice) confirms it. Provisional records age out on the
+# short TTL below instead of the full PRESENCE_TTL_SEC, so a single-frame face
+# false-accept (a party-enrolled prototype acting as an attractor) is purged in
+# ~1 min instead of lingering as a ghost guest for 15 min.
+FACE_CONFIRM_MIN = int(os.getenv("TIMMY_FACE_CONFIRM_MIN", "2"))
+UNCONFIRMED_FACE_TTL_SEC = float(os.getenv("TIMMY_UNCONFIRMED_FACE_TTL_SEC", "60.0"))
 FACE_HINT_AUTO_ENROLL_TURNS = int(os.getenv("TIMMY_FACE_HINT_AUTO_ENROLL_TURNS", "3"))
 CAMERA_PAN_FOV_STEPS = float(os.getenv("TIMMY_CAMERA_PAN_FOV_STEPS", "80.0"))
 CAMERA_TILT_FOV_STEPS = float(os.getenv("TIMMY_CAMERA_TILT_FOV_STEPS", "50.0"))

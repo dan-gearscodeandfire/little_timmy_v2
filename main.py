@@ -115,6 +115,8 @@ class Orchestrator:
             camera_pan_fov_steps=config.CAMERA_PAN_FOV_STEPS,
             camera_tilt_fov_steps=config.CAMERA_TILT_FOV_STEPS,
             on_camera_fresh_threshold_sec=config.ON_CAMERA_FRESH_SEC,
+            face_confirm_min=config.FACE_CONFIRM_MIN,
+            unconfirmed_face_ttl_sec=config.UNCONFIRMED_FACE_TTL_SEC,
             save_path=config.LEDGER_SAVE_PATH,
         )
         self._face_http = httpx.AsyncClient(verify=False, timeout=1.5)

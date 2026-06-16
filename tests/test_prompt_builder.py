@@ -42,7 +42,25 @@ from llm.prompt_builder import (
     build_messages,
     wrap_user_message,
     build_static_persona_system,
+    build_ephemeral_block,
 )
+
+
+def test_who_is_present_omits_provisional_face():
+    """A provisional (unconfirmed single-frame face) presence entry must NOT be
+    named to the LLM — guards against confabulating a ghost like 'Charlotte'."""
+    presence = {
+        "present": [
+            {"name": "dan", "on_camera_now": True, "provisional": False,
+             "last_seen_face_age_s": 1.0, "last_seen_voice_age_s": None},
+            {"name": "charlotte", "on_camera_now": True, "provisional": True,
+             "last_seen_face_age_s": 1.0, "last_seen_voice_age_s": None},
+        ],
+    }
+    block = build_ephemeral_block([], [], presence_state=presence)
+    assert "WHO IS PRESENT" in block
+    assert "Dan" in block
+    assert "Charlotte" not in block
 
 
 def _user(content: str) -> dict:

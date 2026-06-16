@@ -266,9 +266,11 @@ class TestRoomLedger:
         assert dan["source"] == "both"
 
     def test_ttl_boundary_just_under_keeps_person(self):
+        # A CONFIRMED person (>=2 face sightings) gets the full presence TTL.
         led = RoomLedger(presence_ttl_sec=900)
         t0 = 1000.0
         led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0 + 1)
         state = led.current_state(now_ts=t0 + 14 * 60)
         assert any(p["name"] == "dan" for p in state["present"])
 
@@ -278,6 +280,44 @@ class TestRoomLedger:
         led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
         state = led.current_state(now_ts=t0 + 16 * 60)
         assert all(p["name"] != "dan" for p in state["present"])
+
+    def test_single_face_frame_is_provisional_and_purges_fast(self):
+        # The Charlotte ghost: one stray face false-accept must NOT linger for
+        # the full 15min presence TTL. It shows briefly, then ages out on the
+        # short unconfirmed TTL.
+        led = RoomLedger(presence_ttl_sec=900, unconfirmed_face_ttl_sec=60)
+        t0 = 1000.0
+        led.update_from_face(_face_obs([_pred("Charlotte", 0.92)], _good_behavior()), now_ts=t0)
+        # Immediately present (genuine arrivals still show without delay)...
+        early = led.current_state(now_ts=t0 + 5)
+        charlotte = next(p for p in early["present"] if p["name"] == "charlotte")
+        assert charlotte["provisional"] is True
+        # ...still present just under the unconfirmed TTL...
+        assert any(p["name"] == "charlotte" for p in led.current_state(now_ts=t0 + 55)["present"])
+        # ...but gone shortly after — NOT held for 15 min.
+        assert all(p["name"] != "charlotte" for p in led.current_state(now_ts=t0 + 70)["present"])
+
+    def test_second_face_sighting_confirms_full_ttl(self):
+        led = RoomLedger(presence_ttl_sec=900, unconfirmed_face_ttl_sec=60)
+        t0 = 1000.0
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0 + 2)
+        state = led.current_state(now_ts=t0 + 5)
+        dan = next(p for p in state["present"] if p["name"] == "dan")
+        assert dan["provisional"] is False
+        # Past the unconfirmed TTL but well under the full TTL -> still present.
+        assert any(p["name"] == "dan" for p in led.current_state(now_ts=t0 + 300)["present"])
+
+    def test_voice_corroboration_confirms_single_face(self):
+        led = RoomLedger(presence_ttl_sec=900, unconfirmed_face_ttl_sec=60)
+        t0 = 1000.0
+        led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()), now_ts=t0)
+        led.update_from_voice("dan", ts=t0 + 1)
+        state = led.current_state(now_ts=t0 + 5)
+        dan = next(p for p in state["present"] if p["name"] == "dan")
+        assert dan["provisional"] is False
+        # Voice-corroborated -> full TTL despite only one face frame.
+        assert any(p["name"] == "dan" for p in led.current_state(now_ts=t0 + 300)["present"])
 
     def test_unknown_voice_uses_tighter_ttl(self):
         led = RoomLedger(presence_ttl_sec=900, unknown_voice_ttl_sec=120)
@@ -713,7 +753,7 @@ class TestRoomLedgerPersistence:
                     "last_seen_face_ts": time.time() - 60,  # fresh
                     "last_seen_voice_ts": None,
                     "last_pose": None,
-                    "times_seen_face": 1,
+                    "times_seen_face": 2,  # confirmed -> full TTL survives reload
                     "times_heard_voice": 0,
                 },
             },

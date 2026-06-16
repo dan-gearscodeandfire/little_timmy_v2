@@ -180,6 +180,13 @@ def build_ephemeral_block(
             n = (entry.get("name") or "").lower()
             if not n or n.startswith("unknown"):
                 continue
+            # Don't name an unconfirmed (provisional) face-only sighting to the
+            # LLM — a single-frame matcher false-accept would otherwise become
+            # "Charlotte (visible right now)" and the model confidently greets a
+            # ghost. The booth display still shows provisional entries (flagged);
+            # the LLM only hears about confirmed presence.
+            if entry.get("provisional"):
+                continue
             n_title = n.title()
             if entry.get("on_camera_now"):
                 present_lines.append(f"- {n_title} (visible right now)")
