@@ -847,6 +847,7 @@ header .uptime {
   grid-column: 1 / -1;
 }
 .main-content > div:first-child #services,
+.main-content > div:first-child #lt-runtime-toggles,
 .main-content > div:first-child #streamerpi-controls {
   display: flex;
   flex-wrap: wrap;
@@ -1449,13 +1450,9 @@ header .uptime {
           </div>
         </div>
       </div>
-      <div class="model-selector" id="model-selector">
-        <label>Conversation LLM Model</label>
-        <select id="model-select" onchange="switchModel(this.value)" disabled>
-          <option value="">Loading...</option>
-        </select>
-        <div class="model-status" id="model-status"></div>
-      </div>
+      <!-- Conversation-model dropdown removed 2026-06-18 (Dan): the Llama-3B-vs-X
+           switcher is retired; Qwen3.6 (:8083) is the permanent brain, shown as
+           its own service card above. -->
     </details>
   </div>
   <div>
@@ -1741,7 +1738,7 @@ header .uptime {
 </div>
 
 <script>
-const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "conversation_llm", "whisper", "little_timmy", "booth_mockup"];
+const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "whisper", "little_timmy", "booth_mockup"];
 let serviceState = {};
 let busyServices = new Set();
 let modelSwitching = false;
@@ -1823,8 +1820,10 @@ function connectWS() {
 }
 
 function renderModelSelector(models, current) {
+  // Dropdown retired 2026-06-18 (Dan). Element removed; no-op if absent.
   currentModel = current;
   const sel = document.getElementById("model-select");
+  if (!sel) return;
   sel.innerHTML = "";
   for (const [id, name] of Object.entries(models)) {
     const opt = document.createElement("option");
@@ -1834,13 +1833,15 @@ function renderModelSelector(models, current) {
     sel.appendChild(opt);
   }
   sel.disabled = modelSwitching;
-  document.getElementById("model-status").textContent = modelSwitching ? "Switching..." : "";
+  const st = document.getElementById("model-status");
+  if (st) st.textContent = modelSwitching ? "Switching..." : "";
 }
 
 function switchModel(modelId) {
+  const sel = document.getElementById("model-select");
+  if (!sel) return;  // dropdown retired
   if (!modelId || modelId === currentModel || modelSwitching) return;
   modelSwitching = true;
-  const sel = document.getElementById("model-select");
   sel.disabled = true;
   document.getElementById("model-status").textContent = "Switching...";
   ws.send(JSON.stringify({type: "switch_model", model: modelId}));
@@ -2098,7 +2099,7 @@ function renderServices() {
 }
 
 function getPort(sid) {
-  const ports = {postgresql:5432, ollama:11434, gptoss120b:8080, qwen36:8083, conversation_llm:8081, whisper:8891, little_timmy:8893};
+  const ports = {postgresql:5432, ollama:11434, gptoss120b:8080, qwen36:8083, whisper:8891, little_timmy:8893};
   return ports[sid] || "?";
 }
 

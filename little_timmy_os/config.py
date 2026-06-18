@@ -23,11 +23,6 @@ CONVERSATION_MODELS = {
         "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         "params": "-ngl 99 -c 8192 -np 1",
     },
-    "llama3.2-3b": {
-        "name": "Llama 3.2 3B Q4",
-        "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "params": "-ngl 99 -c 8192 -np 1",
-    },
     "llama3.1-8b": {
         "name": "Llama 3.1 8B Q4",
         "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
@@ -46,8 +41,11 @@ CONVERSATION_MODELS = {
     # this dropdown. The dropdown now lists only spawnable alternate models.
 }
 
-# Track which model is currently loaded
-current_conversation_model = "llama3.2-3b"
+# Track which model is currently loaded. The Llama-3B-vs-X conversation-model
+# switcher is retired (2026-06-18, Dan): Qwen3.6 (:8083) is the permanent brain,
+# routed LT-side via runtime_toggles. This default is now just an internal
+# fallback for the dead switch path — not displayed (the dropdown was removed).
+current_conversation_model = "qwen2.5-7b"
 
 SERVICES = {
     "postgresql": {
@@ -64,13 +62,16 @@ SERVICES = {
         "systemd": "ollama",
         "description": "Embeddings (nomic-embed-text, 768-dim)",
     },
+    # Retired conversation-tier spawn target (:8081). Kept only so the dead
+    # switch path in services.py doesn't KeyError; removed from SERVICE_ORDER so
+    # it no longer renders in the dashboard (Qwen3.6 :8083 is the brain now).
     "conversation_llm": {
-        "name": "Llama 3.2 3B Q4",
+        "name": "Conversation LLM (:8081, retired spawn)",
         "port": 8081,
         "health_url": "http://localhost:8081/health",
         "systemd": None,
-        "start_cmd": None,  # built dynamically from current_conversation_model
-        "description": "Conversation LLM",
+        "start_cmd": None,
+        "description": "Retired spawnable conversation server (replaced by the :8083 brain).",
     },
     "whisper": {
         "name": "whisper.cpp",
