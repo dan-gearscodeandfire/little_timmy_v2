@@ -3,7 +3,7 @@
 Records several short clips through Little Timmy's EXACT capture path (the same
 device/SR/channel/resample/HP-filter chain as live identification, reused from
 ``enroll_from_pipeline.record_like_timmy``), embeds each separately, and saves a
-deduped (K, 256) prototype set to ``models/speaker/<name>_resemblyzer.npy``.
+deduped (K, 256) prototype set to ``models/speaker/<name>_wespeaker.npy``.
 
 Why multiple clips: one averaged prototype can't span the distance/loudness
 variation of a real room (this is the cause of "Dan -> unknown_1"). Capturing a
@@ -50,13 +50,10 @@ POSE_CUES = [
 ]
 
 
-def embed(encoder, audio_16k: np.ndarray) -> np.ndarray:
-    """Embed one clip with the SAME preprocessing identify() uses."""
-    from resemblyzer import preprocess_wav
-    processed = preprocess_wav(audio_16k, source_sr=16000)
-    if len(processed) < 8000:           # <0.5s after VAD → fall back to raw
-        processed = audio_16k
-    return encoder.embed_utterance(processed)
+def embed(audio_16k: np.ndarray) -> np.ndarray:
+    """Embed one clip with the SAME WeSpeaker backend identify() uses."""
+    from speaker import encoder as _enc
+    return _enc.extract_embedding(audio_16k)
 
 
 def main() -> int:
@@ -73,9 +70,9 @@ def main() -> int:
     print("Vary distance/loudness/angle between clips as prompted — that spread "
           "is exactly what makes you recognizable across the room.\n")
 
-    from resemblyzer import VoiceEncoder
-    print("Loading Resemblyzer encoder...")
-    encoder = VoiceEncoder("cpu")
+    from speaker import encoder as _enc
+    print("Loading WeSpeaker encoder...")
+    _enc.get_inference()
 
     raw_embs: list[np.ndarray] = []
     for i in range(args.samples):
@@ -83,7 +80,7 @@ def main() -> int:
         print(f"\n--- Clip {i + 1}/{args.samples}: {cue} ---")
         audio = record_like_timmy(args.seconds)
         try:
-            raw_embs.append(embed(encoder, audio))
+            raw_embs.append(embed(audio))
         except Exception as e:
             print(f"  ! embed failed for clip {i + 1}: {e} (skipping)")
         time.sleep(0.3)

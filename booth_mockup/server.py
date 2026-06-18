@@ -18,6 +18,7 @@ from aiohttp import web
 
 STREAMERPI_URL = "https://streamerpi.local:8080"
 LT_URL = "http://127.0.0.1:8893"
+LTOS_URL = "http://127.0.0.1:8894"  # LT-OS dashboard: host/GPU telemetry (/api/host)
 PORT = 8090
 HERE = Path(__file__).resolve().parent
 INDEX_HTML = HERE / "index.html"
@@ -115,12 +116,35 @@ async def proxy_lt_get(request: web.Request) -> web.Response:
                 {"error": str(e)[:200], "path": path}, status=502)
 
 
+async def proxy_ltos_get(request: web.Request) -> web.Response:
+    """GET proxy for the LT-OS dashboard (port 8894). Used by the visitor
+    overlay to fetch /api/host — the host/GPU telemetry snapshot (cpu/ram/vram
+    percentages, gpu_busy_percent, temp_c, power_w, sclk, disk, load) sourced
+    from ops/gpu_sysfs.py. Drives the bottom-centre vitals donuts."""
+    path = request.match_info["path"]
+    timeout = aiohttp.ClientTimeout(total=3)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(f"{LTOS_URL}/{path}") as upstream:
+                payload = await upstream.read()
+                return web.Response(
+                    body=payload,
+                    status=upstream.status,
+                    headers={"Content-Type": upstream.headers.get(
+                        "Content-Type", "application/json")},
+                )
+        except Exception as e:
+            return web.json_response(
+                {"error": str(e)[:200], "path": path}, status=502)
+
+
 def main() -> None:
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_post("/streamerpi/offer", proxy_offer)
     app.router.add_get("/streamerpi/{path:.+}", proxy_get)
     app.router.add_get("/lt/{path:.+}", proxy_lt_get)
+    app.router.add_get("/ltos/{path:.+}", proxy_ltos_get)
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_ctx.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
     log.info("booth-mockup serving on https://0.0.0.0:%d "

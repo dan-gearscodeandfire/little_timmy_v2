@@ -136,12 +136,10 @@ def capture_16k(seconds: int) -> np.ndarray:
     return a16[int(TARGET_SR * 0.1):]   # drop filter transient
 
 
-def embed(encoder, a16: np.ndarray) -> np.ndarray:
-    from resemblyzer import preprocess_wav
-    processed = preprocess_wav(a16, source_sr=16000)
-    if len(processed) < 8000:
-        processed = a16
-    return encoder.embed_utterance(processed)
+def embed(a16: np.ndarray) -> np.ndarray:
+    """Embed via the production WeSpeaker backend — identical to live identify()."""
+    from speaker import encoder as _enc
+    return _enc.extract_embedding(a16)
 
 
 def main() -> int:
@@ -149,9 +147,9 @@ def main() -> int:
     n_clips = len(POSES)
     print(f"=== voiced enrollment: {name} ({n_clips} clips) ===")
 
-    from resemblyzer import VoiceEncoder
-    print("loading encoder...")
-    encoder = VoiceEncoder("cpu")
+    from speaker import encoder as _enc
+    print("loading WeSpeaker encoder...")
+    _enc.get_inference()
 
     raw_embs: list[np.ndarray] = []
     try:
@@ -171,7 +169,7 @@ def main() -> int:
                       f"samples={len(a16)}")
                 if peak >= MIN_PEAK:
                     try:
-                        raw_embs.append(embed(encoder, a16))
+                        raw_embs.append(embed(a16))
                     except Exception as e:
                         print(f"  ! embed failed: {e}")
                     break

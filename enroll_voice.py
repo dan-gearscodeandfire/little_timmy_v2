@@ -1,6 +1,6 @@
 """Voice enrollment with level-check and cross-speaker safety.
 
-Runs through Little Timmy's audio path and computes the Resemblyzer
+Runs through Little Timmy's audio path and computes the WeSpeaker
 embedding the orchestrator would actually see at runtime. Default mode
 is *preview* (no disk write). Commit only happens with --commit, after
 you've seen the peak/RMS numbers and the cross-distance to every
@@ -39,7 +39,7 @@ CHANNELS = 2
 DEVICE = "default"
 
 PEAK_CLIP = 0.95            # >= this is clipping risk
-PEAK_TOO_QUIET = 0.05       # < this is too quiet for resemblyzer
+PEAK_TOO_QUIET = 0.05       # < this is too quiet for the encoder
 PEAK_GOOD_LO = 0.20
 PEAK_GOOD_HI = 0.80
 TIGHT_CROSS_DIST = 0.30
@@ -168,13 +168,13 @@ def main():
               "misclassification likely until margin is widened (re-record at a "
               "different mic level / different voice tone).")
 
-    out = VOICEPRINT_DIR / f"{name}_resemblyzer.npy"
+    out = VOICEPRINT_DIR / f"{name}_wespeaker.npy"
     if not args.commit:
         print(f"\n  PREVIEW MODE — not writing. To keep, re-run with --commit.")
         return 0
 
     if out.exists():
-        bak = VOICEPRINT_DIR / f"{name}_resemblyzer.npy.bak.{int(time.time())}"
+        bak = VOICEPRINT_DIR / f"{name}_wespeaker.npy.bak.{int(time.time())}"
         out.rename(bak)
         print(f"\n  backed up existing -> {bak.name}")
     np.save(out, emb)

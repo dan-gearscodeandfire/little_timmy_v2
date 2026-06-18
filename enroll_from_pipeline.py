@@ -80,22 +80,17 @@ def record_like_timmy(seconds: int = 15) -> np.ndarray:
 
 
 def create_voiceprint(audio_16k: np.ndarray) -> np.ndarray:
-    """Create Resemblyzer embedding using Timmy's exact preprocessing."""
-    from resemblyzer import VoiceEncoder, preprocess_wav
+    """Create WeSpeaker embedding from the captured 16k waveform.
 
-    print("  Loading Resemblyzer encoder...")
-    encoder = VoiceEncoder("cpu")
+    Feeds the whole post-capture waveform straight to the shared encoder
+    backend (no VAD/trim), exactly as live identify() does.
+    """
+    from speaker import encoder as _enc
 
-    # Use preprocess_wav like Timmy's identifier.py does
-    processed = preprocess_wav(audio_16k, source_sr=16000)
-    print(f"  After VAD preprocessing: {len(processed)} samples ({len(processed)/16000:.1f}s)")
+    print("  Loading WeSpeaker encoder...")
+    _enc.get_inference()
 
-    if len(processed) < 8000:
-        print("  WARNING: <0.5s after VAD, falling back to raw audio")
-        processed = audio_16k
-
-    embedding = encoder.embed_utterance(processed)
-    embedding = embedding / np.linalg.norm(embedding)
+    embedding = _enc.extract_embedding(audio_16k)
     print(f"  Embedding: shape={embedding.shape}, norm={np.linalg.norm(embedding):.4f}")
 
     return embedding
@@ -104,7 +99,7 @@ def create_voiceprint(audio_16k: np.ndarray) -> np.ndarray:
 def test_against_live(embedding: np.ndarray, seconds: int = 5) -> list[float]:
     """Record a short test clip and check distance — simulates live matching."""
     from scipy.spatial.distance import cosine
-    from resemblyzer import VoiceEncoder, preprocess_wav
+    from speaker import encoder as _enc
 
     print(f"\n>>> Test: recording {seconds}s to check match quality <<<")
     for i in range(3, 0, -1):
@@ -119,23 +114,14 @@ def test_against_live(embedding: np.ndarray, seconds: int = 5) -> list[float]:
         audio = audio[:, 0]
     audio_16k = resample_poly(audio, up=1, down=3).astype(np.float32)
 
-    encoder = VoiceEncoder("cpu")
+    _enc.get_inference()
 
-    # Test with preprocess_wav (like identifier.py)
-    processed = preprocess_wav(audio_16k, source_sr=16000)
-    if len(processed) < 8000:
-        processed = audio_16k
-    test_emb = encoder.embed_utterance(processed)
-
+    # Feed the whole captured waveform straight to the encoder, like live identify()
+    test_emb = _enc.extract_embedding(audio_16k)
     dist = cosine(embedding, test_emb)
     print(f"  Test distance: {dist:.4f}")
 
-    # Also test without preprocessing (raw, like fallback)
-    raw_emb = encoder.embed_utterance(audio_16k)
-    raw_dist = cosine(embedding, raw_emb)
-    print(f"  Raw distance:  {raw_dist:.4f}")
-
-    return [dist, raw_dist]
+    return [dist]
 
 
 def main():
@@ -149,7 +135,7 @@ def main():
 
     # Compare with existing
     from scipy.spatial.distance import cosine
-    existing_path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_resemblyzer.npy"
+    existing_path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_wespeaker.npy"
     try:
         old = np.load(existing_path)
         dist = cosine(embedding, old)

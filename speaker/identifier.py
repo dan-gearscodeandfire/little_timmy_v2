@@ -1,6 +1,15 @@
-"""Speaker identification using Resemblyzer embeddings.
+"""Speaker identification using WeSpeaker embeddings.
 
-Identifies known speakers (Dan, Timmy, plus any other ``*_resemblyzer.npy``
+Encoder is ``pyannote/wespeaker-voxceleb-resnet34-LM`` via ``speaker.encoder``
+(the single embedding backend shared with the enrollment scripts and the ops
+sweeps, so enrollment and live matching never diverge). Migrated off Resemblyzer
+2026-06-17 — see ``speaker/encoder.py`` and Obsidian
+``lt-wespeaker-threshold-calibration-2026-06-17``. WeSpeaker lives on a different
+cosine scale than Resemblyzer, so every threshold below was re-derived and the
+on-disk voiceprint convention is ``*_wespeaker.npy`` (old ``*_resemblyzer.npy``
+files are ignored, not deleted).
+
+Identifies known speakers (Dan, Timmy, plus any other ``*_wespeaker.npy``
 in VOICEPRINT_DIR) and tracks unknown voices. When an unknown voice
 becomes stable (enough utterances), signals the orchestrator to ask for
 their name. Three live-enrollment triggers persist voiceprints during
@@ -8,7 +17,7 @@ conversation:
 
   Trigger 1 (auto-persist on naming): when ``assign_name(temp_id, name)``
     fires from the existing in-conversation flow, the unknown speaker's
-    avg embedding is written to ``models/speaker/<name>_resemblyzer.npy``
+    avg embedding is written to ``models/speaker/<name>_wespeaker.npy``
     and the speaker is promoted to a KnownSpeaker for the rest of the
     session. Survives restart.
 
@@ -51,9 +60,23 @@ def _toggle(key, fallback):
 
 VOICEPRINT_DIR = Path(os.path.expanduser("~/little_timmy/models/speaker"))
 
-# Thresholds (cosine distance: 0 = identical, 2 = opposite)
-KNOWN_SPEAKER_THRESHOLD = 0.30    # below this = confident match to known speaker
-SAME_UNKNOWN_THRESHOLD = 0.30     # below this = same unknown speaker as before
+# Open-set anti-model cohort (WeSpeaker space). Lazily loaded by the open-set
+# guard; None => guard unavailable => fall back to the raw threshold below.
+COHORT_DIR = VOICEPRINT_DIR / "cohort_wespeaker"
+
+# ── Thresholds (cosine distance: 0 = identical, 2 = opposite) ────────────────
+# WeSpeaker scale (migrated 2026-06-17). CALIBRATED against real on-mic Dan after
+# a 6-pose live re-enrollment (ops/open_set_calibrate.py + held-out clips):
+#   genuine on-mic Dan (cross-take):  0.295 - 0.405
+#   nearest impostor (synth/far-Dan): >= 0.704
+# -> ~0.30-wide gap; threshold at the midpoint accepts all genuine, rejects all
+# impostors (RAW FAR=0/14 FRR=0/1). NOTE the real human cross-session distance
+# (~0.40) is far above the synthetic-panel genuine (<=0.175 / T~=0.368, Obsidian
+# lt-wespeaker-threshold-calibration-2026-06-17) — synthetic TTS takes are
+# acoustically identical, real voice + lav placement varies, so the production
+# threshold lands higher. Re-confirm if Dan re-enrolls or the mic/seat changes.
+KNOWN_SPEAKER_THRESHOLD = 0.55    # below this = confident match (was 0.30 Resemblyzer)
+SAME_UNKNOWN_THRESHOLD = 0.55     # below this = same unknown speaker as before (was 0.30)
 STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 
 # Short-audio continuity (see top-of-file docstring on identify()).
@@ -61,7 +84,7 @@ STABLE_UTTERANCE_COUNT = 3        # utterances needed before asking for name
 # runtime_toggles (speaker_continuity_dist_cap / _window_s); these constants are
 # the in-code fallback when toggles are unavailable (e.g. unit tests).
 SHORT_AUDIO_SAMPLES = 80000        # ~5s @ 16kHz; below this is "short"
-SHORT_AUDIO_DIST_CAP = 0.40        # was 0.55 — a stranger sat at 0.52 from Dan
+SHORT_AUDIO_DIST_CAP = 0.60        # WeSpeaker (was 0.40 Resemblyzer); looser than known thresh 0.55 but below the 0.70 impostor floor
 CONTINUITY_WINDOW_SEC = 15.0       # was 60.0 — a guest 15-60s later isn't "Dan continuing"
 # The last speaker must beat the 2nd-nearest KNOWN identity by this margin to be
 # "continued". Without it, continuity latches a different speaker who is merely
@@ -77,7 +100,23 @@ CONTINUITY_WINDOW_SEC = 15.0       # was 60.0 — a guest 15-60s later isn't "Da
 # therefore hardens the matcher AND sets the prompt prior in one move.
 CONTINUITY_DISABLED_REGIMES = frozenset({"PARTY", "EXPO"})
 
-CONTINUITY_MARGIN = 0.10           # min (2nd_best_known - best_known) to allow continuity
+CONTINUITY_MARGIN = 0.12           # min (2nd_best_known - best_known) to allow continuity (WeSpeaker; was 0.10)
+
+# ── Open-set rejection guard (anti-model + s-norm) ──────────────────────────
+# Master switch for the open-set guard layered on top of the raw known-speaker
+# accept. Default OFF: identify() behaves exactly as the raw-threshold matcher
+# until this is flipped (module constant here; live-flippable via the
+# runtime_toggles key "open_set_reject_enabled"). When ON, an otherwise-accepted
+# known match must ALSO clear the anti-model/s-norm guard (speaker/open_set.py)
+# or it falls through to continuity -> unknown. Fixes the P1 noise-collapse false
+# accept (a degraded capture stamped onto whichever enrolled print sits nearest
+# the noise centroid — Erin). See speaker/open_set.py and
+# memory/project_lt_erin_voiceprint_noise_centroid_bug.
+OPEN_SET_REJECT_ENABLED = False
+# Acceptance bar in WeSpeaker space — set by ops/open_set_calibrate.py against a
+# real genuine/impostor split. PROVISIONAL until that calibration runs live.
+OPEN_SET_MIN_SNORM = 0.0           # s-norm at/above this required to accept
+OPEN_SET_MIN_AM_MARGIN = 0.0       # anti-model margin (s_raw - max_cohort_sim) at/above this
 
 
 def continuity_allowed(
@@ -121,7 +160,7 @@ def continuity_allowed(
     )
 
 # Trigger 3 (drift learning) constants.
-TIGHT_DRIFT_THRESHOLD = 0.20       # only matches under this contribute to drift
+TIGHT_DRIFT_THRESHOLD = 0.35       # only matches under this contribute to drift (WeSpeaker; was 0.20)
 DRIFT_BATCH_SIZE = 30              # samples per drift update
 DRIFT_NEW_WEIGHT = 0.30            # EMA weight for new samples vs existing voiceprint
 
@@ -130,7 +169,7 @@ DRIFT_NEW_WEIGHT = 0.30            # EMA weight for new samples vs existing voic
 # This mirrors the SFace face-ID fix (26bab94): one averaged prototype can't
 # span the distance/loudness/pose variation of a real room, but min-over-K
 # recognizes any covered look. Old single-vector .npy files load as (1, D).
-PROTOTYPE_DEDUP_DIST = 0.05        # a new prototype within this of an existing one is a dup → skip
+PROTOTYPE_DEDUP_DIST = 0.06        # a new prototype within this of an existing one is a dup → skip (WeSpeaker; was 0.05)
 MAX_PROTOTYPES = 12               # cap per identity (keep most recent beyond this)
 
 # Online (in-conversation) voiceprint learning master switch. When False, the
@@ -222,13 +261,17 @@ class SpeakerResult:
 
 class SpeakerIdentifier:
     # Reserved DB ids used by the orchestrator/router by name. Any other
-    # *_resemblyzer.npy in VOICEPRINT_DIR is auto-loaded with an id from
+    # *_wespeaker.npy in VOICEPRINT_DIR is auto-loaded with an id from
     # _NEXT_ID onward.
     _RESERVED_IDS = {"dan": 1, "timmy": 2}
     _NEXT_ID = 3
 
     def __init__(self):
         self._encoder = None
+        # Open-set guard (anti-model + s-norm), lazily built on first use from
+        # COHORT_DIR. None once loaded-and-empty so we don't re-stat every call.
+        self._open_set_scorer = None
+        self._open_set_loaded = False
         self._known_speakers: list[KnownSpeaker] = []
         self._unknown_speakers: list[UnknownSpeaker] = []
         self._unknown_counter = 0
@@ -243,10 +286,31 @@ class SpeakerIdentifier:
 
     def _load_encoder(self):
         if self._encoder is None:
-            from resemblyzer import VoiceEncoder
-            self._encoder = VoiceEncoder("cpu")
-            log.info("Resemblyzer encoder loaded")
+            from speaker import encoder as _enc
+            _enc.get_inference()          # warm the cached WeSpeaker model
+            self._encoder = _enc
+            log.info("WeSpeaker encoder loaded")
         return self._encoder
+
+    def _get_open_set_scorer(self):
+        """Lazily load the WeSpeaker anti-model cohort into an OpenSetScorer.
+        Returns None if the cohort dir is missing/empty (guard unavailable ->
+        caller falls back to the raw threshold). Loaded at most once."""
+        if not self._open_set_loaded:
+            self._open_set_loaded = True
+            try:
+                from speaker.open_set import OpenSetScorer
+                self._open_set_scorer = OpenSetScorer.from_dir(COHORT_DIR)
+                if self._open_set_scorer is None:
+                    log.warning("Open-set guard requested but cohort %s is missing/empty "
+                                "— falling back to raw threshold", COHORT_DIR)
+                else:
+                    log.info("Open-set guard loaded: %d cohort embeddings from %s",
+                             self._open_set_scorer.size, COHORT_DIR)
+            except Exception as e:
+                log.warning("Open-set guard load failed (%s) — raw threshold only", e)
+                self._open_set_scorer = None
+        return self._open_set_scorer
 
     _ID_MAP_FILENAME = "_id_map.json"
 
@@ -276,9 +340,9 @@ class SpeakerIdentifier:
         tmp.replace(path)
 
     def load_voiceprints(self):
-        """Load every ``*_resemblyzer.npy`` in VOICEPRINT_DIR.
+        """Load every ``*_wespeaker.npy`` in VOICEPRINT_DIR.
 
-        File ``<name>_resemblyzer.npy`` becomes a KnownSpeaker named
+        File ``<name>_wespeaker.npy`` becomes a KnownSpeaker named
         ``<name>``. Speaker ids are pulled from a persisted name -> id
         map at ``VOICEPRINT_DIR/_id_map.json`` so they survive both
         restarts and the addition of new voiceprints. Reserved names
@@ -298,9 +362,9 @@ class SpeakerIdentifier:
             id_map[name] = sid
         dirty = False
 
-        paths = sorted(VOICEPRINT_DIR.glob("*_resemblyzer.npy"))
+        paths = sorted(VOICEPRINT_DIR.glob("*_wespeaker.npy"))
         for path in paths:
-            name = path.stem.replace("_resemblyzer", "").lower()
+            name = path.stem.replace("_wespeaker", "").lower()
             if name in self._RESERVED_IDS:
                 speaker_id = self._RESERVED_IDS[name]
             elif name in id_map and isinstance(id_map[name], int):
@@ -339,26 +403,26 @@ class SpeakerIdentifier:
         loaded = {ks.name for ks in self._known_speakers}
         for reserved in self._RESERVED_IDS:
             if reserved not in loaded:
-                log.warning("Reserved voiceprint not found: %s_resemblyzer.npy",
+                log.warning("Reserved voiceprint not found: %s_wespeaker.npy",
                             reserved)
         log.info("Voiceprint load complete: %d enrolled (%s)",
                  len(self._known_speakers),
                  ", ".join(ks.name for ks in self._known_speakers) or "none")
 
     def extract_embedding(self, audio_16k: np.ndarray) -> np.ndarray:
-        from resemblyzer import preprocess_wav
+        """WeSpeaker embedding of a 16 kHz mono waveform (256-d, L2-normalized).
+
+        Whole-window inference, no VAD trim — matches speaker/encoder.py and the
+        threshold calibration. The 80 Hz HP + decimation happen upstream in
+        audio/capture.py; the audio arrives ready to embed."""
         encoder = self._load_encoder()
-        processed = preprocess_wav(audio_16k, source_sr=16000)
-        if len(processed) < 8000:  # <0.5s of speech after trimming
-            processed = audio_16k
-        emb = encoder.embed_utterance(processed)
-        return emb
+        return encoder.extract_embedding(audio_16k)
 
     # ---------- Persistence primitive (shared by all three triggers) ----------
 
     def persist_voiceprint(self, name: str, prototypes: np.ndarray,
                            *, backup: bool = True) -> Path:
-        """Atomic write of a prototype set to ``VOICEPRINT_DIR/<name>_resemblyzer.npy``.
+        """Atomic write of a prototype set to ``VOICEPRINT_DIR/<name>_wespeaker.npy``.
 
         Accepts a single embedding (shape (D,)) or a prototype set (shape
         (K, D)); always stored on disk as 2-D so older callers stay valid.
@@ -373,9 +437,9 @@ class SpeakerIdentifier:
         if prototypes.ndim == 1:
             prototypes = prototypes[None, :]
         VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
-        out = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy"
+        out = VOICEPRINT_DIR / f"{clean}_wespeaker.npy"
         if backup and out.exists():
-            bak = VOICEPRINT_DIR / f"{clean}_resemblyzer.npy.bak.{int(time.time())}"
+            bak = VOICEPRINT_DIR / f"{clean}_wespeaker.npy.bak.{int(time.time())}"
             out.rename(bak)
             log.info("Backed up existing voiceprint: %s -> %s", out.name, bak.name)
         np.save(out, prototypes.astype(np.float32))
@@ -389,6 +453,29 @@ class SpeakerIdentifier:
         while candidate in used:
             candidate += 1
         return candidate
+
+    def _open_set_accepts(self, emb: np.ndarray, ks: "KnownSpeaker") -> bool:
+        """Open-set guard for an otherwise-accepted known match.
+
+        Returns True (accept) unless the guard is enabled AND the cohort/scorer
+        is available AND the test embedding fails the anti-model / s-norm bar.
+        With the guard OFF (default) this is a no-op that returns True
+        immediately — identify() then behaves byte-for-byte as the raw matcher.
+        A missing cohort also returns True (fail-open to the raw threshold)."""
+        if not _toggle("open_set_reject_enabled", OPEN_SET_REJECT_ENABLED):
+            return True
+        scorer = self._get_open_set_scorer()
+        if scorer is None:
+            return True
+        t_snorm = _toggle("open_set_min_snorm", OPEN_SET_MIN_SNORM)
+        min_margin = _toggle("open_set_min_am_margin", OPEN_SET_MIN_AM_MARGIN)
+        sc = scorer.score(emb, ks.prototypes)
+        ok = sc.snorm >= t_snorm and sc.am_margin >= min_margin
+        if not ok:
+            log.info("Open-set guard REJECTED %s: snorm=%.3f (>=%.3f?) am_margin=%.3f (>=%.3f?) "
+                     "— falling through to continuity/unknown",
+                     ks.name, sc.snorm, t_snorm, sc.am_margin, min_margin)
+        return ok
 
     # ---------- identify() ----------
 
@@ -420,7 +507,8 @@ class SpeakerIdentifier:
                  second_best_known_dist, second_best_known_dist - best_known_dist,
                  KNOWN_SPEAKER_THRESHOLD, len(audio_16k), extract_ms)
 
-        if best_known and best_known_dist < KNOWN_SPEAKER_THRESHOLD:
+        if best_known and best_known_dist < KNOWN_SPEAKER_THRESHOLD \
+                and self._open_set_accepts(emb, best_known):
             # Confident match — refresh continuity anchor + feed both
             # collection mechanisms (Trigger 2 if active for this speaker;
             # Trigger 3 only on tight match).

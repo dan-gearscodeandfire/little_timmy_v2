@@ -117,15 +117,17 @@ def main():
     print("EXTRACTING EMBEDDINGS")
     print(f"{'='*60}")
 
-    from resemblyzer import VoiceEncoder
+    from speaker import encoder as _enc
     from scipy.spatial.distance import cosine
 
-    encoder = VoiceEncoder("cpu")
+    _enc.get_inference()
 
     embeddings = []
     for i, audio in enumerate(recordings):
         t0 = time.time()
-        emb = encoder.embed_utterance(audio)
+        # Feed the captured 16k waveform straight to the encoder (no VAD/trim),
+        # exactly as live identify() does.
+        emb = _enc.extract_embedding(audio)
         ms = (time.time() - t0) * 1000
         embeddings.append(emb)
         print(f"  [{i+1}] embedding extracted ({ms:.0f}ms)")
@@ -149,14 +151,14 @@ def main():
     print(f"  Max distance from avg: {max(distances):.3f}")
 
     # Compare against Timmy's voiceprint
-    timmy_path = "/home/gearscodeandfire/little_timmy/models/speaker/timmy_resemblyzer.npy"
+    timmy_path = "/home/gearscodeandfire/little_timmy/models/speaker/timmy_wespeaker.npy"
     timmy_emb = np.load(timmy_path)
     dan_vs_timmy = cosine(avg_embedding, timmy_emb)
     print(f"\n  Dan vs Timmy distance: {dan_vs_timmy:.3f} (higher = more different)")
     print(f"  Safety margin: {dan_vs_timmy - max(distances):.3f} (should be > 0)")
 
     # Compare against old voiceprint
-    old_path = "/home/gearscodeandfire/little_timmy/models/speaker/dan_resemblyzer.npy"
+    old_path = "/home/gearscodeandfire/little_timmy/models/speaker/dan_wespeaker.npy"
     old_emb = np.load(old_path)
     old_vs_new = cosine(avg_embedding, old_emb)
     print(f"  Old vs new voiceprint distance: {old_vs_new:.3f}")

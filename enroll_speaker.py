@@ -1,7 +1,7 @@
 """Re-enroll a speaker voiceprint from live mic capture.
 
 Records audio from PipeWire default device (same path Little Timmy uses),
-extracts a Resemblyzer embedding, and saves it.
+extracts a WeSpeaker embedding, and saves it.
 
 Usage:
   python enroll_speaker.py [name] [seconds] [--save]
@@ -57,54 +57,19 @@ def record_audio(seconds: int = 15) -> np.ndarray:
     return audio
 
 
-def simple_vad_trim(audio: np.ndarray, sr: int = 16000,
-                    frame_ms: int = 30, threshold: float = 0.01) -> np.ndarray:
-    """Simple energy-based VAD: keep frames above threshold RMS.
-
-    More permissive than Resemblyzer's webrtcvad-based preprocessing.
-    """
-    frame_len = int(sr * frame_ms / 1000)
-    voiced_frames = []
-
-    for i in range(0, len(audio) - frame_len, frame_len):
-        frame = audio[i:i + frame_len]
-        rms = np.sqrt(np.mean(frame ** 2))
-        if rms > threshold:
-            voiced_frames.append(frame)
-
-    if not voiced_frames:
-        print(f"  VAD: no frames above threshold {threshold}, trying lower...")
-        # Try with lower threshold
-        for i in range(0, len(audio) - frame_len, frame_len):
-            frame = audio[i:i + frame_len]
-            rms = np.sqrt(np.mean(frame ** 2))
-            if rms > threshold / 4:
-                voiced_frames.append(frame)
-
-    if not voiced_frames:
-        print("  VAD: still nothing — using raw audio")
-        return audio
-
-    result = np.concatenate(voiced_frames)
-    print(f"  VAD: kept {len(result)} samples ({len(result)/sr:.1f}s) "
-          f"from {len(audio)} ({len(audio)/sr:.1f}s)")
-    return result
-
-
 def create_voiceprint(audio_16k: np.ndarray) -> np.ndarray:
-    """Create Resemblyzer embedding from audio."""
-    from resemblyzer import VoiceEncoder
+    """Create WeSpeaker embedding from the captured 16k waveform.
 
-    print("  Loading Resemblyzer encoder...")
-    encoder = VoiceEncoder("cpu")
+    Feeds the whole captured waveform straight to the shared encoder
+    backend (no VAD/trim), exactly as live identify() does.
+    """
+    from speaker import encoder as _enc
 
-    # Use our own VAD instead of Resemblyzer's preprocess_wav
-    # (Resemblyzer's webrtcvad is too aggressive with this mic setup)
-    trimmed = simple_vad_trim(audio_16k)
+    print("  Loading WeSpeaker encoder...")
+    _enc.get_inference()
 
     print("  Extracting embedding...")
-    embedding = encoder.embed_utterance(trimmed)
-    embedding = embedding / np.linalg.norm(embedding)
+    embedding = _enc.extract_embedding(audio_16k)
 
     print(f"  Embedding shape: {embedding.shape}, norm: {np.linalg.norm(embedding):.4f}")
     return embedding
@@ -114,7 +79,7 @@ def compare_with_existing(new_emb: np.ndarray, name: str):
     """Compare new embedding with existing one."""
     from scipy.spatial.distance import cosine
 
-    existing_path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_resemblyzer.npy"
+    existing_path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_wespeaker.npy"
     try:
         old_emb = np.load(existing_path)
         dist = cosine(new_emb, old_emb)
@@ -132,7 +97,7 @@ def compare_with_existing(new_emb: np.ndarray, name: str):
 def save_voiceprint(embedding: np.ndarray, name: str):
     """Save the new voiceprint, backing up the old one."""
     import shutil
-    path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_resemblyzer.npy"
+    path = f"/home/gearscodeandfire/little_timmy/models/speaker/{name}_wespeaker.npy"
     backup = path + ".bak3"
 
     try:

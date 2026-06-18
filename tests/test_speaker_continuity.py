@@ -15,8 +15,14 @@ The gate is now the pure function `continuity_allowed`, so this reproduces the
 bug and proves the fix deterministically — no audio, no embeddings, no VAD.
 
     RED  (old params: cap 0.55, window 60s)  -> the 0.52/3s stranger is stamped Dan
-    GREEN(new params: cap 0.40, window 15s)  -> abstains (returns False)
+    GREEN(WeSpeaker default cap 0.60, 15s)    -> a ~0.70 stranger abstains (False)
     PARTY regime                              -> disabled outright regardless of cap
+
+    (The RED scenario's 0.52 distance is a Resemblyzer-era live observation, kept
+    as a pure-logic fixture with an explicit 0.55 cap. The continuity_allowed()
+    function is encoder-agnostic; the module CONSTANTS were recalibrated to
+    WeSpeaker space 2026-06-17, where a real stranger sits at ~0.70 — see the
+    GREEN test for the WeSpeaker-scale stranger.)
 
 Run:
     .venv/bin/pytest tests/test_speaker_continuity.py -v
@@ -57,11 +63,16 @@ def test_RED_old_params_false_accept_stranger_as_dan():
 
 
 def test_GREEN_new_default_cap_abstains():
-    """With the shipped defaults (cap 0.40) the same stranger abstains."""
-    assert continuity_allowed(**LIVE_STRANGER) is False
-    # And explicitly with the new constant, to pin the value.
-    assert SHORT_AUDIO_DIST_CAP == 0.40
-    assert continuity_allowed(**LIVE_STRANGER, dist_cap=SHORT_AUDIO_DIST_CAP) is False
+    """With the shipped WeSpeaker default cap (0.60) a real stranger abstains.
+
+    On the WeSpeaker scale an unenrolled voice sits at ~0.70+ from the nearest
+    enrolled print (calibrated 2026-06-17: genuine on-mic Dan 0.295-0.405,
+    impostors >= 0.704), so the 0.60 cap excludes it while genuine Dan continues.
+    """
+    assert SHORT_AUDIO_DIST_CAP == 0.60
+    ws_stranger = {**LIVE_STRANGER, "best_known_dist": 0.70}   # WeSpeaker-scale stranger
+    assert continuity_allowed(**ws_stranger) is False
+    assert continuity_allowed(**ws_stranger, dist_cap=SHORT_AUDIO_DIST_CAP) is False
 
 
 def test_party_regime_disables_continuity_even_with_loose_cap():
@@ -122,11 +133,11 @@ def test_continuity_margin_boundary():
         audio_len=40000, best_known_name="dan", last_known_name="dan",
         best_known_dist=0.20, elapsed_s=4.0, regime="",
     )
-    assert CONTINUITY_MARGIN == 0.10
+    assert CONTINUITY_MARGIN == 0.12   # WeSpeaker-rescaled 2026-06-17 (was 0.10)
     # Comfortably above the margin -> allowed; clearly below -> rejected.
-    # (Avoid testing the exact 0.10 edge: float cancellation makes 0.30-0.20
-    # evaluate to 0.0999… — real distances never land on the precise boundary.)
-    assert continuity_allowed(**params, second_best_known_dist=0.32) is True
+    # (Avoid testing the exact 0.12 edge: float cancellation makes a 0.32 runner-up
+    # evaluate to 0.1199… — real distances never land on the precise boundary.)
+    assert continuity_allowed(**params, second_best_known_dist=0.35) is True
     assert continuity_allowed(**params, second_best_known_dist=0.27) is False
 
 

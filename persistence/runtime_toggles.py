@@ -95,9 +95,21 @@ _DEFAULTS: dict = {
     # sitting inside the OLD 0.55 cap (Dan self-matches ~0.13-0.21); only an
     # expired 60s timer saved it. Tightened: cap 0.40, window 15s. Additionally
     # disabled outright when situation_regime is PARTY/EXPO (see identifier.py).
-    "speaker_continuity_dist_cap": 0.40,    # was hardcoded 0.55
+    "speaker_continuity_dist_cap": 0.60,    # WeSpeaker-calibrated 2026-06-17 (was 0.40 Resemblyzer); below the ~0.70 impostor floor
     "speaker_continuity_window_s": 15.0,    # was hardcoded 60.0
-    "speaker_continuity_margin": 0.10,      # last speaker must beat 2nd-nearest known by this to "continue" (anti-latch, 2026-06-15)
+    "speaker_continuity_margin": 0.12,      # last speaker must beat 2nd-nearest known by this to "continue" (anti-latch, 2026-06-15; WeSpeaker-rescaled 2026-06-17)
+    # --- Open-set rejection guard (WeSpeaker anti-model + s-norm, 2026-06-17) --
+    # Layered on top of the raw known-speaker accept in speaker/identifier.py.
+    # When True, an otherwise-accepted known match must ALSO clear the anti-model
+    # / s-norm bar (snorm >= min_snorm AND am_margin >= min_am_margin) or it falls
+    # through to continuity -> unknown. Fixes the P1 noise-collapse false accept
+    # (degraded capture stamped onto the enrolled print nearest the noise centroid,
+    # measured = Erin). Default OFF; min_* are PROVISIONAL until calibrated live by
+    # ops/open_set_calibrate.py against real genuine/impostor WeSpeaker captures.
+    # Re-read per identify() so it's live-flippable without restart.
+    "open_set_reject_enabled": False,
+    "open_set_min_snorm": 0.0,              # s-norm at/above this required to accept
+    "open_set_min_am_margin": 0.0,          # anti-model margin (s_raw - max_cohort_sim) at/above this
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in

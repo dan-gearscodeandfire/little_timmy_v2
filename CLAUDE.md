@@ -216,7 +216,7 @@ Tunables (env-overridable in `config.py`): `PROACTIVE_SPEECH_ENABLED`, `PROACTIV
     config.py                  # SERVICES dict (incl. booth_mockup), CONVERSATION_MODELS dropdown
 
   booth_display/               # Legacy Open Sauce visitor screen (server.py + static/); service inactive
-  booth_mockup/                # Active Concept B visitor overlay on :8090 (HTTPS self-signed)
+  booth_mockup/                # Active Concept B visitor overlay on :8090 (HTTPS self-signed); index.html wears the "Combat Cogitator" skin since 2026-06-16 (see Operating → Booth visitor skin)
 ```
 
 Backup files named `*.bak.<reason>-YYYY-MM-DD` are intentional — Dan keeps a deep history of prior states. Don't delete them.
@@ -247,6 +247,21 @@ LT-OS dashboard dropdown. Choice persists to `data/lt_runtime_toggles.json`. Pic
 
 ### Open the booth display
 LT-OS dashboard → **Booth Display** panel → **🎪 Open booth display**. Opens `https://<host>:8090/` in a named popup window (`lt_booth_display`). First time per browser: accept the self-signed cert. Requires `booth-mockup.service` active (toggle in services table if not).
+
+### Booth visitor skin ("Combat Cogitator", 2026-06-16)
+`booth_mockup/index.html` is reskinned: red T-800 × Warhammer-40K Adeptus-Mechanicus look (Copperplate Gothic headers + scene, brass ✠ litany band `++ AVE OMNISSIAH · THE FLESH IS WEAK · THE MACHINE ENDURES ++`, targeting reticle, scanlines). **Served via FileResponse → HTML edits need NO restart, just reload.**
+- **All features preserved** — only the `<style>` block was swapped, 3 decorative divs injected; the entire `<script>` (WebRTC, presence/context/face polling, takeover) is byte-identical. Repaint trick: the page's JS sets inline colors via CSS vars (`--bone*`, `--signal`, `--shadow*`), so the porter keeps those var NAMES and only changes their VALUES → JS-driven content recolors for free.
+- **Fonts self-hosted base64-embedded** in the HTML (this server has no `/static` route). Copperplate woff2 sourced from okiMac, converted under `~/claude/demerzel/.staging/booth_display/static/fonts/`.
+- **Gotcha:** use ✠ Maltese cross (U+2720), NOT ☠ skull (U+2620) — Windows Chrome renders ☠ as a color emoji (looked like a creature).
+- **Build/revert:** porter `~/claude/demerzel/.staging/booth_display/_port_cogitator_to_8090.py` (run it to (re)apply; reads live, writes live). Original backed up at `booth_mockup/index.html.bak.2026-06-16-pre-cogitator` (one `cp` to revert). Six alternate skins (Aliens/Mechanicus/T-800/Dune/Futura/Cogitator) + generator live in `.staging/booth_display/static/`.
+- Note: the LT-OS-launched display is **:8090 booth_mockup**, NOT the legacy :8085 booth_display/visitor.html — don't reskin the wrong surface.
+
+### Booth metrics HUD (2026-06-16)
+`booth_mockup/index.html` carries a live operational HUD over the Combat Cogitator skin (new panels in commented `added 2026-06-16` blocks; centre `.reticle` removed). **HTML edits need only a reload; `server.py` edits need `sudo systemctl restart booth-mockup.service`.**
+- **`/ltos/{path}` GET proxy** added to `booth_mockup/server.py` (`LTOS_URL=http://127.0.0.1:8894`, mirrors the existing `/lt/`→:8893 proxy) so the page can reach host/GPU telemetry on **LT-OS :8894**.
+- **Panels & sources:** vitals donuts VRAM/SYS-RAM/CPU/GPU-load ← `/ltos/api/host` (2s, shared sysfs helper `ops/gpu_sysfs.py`); cogitator telemetry payload-tokens/latency-segments(1st|gen|tts)/completion ← `/lt/api/metrics` (4s); 3×3 mood matrix ← `/lt/api/mood`; 4 health pips ← `/lt/api/health` (`llm_3b` down → intentionally not shown); uptime/turns/GEN-t/s meta row. The sample face-ID bracket is a static demo (live faces still draw their own carets).
+- **Layout (2026-06-16):** TR "retrieved memories" panel `.context-panel.tr` `bottom` raised 200→300px so it clears the `.telemetry` block below it.
+- **Don't re-run the cogitator porter** — it asserts a byte-identical `<script>` and the JS/DOM is now hand-edited. Live `index.html` is source-of-truth. Backups: `index.html.bak.2026-06-16-pre-metrics-hud`, `…-pre-cogitator`. Rationale/history: Obsidian `Zettelkasten/booth-metrics-hud-2026-06-16.md`.
 
 ### Health / logs
 ```bash
