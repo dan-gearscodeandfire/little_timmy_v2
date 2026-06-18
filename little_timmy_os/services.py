@@ -582,6 +582,8 @@ async def check_lt_toggles_status() -> dict:
         "hearing_enabled": False,
         "proactive_speech_enabled": False,
         "proactive_speech_master": True,
+        "classifier_enabled": False,
+        "classifier_up": False,
         "error": None,
     }
     try:
@@ -589,11 +591,15 @@ async def check_lt_toggles_status() -> dict:
             v = await client.get(f"{cfg.TIMMY_BASE_URL}/api/vision/auto_poll")
             h = await client.get(f"{cfg.TIMMY_BASE_URL}/api/hearing")
             p = await client.get(f"{cfg.TIMMY_BASE_URL}/api/proactive")
+            c = await client.get(f"{cfg.TIMMY_BASE_URL}/api/classifier")
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
             pj = p.json()
             out["proactive_speech_enabled"] = bool(pj.get("enabled", False))
             out["proactive_speech_master"] = bool(pj.get("master", True))
+            cj = c.json()
+            out["classifier_enabled"] = bool(cj.get("enabled", False))
+            out["classifier_up"] = bool(cj.get("up", False))
     except Exception as e:
         out["error"] = str(e)[:120]
     return out
@@ -662,5 +668,28 @@ async def toggle_proactive_speech(enabled: bool) -> dict:
             return result
     except Exception as e:
         await _broadcast_status(f"Proactive speech toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_classifier(enabled: bool) -> dict:
+    """Enable/disable LT's first-pass tool-call classifier (:8092). Persists the
+    LT-side runtime toggle; read live per turn by conversation/tool_router.py
+    (no restart). Safe to flip even if :8092 is down -- LT degrades gracefully."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} tool-call classifier...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/classifier",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Tool-call classifier {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Classifier toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}

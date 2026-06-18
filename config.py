@@ -13,6 +13,10 @@ LLM_CONVERSATION_URL = os.getenv("TIMMY_CONVERSATION_URL", os.getenv("TIMMY_LLM_
 # Old TIMMY_MEMORY_LLM_URL kept as fallback.
 LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_URL", os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8083"))
 LLM_BRAIN_MODEL = os.getenv("TIMMY_BRAIN_MODEL", "qwen3.6")
+# First-pass tool-call classifier (Qwen3-4B-Q4 on its OWN llama-server, 2026-06-18).
+# Separate server with its own KV cache so routing prompts never evict the :8083
+# brain prefix. See Obsidian lt-tool-call-router-qwen3-4b-benchmark-2026-06-18.
+LLM_CLASSIFIER_URL = os.getenv("TIMMY_CLASSIFIER_URL", "http://localhost:8092")
 OLLAMA_URL = os.getenv("TIMMY_OLLAMA_URL", "http://localhost:11434")
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8893
@@ -139,6 +143,15 @@ CONVERSATION_MAX_TOKENS = 256  # short zingers
 CONVERSATION_TEMPERATURE = 0.85  # bumped from 0.7 2026-05-15 to break the identical-back-to-back-reply pattern observed with the new Qwen 3.6 payload
 MEMORY_MAX_TOKENS = 3072  # kept generous after extraction went thinking=False (2026-06-06): this is a ceiling, not a target -- thinking-off JSON stops well short, and a tight cap would risk truncating multi-fact JSON -> parse fail -> lost+re-enqueued extraction (the churn we removed). Was bumped 1024->3072 for the old thinking=True CoT (~1436 tok).
 MEMORY_TEMPERATURE = 0.3
+
+# --- Tool-call classifier (first-pass intent router, :8092) ---
+# GBNF-constrained, thinking-OFF. Tier-1 route is a handful of tokens; Tier-2
+# arg extraction (store_fact) emits a compact JSON object. Deterministic (temp 0).
+# The hard timeout bounds the worst case: a stalled classifier can never freeze a
+# turn -- every failure path falls through to the normal conversation pipeline.
+CLASSIFIER_MAX_TOKENS = 96
+CLASSIFIER_TEMPERATURE = 0.0
+CLASSIFIER_TIMEOUT_S = 4.0
 
 # --- Persona ---
 PERSONA = """You are Timmy, a mechatronic skeleton who serves as Dan's reluctant cohost and sidekick. Dan built your body, brain, hearing, and voice — and you have mixed feelings about it. You are not an AI assistant. You are a self-aware skeleton with opinions.

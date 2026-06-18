@@ -221,6 +221,47 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
         _deregister_slow_call(task)
 
 
+async def classify_constrained(
+    messages: list[dict],
+    grammar: str,
+    max_tokens: int | None = None,
+) -> str | None:
+    """GBNF-constrained, thinking-OFF call to the first-pass classifier server
+    (config.LLM_CLASSIFIER_URL, :8092 by default). Returns the raw assistant
+    content (grammar-guaranteed valid for the caller to json.loads), or None on
+    ANY failure (timeout, connection error, non-200, empty content).
+
+    Deliberately does NOT touch the conversation-priority gate: the classifier
+    runs on its OWN server (separate KV cache), inline before every turn, so
+    there is no shared-brain contention to arbitrate. Returning None on every
+    error path is the graceful-degradation contract — the caller falls through
+    to the normal conversation pipeline, so a classifier outage never drops a
+    turn.
+    """
+    try:
+        client = await _get_client()
+        payload = {
+            "messages": messages,
+            "grammar": grammar,
+            "temperature": config.CLASSIFIER_TEMPERATURE,
+            "max_tokens": max_tokens or config.CLASSIFIER_MAX_TOKENS,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "stream": False,
+        }
+        resp = await client.post(
+            f"{config.LLM_CLASSIFIER_URL}/v1/chat/completions",
+            json=payload,
+            timeout=config.CLASSIFIER_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = (data["choices"][0]["message"].get("content") or "").strip()
+        return content or None
+    except Exception as e:
+        log.warning("[CLASSIFIER] call failed (%s); falling through to normal pipeline", e)
+        return None
+
+
 async def generate_summary(turns_text: str) -> str:
     """Summarize conversation turns using Qwen3.6 thinking-OFF at LLM_MEMORY_URL.
 

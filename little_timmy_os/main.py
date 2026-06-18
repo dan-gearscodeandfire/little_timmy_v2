@@ -102,7 +102,7 @@ async def timmy_ws_relay():
                 async for msg in ws:
                     try:
                         data = json.loads(msg)
-                        if data.get("type") in ("turn", "metrics", "retrieval"):
+                        if data.get("type") in ("turn", "metrics", "retrieval", "tool_call", "classifier_metric"):
                             log.debug("Relay: %s event", data["type"])
                             await broadcast_event(data["type"], data)
                     except (json.JSONDecodeError, KeyError):
@@ -165,6 +165,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         await broadcast_event("lt_toggles", toggles)
                     elif svc_id == "proactive_speech":
                         result = await services.toggle_proactive_speech(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "classifier":
+                        result = await services.toggle_classifier(desired)
                         toggles = await services.check_lt_toggles_status()
                         await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
@@ -700,6 +704,12 @@ async def toggle_proactive_speech(data: dict):
     return await services.toggle_proactive_speech(bool(data.get("enabled", True)))
 
 
+@app.post("/api/classifier/toggle")
+async def toggle_classifier(data: dict):
+    """Enable/disable LT's first-pass tool-call classifier (:8092). Live; no restart."""
+    return await services.toggle_classifier(bool(data.get("enabled", True)))
+
+
 async def health_poll_loop():
     """Background task: poll service health and broadcast updates."""
     while True:
@@ -837,6 +847,7 @@ header .uptime {
   grid-column: 1 / -1;
 }
 .main-content > div:first-child #services,
+.main-content > div:first-child #lt-runtime-toggles,
 .main-content > div:first-child #streamerpi-controls {
   display: flex;
   flex-wrap: wrap;
@@ -1222,6 +1233,13 @@ header .uptime {
 </head>
 <body>
 
+<!-- Tool-call flash banner (2026-06-18). Slides in when the classifier routes a
+     turn to a tool, naming which tool fired; auto-hides after a few seconds. -->
+<div id="tool-call-flash" style="display:none; position:fixed; top:16px; left:50%;
+     transform:translateX(-50%); z-index:9999; background:#1f6feb; color:#fff;
+     padding:10px 18px; border-radius:8px; font-weight:bold; font-size:14px;
+     box-shadow:0 4px 16px rgba(0,0,0,0.5); border:1px solid #58a6ff;"></div>
+
 <header>
   <h1>LITTLE TIMMY OS</h1>
   <span class="uptime" id="uptime">Connecting...</span>
@@ -1243,6 +1261,80 @@ header .uptime {
     <details class="panel" open>
       <summary><h2>Services</h2></summary>
       <div id="services"></div>
+      <!-- LT-side runtime toggles (relocated out of streamerpi Controls 2026-06-18):
+           these gate Little Timmy itself, not the Pi, so they belong with the
+           service cards above (whisper.cpp, ollama, brain), not under streamerpi. -->
+      <div id="lt-runtime-toggles">
+        <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Hearing (mic → STT)</div>
+            <div class="service-detail" id="hearing-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="hearing-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Mic VU meter (relocated out of streamerpi Controls 2026-06-18): it's
+             LT's own mic level, not a Pi control. Data from /api/audio/diag. -->
+        <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div class="service-name">
+              Mic Level (VU)
+              <span id="vu-speech-dot" title="VAD speech-active"
+                    style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#30363d; margin-left:6px; vertical-align:middle;"></span>
+            </div>
+            <div class="service-detail" id="vu-readout" style="font-family:monospace; font-size:11px;">cur -- · pk -- · vad --</div>
+          </div>
+          <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
+            <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
+            <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
+            <!-- Energy floor: onset below this peak is ignored as background. -->
+            <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
+          </div>
+          <!-- Energy-floor control: peak-amplitude onset gate. 0 == off. Set
+               between the room floor and your speaking peak (watch the bar). -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px; font-size:11px; color:#8b949e;">
+            <span style="white-space:nowrap;">Onset floor</span>
+            <input type="range" id="vu-floor-slider" min="0" max="0.30" step="0.005" value="0"
+                   oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
+                   style="flex:1; accent-color:#f0883e; cursor:pointer;">
+            <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
+          </div>
+          <!-- Auto-calibrate: phase 1 measures the room (stay quiet), phase 2
+               measures the voice (talk), then sets the floor between them. -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px;">
+            <button id="vu-cal-btn" onclick="autoCalibrateFloor()"
+                    style="font-size:11px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer; white-space:nowrap;">
+              Auto-calibrate floor</button>
+            <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
+          </div>
+        </div>
+        <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Proactive Speech (unprompted)</div>
+            <div class="service-detail" id="proactive-speech-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="proactive-speech-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- First-pass tool-call classifier (Qwen3-4B :8092, 2026-06-18). When ON,
+             each utterance is routed by the classifier before the brain; store_fact
+             commands execute as a tool instead of a chat reply. Detail line shows
+             whether :8092 is reachable. -->
+        <div class="service-card" id="classifier-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Tool-Call Classifier (Qwen3-4B :8092)</div>
+            <div class="service-detail" id="classifier-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="classifier-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('classifier', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
         <div class="service-card" id="streamerpi-main-card" style="border-left:3px solid #484f58;"
@@ -1293,61 +1385,6 @@ header .uptime {
           </div>
           <label class="toggle" id="vision-auto-poll-toggle">
             <input type="checkbox" onchange="toggleLTFlag('vision_auto_poll', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Hearing (mic → STT)</div>
-            <div class="service-detail" id="hearing-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="hearing-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- Mic VU meter: current level + peak-hold marker. Data from LT's
-             /api/audio/diag (last_peak 0..1, last_vad_prob 0..1). -->
-        <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
-          <div class="service-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <div class="service-name">
-              Mic Level (VU)
-              <span id="vu-speech-dot" title="VAD speech-active"
-                    style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#30363d; margin-left:6px; vertical-align:middle;"></span>
-            </div>
-            <div class="service-detail" id="vu-readout" style="font-family:monospace; font-size:11px;">cur -- · pk -- · vad --</div>
-          </div>
-          <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
-            <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
-            <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
-            <!-- Energy floor: onset below this peak is ignored as background. -->
-            <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
-          </div>
-          <!-- Energy-floor control: peak-amplitude onset gate. 0 == off. Set
-               between the room floor and your speaking peak (watch the bar). -->
-          <div style="display:flex; align-items:center; gap:8px; margin-top:7px; font-size:11px; color:#8b949e;">
-            <span style="white-space:nowrap;">Onset floor</span>
-            <input type="range" id="vu-floor-slider" min="0" max="0.30" step="0.005" value="0"
-                   oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
-                   style="flex:1; accent-color:#f0883e; cursor:pointer;">
-            <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
-          </div>
-          <!-- Auto-calibrate: phase 1 measures the room (stay quiet), phase 2
-               measures the voice (talk), then sets the floor between them. -->
-          <div style="display:flex; align-items:center; gap:8px; margin-top:7px;">
-            <button id="vu-cal-btn" onclick="autoCalibrateFloor()"
-                    style="font-size:11px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer; white-space:nowrap;">
-              Auto-calibrate floor</button>
-            <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
-          </div>
-        </div>
-        <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Proactive Speech (unprompted)</div>
-            <div class="service-detail" id="proactive-speech-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="proactive-speech-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -1413,13 +1450,9 @@ header .uptime {
           </div>
         </div>
       </div>
-      <div class="model-selector" id="model-selector">
-        <label>Conversation LLM Model</label>
-        <select id="model-select" onchange="switchModel(this.value)" disabled>
-          <option value="">Loading...</option>
-        </select>
-        <div class="model-status" id="model-status"></div>
-      </div>
+      <!-- Conversation-model dropdown removed 2026-06-18 (Dan): the Llama-3B-vs-X
+           switcher is retired; Qwen3.6 (:8083) is the permanent brain, shown as
+           its own service card above. -->
     </details>
   </div>
   <div>
@@ -1551,6 +1584,7 @@ header .uptime {
       <summary><h2>Latency (current turn)</h2></summary>
       <div id="metrics">
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
+        <div class="metric-row"><span class="label">Tool filter (Qwen3-4B)</span><span class="value" id="m-classifier">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
         <div class="metric-row"><span class="label">LLM 1st token</span><span class="value" id="m-llm-ft">--</span></div>
         <div class="metric-row"><span class="label">LLM total</span><span class="value" id="m-llm">--</span></div>
@@ -1704,7 +1738,7 @@ header .uptime {
 </div>
 
 <script>
-const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "conversation_llm", "whisper", "little_timmy", "booth_mockup"];
+const SERVICE_ORDER = ["postgresql", "ollama", "qwen36", "qwen36_vision", "whisper", "little_timmy", "booth_mockup"];
 let serviceState = {};
 let busyServices = new Set();
 let modelSwitching = false;
@@ -1768,6 +1802,7 @@ function connectWS() {
       ltFlagBusy.vision_auto_poll = false;
       ltFlagBusy.hearing = false;
       ltFlagBusy.proactive_speech = false;
+      ltFlagBusy.classifier = false;
       applyLTToggles(msg);
     } else if (msg.type === "turn") {
       addTurn(msg.role, msg.content, msg.speaker);
@@ -1775,13 +1810,20 @@ function connectWS() {
       updateMetricsFromWS(msg);
     } else if (msg.type === "retrieval") {
       renderRetrieval(msg);
+    } else if (msg.type === "tool_call") {
+      flashToolCall(msg);
+    } else if (msg.type === "classifier_metric") {
+      const el = document.getElementById("m-classifier");
+      if (el && typeof msg.ms === "number") el.textContent = msg.ms + "ms";
     }
   };
 }
 
 function renderModelSelector(models, current) {
+  // Dropdown retired 2026-06-18 (Dan). Element removed; no-op if absent.
   currentModel = current;
   const sel = document.getElementById("model-select");
+  if (!sel) return;
   sel.innerHTML = "";
   for (const [id, name] of Object.entries(models)) {
     const opt = document.createElement("option");
@@ -1791,13 +1833,15 @@ function renderModelSelector(models, current) {
     sel.appendChild(opt);
   }
   sel.disabled = modelSwitching;
-  document.getElementById("model-status").textContent = modelSwitching ? "Switching..." : "";
+  const st = document.getElementById("model-status");
+  if (st) st.textContent = modelSwitching ? "Switching..." : "";
 }
 
 function switchModel(modelId) {
+  const sel = document.getElementById("model-select");
+  if (!sel) return;  // dropdown retired
   if (!modelId || modelId === currentModel || modelSwitching) return;
   modelSwitching = true;
-  const sel = document.getElementById("model-select");
   sel.disabled = true;
   document.getElementById("model-status").textContent = "Switching...";
   ws.send(JSON.stringify({type: "switch_model", model: modelId}));
@@ -2055,7 +2099,7 @@ function renderServices() {
 }
 
 function getPort(sid) {
-  const ports = {postgresql:5432, ollama:11434, gptoss120b:8080, qwen36:8083, conversation_llm:8081, whisper:8891, little_timmy:8893};
+  const ports = {postgresql:5432, ollama:11434, gptoss120b:8080, qwen36:8083, whisper:8891, little_timmy:8893};
   return ports[sid] || "?";
 }
 
@@ -2117,6 +2161,7 @@ async function pollMetrics() {
     const m = await r.json();
     if (!m.error) {
       document.getElementById("m-stt").textContent = m.last_stt_ms != null ? m.last_stt_ms + "ms" : "--";
+      document.getElementById("m-classifier").textContent = m.last_classifier_ms != null ? m.last_classifier_ms + "ms" : (m.classifier_enabled ? "--" : "off");
       document.getElementById("m-retrieval").textContent = m.last_retrieval_ms != null ? m.last_retrieval_ms + "ms" : "--";
       document.getElementById("m-llm-ft").textContent = m.last_llm_first_token_ms != null ? m.last_llm_first_token_ms + "ms" : "--";
       document.getElementById("m-llm").textContent = m.last_llm_total_ms != null ? m.last_llm_total_ms + "ms" : "--";
@@ -2409,16 +2454,27 @@ const LT_FLAGS = {
     enabledDetail: 'Reacts to visual events (cooldown 120s)',
     disabledDetail: 'Silent unless spoken to',
   },
+  classifier: {
+    cardId: 'classifier-card',
+    toggleId: 'classifier-toggle',
+    detailId: 'classifier-detail',
+    route: '/api/classifier/toggle',
+    enabledDetail: 'Routing utterances (:8092 up)',
+    disabledDetail: 'Off — all utterances go straight to the brain',
+  },
 };
-const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null };
-const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false };
+const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null };
+const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false };
 let ltProactiveMaster = true;  // config kill-switch; false => toggle is inert
+let ltClassifierUp = false;    // :8092 reachable? surfaced in the classifier detail line
 
 function applyLTToggles(data) {
   if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
   if (typeof data.hearing_enabled === 'boolean') ltFlagState.hearing = data.hearing_enabled;
   if (typeof data.proactive_speech_enabled === 'boolean') ltFlagState.proactive_speech = data.proactive_speech_enabled;
   if (typeof data.proactive_speech_master === 'boolean') ltProactiveMaster = data.proactive_speech_master;
+  if (typeof data.classifier_enabled === 'boolean') ltFlagState.classifier = data.classifier_enabled;
+  if (typeof data.classifier_up === 'boolean') ltClassifierUp = data.classifier_up;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
 }
 
@@ -2428,6 +2484,21 @@ async function pollLTToggles() {
     const data = await r.json();
     applyLTToggles(data);
   } catch(e) {}
+}
+
+let _toolFlashTimer = null;
+function flashToolCall(msg) {
+  const el = document.getElementById('tool-call-flash');
+  if (!el) return;
+  const name = msg.name || 'tool';
+  let detail = '';
+  if (name === 'store_fact' && msg.subject) {
+    detail = ' — ' + msg.subject + '.' + (msg.predicate || '') + ' = ' + (msg.value || '');
+  }
+  el.textContent = '🛠 tool call: ' + name + detail;
+  el.style.display = 'block';
+  if (_toolFlashTimer) clearTimeout(_toolFlashTimer);
+  _toolFlashTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
 function updateLTFlagUI(flag) {
@@ -2443,13 +2514,17 @@ function updateLTFlagUI(flag) {
   // even if the runtime toggle reads on -- surface that so the switch isn't
   // misleading.
   const masterOff = (flag === 'proactive_speech' && !ltProactiveMaster);
-  if (card)   card.style.borderLeftColor = masterOff ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
+  // Classifier enabled but its :8092 server is unreachable: surface as amber —
+  // LT still works (degrades to normal pipeline), but the tool path is inert.
+  const clsDown = (flag === 'classifier' && enabled && !ltClassifierUp);
+  if (card)   card.style.borderLeftColor = (masterOff || clsDown) ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
   if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
   if (detail) {
     if (busy)                  detail.textContent = 'Toggling...';
     else if (enabled === null) detail.textContent = 'Checking...';
     else if (masterOff)        detail.textContent = 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)';
+    else if (clsDown)          detail.textContent = 'ON, but :8092 unreachable — utterances fall through to the brain';
     else if (enabled)          detail.textContent = def.enabledDetail;
     else                       detail.textContent = def.disabledDetail;
   }

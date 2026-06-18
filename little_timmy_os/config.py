@@ -23,11 +23,6 @@ CONVERSATION_MODELS = {
         "file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         "params": "-ngl 99 -c 8192 -np 1",
     },
-    "llama3.2-3b": {
-        "name": "Llama 3.2 3B Q4",
-        "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "params": "-ngl 99 -c 8192 -np 1",
-    },
     "llama3.1-8b": {
         "name": "Llama 3.1 8B Q4",
         "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
@@ -38,24 +33,19 @@ CONVERSATION_MODELS = {
         "file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
         "params": "-ngl 99 -c 8192 -np 1",
     },
-    # 2026-05-14: Qwen3.6 conversation-tier option. Routes LT to the always-
-    # running qwen36-server.service on :8083 (the brain that already handles
-    # memory extraction + rollup summaries) instead of spawning a duplicate
-    # Qwen3.6 on :8081. Saves the ~22 GB GPU a duplicate would cost and
-    # ~2 GB by retiring the Llama 3B server while selected. LT's priority
-    # gate in llm/client.py ensures conversation always preempts in-flight
-    # memory/rollup calls so this shared-model setup never queues a user
-    # reply behind a 15-45 s thinking-on extraction.
-    "qwen36": {
-        "name": "Qwen3.6 brain (thinking-off, shared :8083)",
-        "external_url": "http://localhost:8083",
-        "file": None,
-        "params": None,
-    },
+    # 2026-06-18 (Dan): the Qwen3.6 brain (:8083) is intentionally NOT a dropdown
+    # option. It's the always-on permanent brain, already represented by its own
+    # Services health card (SERVICES["qwen36"]); listing it here duplicated the
+    # :8083 entry in the Services panel. Conversation routing to :8083 is held
+    # LT-side by runtime_toggles "conversation_url_override" and is unaffected by
+    # this dropdown. The dropdown now lists only spawnable alternate models.
 }
 
-# Track which model is currently loaded
-current_conversation_model = "llama3.2-3b"
+# Track which model is currently loaded. The Llama-3B-vs-X conversation-model
+# switcher is retired (2026-06-18, Dan): Qwen3.6 (:8083) is the permanent brain,
+# routed LT-side via runtime_toggles. This default is now just an internal
+# fallback for the dead switch path — not displayed (the dropdown was removed).
+current_conversation_model = "qwen2.5-7b"
 
 SERVICES = {
     "postgresql": {
@@ -72,13 +62,16 @@ SERVICES = {
         "systemd": "ollama",
         "description": "Embeddings (nomic-embed-text, 768-dim)",
     },
+    # Retired conversation-tier spawn target (:8081). Kept only so the dead
+    # switch path in services.py doesn't KeyError; removed from SERVICE_ORDER so
+    # it no longer renders in the dashboard (Qwen3.6 :8083 is the brain now).
     "conversation_llm": {
-        "name": "Llama 3.2 3B Q4",
+        "name": "Conversation LLM (:8081, retired spawn)",
         "port": 8081,
         "health_url": "http://localhost:8081/health",
         "systemd": None,
-        "start_cmd": None,  # built dynamically from current_conversation_model
-        "description": "Conversation LLM",
+        "start_cmd": None,
+        "description": "Retired spawnable conversation server (replaced by the :8083 brain).",
     },
     "whisper": {
         "name": "whisper.cpp",

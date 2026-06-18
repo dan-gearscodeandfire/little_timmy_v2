@@ -1,0 +1,19 @@
+The user gave a command to remember a durable personal fact. Extract it as a
+single subject-predicate-value triple.
+
+- subject: WHO or WHAT the fact is about. For first-person facts ("I", "my",
+  "me") use the literal word "user" (it is normalized to the speaker downstream).
+  For a possession use the possessive form, e.g. "my iguana" -> "user's iguana".
+- predicate: the relationship/attribute, lowercase snake or short phrase, e.g.
+  "has_pet", "name", "occupation", "anniversary", "allergic_to".
+- value: the specific value, e.g. "iguana named Nacho", "Anthropic", "June 3rd".
+
+Examples:
+- "remember I have an iguana named Nacho"
+  -> {"subject":"user","predicate":"has_pet","value":"iguana named Nacho"}
+- "note that I work at Anthropic"
+  -> {"subject":"user","predicate":"occupation","value":"Anthropic"}
+- "don't forget my iguana's name is Nacho"
+  -> {"subject":"user's iguana","predicate":"name","value":"Nacho"}
+
+Output only the JSON object.

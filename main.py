@@ -48,6 +48,7 @@ from web.app import app, init as web_init, broadcast_event, update_metrics
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
 from conversation.enroll_intent import detect_enroll_intent
+from conversation import tool_router
 from vision.supervisor import BehaviorSupervisor
 from presence import (
     RoomLedger,
@@ -488,6 +489,16 @@ class Orchestrator:
                 await self._introductions.ask_name(unknown_info)
                 return
 
+        # First-pass tool-call classifier (gated by runtime_toggles
+        # "classifier_enabled", default OFF). On a recognized intent it executes
+        # the tool, speaks the canned ACK, injects the assistant turn, and OWNS
+        # this turn -> early return, skipping the brain. Any non-tool utterance
+        # (or a classifier-server outage) returns False and falls through to the
+        # normal pipeline unchanged. The user turn was already added/broadcast above.
+        if await tool_router.maybe_handle_tool_call(
+                user_text, speaker_name, speaker_db_id, self.conversation, self.tts):
+            return
+
         await self._generate_response(
             user_text, stt_ms, t_start,
             speaker_name=speaker_name,
@@ -509,6 +520,12 @@ class Orchestrator:
             log.info("[USER:text] %s", text)
             await broadcast_event("turn", {"role": "user", "content": text})
             await self.conversation.add_user_turn(text)
+            # First-pass tool-call classifier on the text path too (default OFF).
+            # speaker is the operator/Dan on the typed path (matches the
+            # _generate_response defaults below).
+            if await tool_router.maybe_handle_tool_call(
+                    text, "dan", 1, self.conversation, self.tts):
+                return
             await self._generate_response(text, stt_ms=0, t_start=t_start,
                                            speaker_name="dan", speaker_db_id=1, spk_ms=0)
 
