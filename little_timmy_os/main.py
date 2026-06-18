@@ -1275,6 +1275,41 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <!-- Mic VU meter (relocated out of streamerpi Controls 2026-06-18): it's
+             LT's own mic level, not a Pi control. Data from /api/audio/diag. -->
+        <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div class="service-name">
+              Mic Level (VU)
+              <span id="vu-speech-dot" title="VAD speech-active"
+                    style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#30363d; margin-left:6px; vertical-align:middle;"></span>
+            </div>
+            <div class="service-detail" id="vu-readout" style="font-family:monospace; font-size:11px;">cur -- · pk -- · vad --</div>
+          </div>
+          <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
+            <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
+            <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
+            <!-- Energy floor: onset below this peak is ignored as background. -->
+            <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
+          </div>
+          <!-- Energy-floor control: peak-amplitude onset gate. 0 == off. Set
+               between the room floor and your speaking peak (watch the bar). -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px; font-size:11px; color:#8b949e;">
+            <span style="white-space:nowrap;">Onset floor</span>
+            <input type="range" id="vu-floor-slider" min="0" max="0.30" step="0.005" value="0"
+                   oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
+                   style="flex:1; accent-color:#f0883e; cursor:pointer;">
+            <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
+          </div>
+          <!-- Auto-calibrate: phase 1 measures the room (stay quiet), phase 2
+               measures the voice (talk), then sets the floor between them. -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:7px;">
+            <button id="vu-cal-btn" onclick="autoCalibrateFloor()"
+                    style="font-size:11px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer; white-space:nowrap;">
+              Auto-calibrate floor</button>
+            <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
+          </div>
+        </div>
         <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
             <div class="service-name">Proactive Speech (unprompted)</div>
@@ -1352,41 +1387,6 @@ header .uptime {
             <input type="checkbox" onchange="toggleLTFlag('vision_auto_poll', this.checked)">
             <span class="slider"></span>
           </label>
-        </div>
-        <!-- Mic VU meter: current level + peak-hold marker. Data from LT's
-             /api/audio/diag (last_peak 0..1, last_vad_prob 0..1). -->
-        <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
-          <div class="service-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <div class="service-name">
-              Mic Level (VU)
-              <span id="vu-speech-dot" title="VAD speech-active"
-                    style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#30363d; margin-left:6px; vertical-align:middle;"></span>
-            </div>
-            <div class="service-detail" id="vu-readout" style="font-family:monospace; font-size:11px;">cur -- · pk -- · vad --</div>
-          </div>
-          <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
-            <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
-            <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
-            <!-- Energy floor: onset below this peak is ignored as background. -->
-            <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
-          </div>
-          <!-- Energy-floor control: peak-amplitude onset gate. 0 == off. Set
-               between the room floor and your speaking peak (watch the bar). -->
-          <div style="display:flex; align-items:center; gap:8px; margin-top:7px; font-size:11px; color:#8b949e;">
-            <span style="white-space:nowrap;">Onset floor</span>
-            <input type="range" id="vu-floor-slider" min="0" max="0.30" step="0.005" value="0"
-                   oninput="onFloorInput(this.value)" onchange="commitFloor(this.value)"
-                   style="flex:1; accent-color:#f0883e; cursor:pointer;">
-            <span id="vu-floor-val" style="font-family:monospace; color:#f0883e; min-width:42px; text-align:right;">0.000</span>
-          </div>
-          <!-- Auto-calibrate: phase 1 measures the room (stay quiet), phase 2
-               measures the voice (talk), then sets the floor between them. -->
-          <div style="display:flex; align-items:center; gap:8px; margin-top:7px;">
-            <button id="vu-cal-btn" onclick="autoCalibrateFloor()"
-                    style="font-size:11px; padding:4px 10px; background:#3a2a1f; color:#f0883e; border:1px solid #f0883e; border-radius:4px; cursor:pointer; white-space:nowrap;">
-              Auto-calibrate floor</button>
-            <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
-          </div>
         </div>
         <!-- Mouth-mute (2026-06-12). Silences Timmy's replies + fillers (ears +
              matcher stay live; /api/announce still speaks). A clean bench for
