@@ -15,11 +15,20 @@ the Pi's state machine decides HOW to do it.
 
 import asyncio
 import logging
+import os
 import time
 
 import httpx
 
 log = logging.getLogger(__name__)
+
+# Engage speaker-targeting (2026-06-17): in engage mode, name the active
+# speaker so the Pi tracks THEIR face specifically rather than the geometric
+# largest/continuity pick — Timmy looks at who is actually talking in a
+# multi-face scene. Set TIMMY_ENGAGE_SPEAKER_TARGETING=false to revert to
+# geometry-only target selection (Pi then sees no target and falls back).
+ENGAGE_SPEAKER_TARGETING = os.getenv(
+    "TIMMY_ENGAGE_SPEAKER_TARGETING", "true").lower() == "true"
 
 # streamerpi behavioral API
 BEHAVIOR_URL = "https://192.168.1.110:8080/behavior"
@@ -94,23 +103,39 @@ class BehaviorSupervisor:
 
     # --- Event hooks (called by orchestrator) ---
 
+    def _engage_params(self) -> dict | None:
+        """Params for an engage command. When speaker-targeting is on and the
+        active speaker is a known identity, name them so the Pi locks THEIR
+        face (camera._select_target_face prefers the matching box) instead of
+        the geometric largest/continuity pick. Returns None when disabled or
+        the speaker is unknown — the Pi then falls back to geometry."""
+        name = self._current_speaker
+        if (ENGAGE_SPEAKER_TARGETING and name
+                and not name.startswith("unknown")):
+            return {"face_identity_target": name}
+        return None
+
     async def on_speech_detected(self, speaker_name: str):
         """Someone started speaking to Timmy."""
         self._last_speech_time = time.time()
         self._in_conversation = True
         self._current_speaker = speaker_name
 
-        # Tell Pi: speech started, engage mode
+        # Tell Pi: speech started, engage mode — naming the speaker so the Pi
+        # tracks them specifically in a multi-face scene (speaker-targeting).
         await self._send_event("speech_start")
-        await self._send_command("engage", priority="high", timeout_ms=30000)
+        await self._send_command("engage", priority="high", timeout_ms=30000,
+                                 params=self._engage_params())
 
         log.info("[SUPERVISOR] Speech from %s → engage", speaker_name)
 
     async def on_tts_start(self):
         """Timmy started speaking (TTS playing)."""
-        # Keep engage mode while Timmy talks
+        # Keep engage mode while Timmy talks — re-assert the speaker target so
+        # the lock survives the engage re-issue during a long reply.
         if self._last_mode != "engage":
-            await self._send_command("engage", priority="high", timeout_ms=30000)
+            await self._send_command("engage", priority="high", timeout_ms=30000,
+                                     params=self._engage_params())
 
     async def on_tts_end(self):
         """Timmy finished speaking."""
