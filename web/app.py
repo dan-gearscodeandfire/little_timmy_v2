@@ -29,6 +29,10 @@ _metrics: dict = {
     "memories_stored": 0,
     "facts_stored": 0,
     "started_at": None,
+    # First-pass tool-call classifier surface (2026-06-18). last_tool_call_ts
+    # advancing is the signal the Booth poll uses to flash the tool-fired badge.
+    "last_tool_call": None,
+    "last_tool_call_ts": 0,
 }
 
 
@@ -83,7 +87,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/metrics")
 async def get_metrics():
-    return _metrics
+    # Merge the live classifier toggle so the Booth poll (which only reads
+    # /api/metrics) can show the classifier-ON pip without a second request.
+    from persistence import runtime_toggles
+    return {**_metrics, "classifier_enabled": bool(runtime_toggles.get("classifier_enabled"))}
 
 
 @app.get("/api/conversation")
@@ -456,6 +463,7 @@ async def health_check():
             ("whisper_cpp", f"{config.WHISPER_URL}/health"),
             ("llm_3b", f"{config.LLM_CONVERSATION_URL}/health"),
             ("llm_brain", f"{config.LLM_MEMORY_URL}/health"),
+            ("llm_classifier", f"{config.LLM_CLASSIFIER_URL}/health"),
             ("ollama", f"{config.OLLAMA_URL}/api/tags"),
         ]:
             try:
@@ -637,6 +645,38 @@ async def set_hearing(payload: dict | None = None):
     enabled = bool((payload or {}).get("enabled", True))
     cap.set_hearing(enabled)
     return {"ok": True, "enabled": bool(cap.is_hearing_enabled), "muted": bool(cap.hearing_muted)}
+
+
+async def _classifier_up() -> bool:
+    """Probe the :8092 classifier server's /health."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{config.LLM_CLASSIFIER_URL}/health")
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+@app.get("/api/classifier")
+async def get_classifier():
+    """Read the first-pass tool-call classifier gate + whether :8092 is reachable."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("classifier_enabled")),
+        "up": await _classifier_up(),
+    }
+
+
+@app.post("/api/classifier")
+async def set_classifier(payload: dict | None = None):
+    """Enable/disable the first-pass classifier. Persisted by runtime_toggles,
+    read live per turn by conversation/tool_router.py -- no restart to flip."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("classifier_enabled", enabled)
+    return {"ok": True, "enabled": bool(runtime_toggles.get("classifier_enabled")),
+            "up": await _classifier_up()}
 
 
 # --- P4 face-flap debounce tuning (2026-06-11) -----------------------------

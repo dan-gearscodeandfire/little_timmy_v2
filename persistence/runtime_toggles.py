@@ -110,6 +110,16 @@ _DEFAULTS: dict = {
     "open_set_reject_enabled": False,
     "open_set_min_snorm": 0.0,              # s-norm at/above this required to accept
     "open_set_min_am_margin": 0.0,          # anti-model margin (s_raw - max_cohort_sim) at/above this
+    # --- First-pass tool-call classifier (Qwen3-4B :8092, 2026-06-18) ---------
+    # Master gate for the intent router that runs BEFORE the conversation brain.
+    # When True, each utterance is first classified by the :8092 server; a
+    # recognized intent (today: store_fact) routes to a tool instead of the LLM
+    # reply, and any non-tool utterance falls through to the normal pipeline.
+    # Default OFF (opt-in). Read live per turn by conversation/tool_router.py;
+    # also the LT-OS toggle target. Classifier-server outage degrades gracefully
+    # (classify returns None -> fall through), so flipping this ON is safe even
+    # if :8092 is down.
+    "classifier_enabled": False,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in

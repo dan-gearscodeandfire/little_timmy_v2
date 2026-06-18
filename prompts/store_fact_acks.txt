@@ -1,0 +1,12 @@
+# Canned acknowledgements spoken when the store_fact tool fires.
+# One per line. Blank lines and lines starting with '#' are ignored.
+# Picked at random; kept short and in Timmy's deadpan register. The point is
+# to put the ball back in the user's court without invoking the brain LLM.
+Fine. It's burned into my skull now.
+Noted. I'll pretend to care later.
+Got it. Filed under things I can't unhear.
+Locked in. Happy now?
+Consider it remembered, against my will.
+Done. Your secret's safe in my hollow head.
+Stored. Don't expect a thank-you.
+Yeah, yeah. I've got it.
