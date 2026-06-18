@@ -102,7 +102,7 @@ async def timmy_ws_relay():
                 async for msg in ws:
                     try:
                         data = json.loads(msg)
-                        if data.get("type") in ("turn", "metrics", "retrieval", "tool_call"):
+                        if data.get("type") in ("turn", "metrics", "retrieval", "tool_call", "classifier_metric"):
                             log.debug("Relay: %s event", data["type"])
                             await broadcast_event(data["type"], data)
                     except (json.JSONDecodeError, KeyError):
@@ -1260,6 +1260,45 @@ header .uptime {
     <details class="panel" open>
       <summary><h2>Services</h2></summary>
       <div id="services"></div>
+      <!-- LT-side runtime toggles (relocated out of streamerpi Controls 2026-06-18):
+           these gate Little Timmy itself, not the Pi, so they belong with the
+           service cards above (whisper.cpp, ollama, brain), not under streamerpi. -->
+      <div id="lt-runtime-toggles">
+        <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Hearing (mic → STT)</div>
+            <div class="service-detail" id="hearing-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="hearing-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Proactive Speech (unprompted)</div>
+            <div class="service-detail" id="proactive-speech-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="proactive-speech-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- First-pass tool-call classifier (Qwen3-4B :8092, 2026-06-18). When ON,
+             each utterance is routed by the classifier before the brain; store_fact
+             commands execute as a tool instead of a chat reply. Detail line shows
+             whether :8092 is reachable. -->
+        <div class="service-card" id="classifier-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Tool-Call Classifier (Qwen3-4B :8092)</div>
+            <div class="service-detail" id="classifier-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="classifier-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('classifier', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
         <div class="service-card" id="streamerpi-main-card" style="border-left:3px solid #484f58;"
@@ -1313,16 +1352,6 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Hearing (mic → STT)</div>
-            <div class="service-detail" id="hearing-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="hearing-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
         <!-- Mic VU meter: current level + peak-hold marker. Data from LT's
              /api/audio/diag (last_peak 0..1, last_vad_prob 0..1). -->
         <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
@@ -1357,30 +1386,6 @@ header .uptime {
               Auto-calibrate floor</button>
             <span id="vu-cal-status" style="font-size:11px; color:#8b949e;"></span>
           </div>
-        </div>
-        <div class="service-card" id="proactive-speech-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Proactive Speech (unprompted)</div>
-            <div class="service-detail" id="proactive-speech-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="proactive-speech-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('proactive_speech', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- First-pass tool-call classifier (Qwen3-4B :8092, 2026-06-18). When ON,
-             each utterance is routed by the classifier before the brain; store_fact
-             commands execute as a tool instead of a chat reply. Detail line shows
-             whether :8092 is reachable. -->
-        <div class="service-card" id="classifier-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Tool-Call Classifier (Qwen3-4B :8092)</div>
-            <div class="service-detail" id="classifier-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="classifier-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('classifier', this.checked)">
-            <span class="slider"></span>
-          </label>
         </div>
         <!-- Mouth-mute (2026-06-12). Silences Timmy's replies + fillers (ears +
              matcher stay live; /api/announce still speaks). A clean bench for
@@ -1582,6 +1587,7 @@ header .uptime {
       <summary><h2>Latency (current turn)</h2></summary>
       <div id="metrics">
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
+        <div class="metric-row"><span class="label">Tool filter (Qwen3-4B)</span><span class="value" id="m-classifier">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
         <div class="metric-row"><span class="label">LLM 1st token</span><span class="value" id="m-llm-ft">--</span></div>
         <div class="metric-row"><span class="label">LLM total</span><span class="value" id="m-llm">--</span></div>
@@ -1809,6 +1815,9 @@ function connectWS() {
       renderRetrieval(msg);
     } else if (msg.type === "tool_call") {
       flashToolCall(msg);
+    } else if (msg.type === "classifier_metric") {
+      const el = document.getElementById("m-classifier");
+      if (el && typeof msg.ms === "number") el.textContent = msg.ms + "ms";
     }
   };
 }
@@ -2151,6 +2160,7 @@ async function pollMetrics() {
     const m = await r.json();
     if (!m.error) {
       document.getElementById("m-stt").textContent = m.last_stt_ms != null ? m.last_stt_ms + "ms" : "--";
+      document.getElementById("m-classifier").textContent = m.last_classifier_ms != null ? m.last_classifier_ms + "ms" : (m.classifier_enabled ? "--" : "off");
       document.getElementById("m-retrieval").textContent = m.last_retrieval_ms != null ? m.last_retrieval_ms + "ms" : "--";
       document.getElementById("m-llm-ft").textContent = m.last_llm_first_token_ms != null ? m.last_llm_first_token_ms + "ms" : "--";
       document.getElementById("m-llm").textContent = m.last_llm_total_ms != null ? m.last_llm_total_ms + "ms" : "--";

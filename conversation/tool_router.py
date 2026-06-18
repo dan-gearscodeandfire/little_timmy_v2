@@ -119,7 +119,20 @@ async def maybe_handle_tool_call(
     if not runtime_toggles.get("classifier_enabled"):
         return False
 
+    # Time the Tier-1 route -- the "first-pass tool-call filter" latency that every
+    # utterance pays when the classifier is on. Published on EVERY turn (hit or
+    # fall-through) so the HUDs show the per-turn cost, not just on tool hits.
+    import time
+    t0 = time.perf_counter()
     route = await classify_intent(user_text)
+    classifier_ms = int((time.perf_counter() - t0) * 1000)
+    try:
+        from web.app import broadcast_event, update_metrics
+        update_metrics(last_classifier_ms=classifier_ms)
+        await broadcast_event("classifier_metric", {"ms": classifier_ms, "route": route})
+    except Exception:
+        log.debug("[CLASSIFIER] latency publish failed (non-fatal)", exc_info=True)
+
     if route != "store_fact":
         return False  # 'none', None (error), or unknown tool -> normal pipeline
 

@@ -418,6 +418,9 @@
       <div class="telemetry">
         <div class="ttag">cogitator telemetry</div>
         <div class="trow">
+          <div class="tk"><span>tool filter → qwen3-4b</span><b id="tkClsMs">—</b></div>
+        </div>
+        <div class="trow">
           <div class="tk"><span>payload → llm</span><b id="tkPayload">—</b></div>
           <div class="bar" id="tokBar"><div class="fill"></div></div>
           <div class="barlbl"><span id="tkMin">min —</span><span id="tkMax">— max</span></div>
@@ -1056,6 +1059,10 @@
         const r = await fetch('/lt/api/metrics', { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
+        // first-pass tool-call filter latency (Qwen3-4B :8092)
+        const clsMs = d.last_classifier_ms;
+        document.getElementById('tkClsMs').textContent =
+          (typeof clsMs === 'number') ? fmtMs(clsMs) : (d.classifier_enabled ? '—' : 'off');
         // payload tokens + observed min·max envelope
         const tok = d.last_est_prompt_tokens;
         if (typeof tok === 'number' && tok > 0) {

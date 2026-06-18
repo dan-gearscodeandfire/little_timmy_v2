@@ -33,6 +33,9 @@ _metrics: dict = {
     # advancing is the signal the Booth poll uses to flash the tool-fired badge.
     "last_tool_call": None,
     "last_tool_call_ts": 0,
+    # Tier-1 route latency (ms) of the :8092 first-pass filter, per turn. Shown
+    # as its own HUD row above payload->LLM on the Booth + LT-OS.
+    "last_classifier_ms": None,
 }
 
 
