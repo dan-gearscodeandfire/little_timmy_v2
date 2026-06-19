@@ -47,3 +47,6 @@ face_db_provenance.json
 
 # voice-capture artifacts (PII real-voice WAVs + synthetic cal audio; regenerable, ~52MB) — keep out of git
 ops/*_captures/
+
+# DB dumps (conversation_summary backups, PII) — keep out of git
+backups/

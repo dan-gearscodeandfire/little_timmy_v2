@@ -205,6 +205,27 @@ async def set_tts_mute(payload: dict | None = None):
     return {"ok": True, "muted": bool(runtime_toggles.get("tts_muted"))}
 
 
+@app.get("/api/guest_mode")
+async def get_guest_mode():
+    """Read the privacy/guest gate. When on, facts classified sensitive
+    (memory/pii.py: contact, location, financial, health/credentials,
+    family_minor) are withheld from prompt injection so Timmy can't speak them
+    via TTS in front of guests."""
+    from persistence import runtime_toggles
+    return {"guest_mode": bool(runtime_toggles.get("guest_mode"))}
+
+
+@app.post("/api/guest_mode")
+async def set_guest_mode(payload: dict | None = None):
+    """Flip the privacy/guest gate live (persisted by runtime_toggles, read per
+    turn in conversation/turn.py — no restart). Manual toggle wins; a
+    presence-driven auto layer may OR in later."""
+    from persistence import runtime_toggles
+    on = bool((payload or {}).get("guest_mode", True))
+    runtime_toggles.set("guest_mode", on)
+    return {"ok": True, "guest_mode": bool(runtime_toggles.get("guest_mode"))}
+
+
 @app.get("/api/mood")
 async def get_mood():
     """Current 2-axis mood state.

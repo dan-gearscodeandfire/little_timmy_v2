@@ -291,14 +291,25 @@ async def _do_extraction(item: dict):
                 subj_canonical = _normalize_subject(subj, speaker_name)
                 await store_fact(subj_canonical, pred, val, speaker_id=speaker_id)
 
-        for mem_data in parsed.get("memories", []):
-            mem_type = str(mem_data.get("type", "episodic")).strip()
-            content = str(mem_data.get("content", "")).strip()
-            if content and mem_type in ("episodic", "semantic", "procedural"):
-                await store_memory(mem_type, content, speaker_id=speaker_id)
+        # Vectorized memory creation is gated by config.PERSIST_EXTRACTED_MEMORIES
+        # (default False since 2026-06-18, per Dan): the structured `facts` writer
+        # above still runs; only the embedded episodic/semantic `memories` rows
+        # are suppressed. See config.PERSIST_EXTRACTED_MEMORIES.
+        mems = parsed.get("memories", [])
+        stored_mems = 0
+        if getattr(config, "PERSIST_EXTRACTED_MEMORIES", False):
+            for mem_data in mems:
+                mem_type = str(mem_data.get("type", "episodic")).strip()
+                content = str(mem_data.get("content", "")).strip()
+                if content and mem_type in ("episodic", "semantic", "procedural"):
+                    await store_memory(mem_type, content, speaker_id=speaker_id)
+                    stored_mems += 1
+        elif mems:
+            log.info("Skipped %d extracted memory(ies) "
+                     "(PERSIST_EXTRACTED_MEMORIES=False)", len(mems))
 
         log.info("Memory extraction complete: %d facts, %d memories",
-                 len(parsed.get("facts", [])), len(parsed.get("memories", [])))
+                 len(parsed.get("facts", [])), stored_mems)
 
     except asyncio.CancelledError:
         # Priority gate cancelled us mid-extraction so a user reply can use the

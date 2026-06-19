@@ -51,6 +51,32 @@ ROLLUP_AGE_SECONDS = 1800      # 30 min — trigger rollup for old turns (was 60
 ROLLUP_IDLE_DELAY_SECONDS = 20 # wait this long after last turn before firing rollup; prevents priority-gate starvation when conversation is active
 HOT_HARD_CEILING_TOKENS = 4000 # backstop ceiling (~1.6x HOT_MAX): when a rapid burst starves the idle rollup, drop oldest half synchronously (non-LLM placeholder). Bounds turn-DEPTH attention dilution that grows even while well under ctx (handoff 2026-06-10).
 HARD_CEILING_PLACEHOLDER = "[earlier turns omitted under load]"  # marker WarmSummary text written by the backstop; matched verbatim to skip cold-storage persistence
+PERSIST_COLD_SUMMARIES = False # 2026-06-18 (Dan): do NOT auto-embed stale warm rollups into the memories table. Rollups still summarize live hot/warm context for the in-prompt session; the OLDEST warm summary is simply dropped on overflow instead of persisted. Rationale: rollup summaries are low-density interaction gist that polluted retrieval (75% party noise, cleaned 69->16 on 2026-06-18) and the writer is dedup-free + the ranker is recency-blind. Set True to restore cold-storage persistence. See Obsidian lt-conversation-summary-cleanup-policy-2026-06-18.
+PERSIST_EXTRACTED_MEMORIES = False # 2026-06-18 (Dan): do NOT auto-create vectorized episodic/semantic memories from the extraction pipeline. The two-pass extractor (classify_durable -> extract_facts) STILL runs and STILL writes structured rows to the `facts` table (subject/predicate/value, deduped) -- only the `memories[]` -> store_memory (embedded) branch is suppressed. Rationale: with rollup persistence already off, this makes the structured `facts` table the sole auto-writer of durable memory; the vectorized `memories` tier is a low-frequency, low-signal byproduct (0 memories produced in the 24h before this change; last episodic 6-13, last semantic 6-11). Set True to restore extracted-memory persistence.
+
+# --- Privacy / PII gating (2026-06-18, Dan) ---
+# Facts are classified for sensitivity at creation (memory/pii.py, called from
+# memory.facts.store_fact). When the guest/privacy gate is active
+# (runtime_toggles 'guest_mode', + presence-auto later), sensitive facts are
+# dropped from prompt injection so Timmy can't speak them via TTS near guests.
+# DAUGHTER_NAMES: Dan's minor children -> any fact naming them is sensitive.
+# Names are kept OUT of source for privacy -> loaded at import from a gitignored
+# local file (data/daughter_names.json: a JSON list of strings; include any
+# DB-misspelling variants so existing rows still match). Missing file -> () and
+# name-based gating no-ops (memory/pii.py tolerates an empty tuple); the
+# "daughter/child" keyword gate still applies regardless.
+def _load_daughter_names():
+    import json
+    from pathlib import Path
+    try:
+        _p = Path(__file__).resolve().parent / "data" / "daughter_names.json"
+        _names = json.loads(_p.read_text())
+        return tuple(str(n) for n in _names) if isinstance(_names, list) else ()
+    except Exception:
+        return ()
+
+
+DAUGHTER_NAMES = _load_daughter_names()
 
 # --- Memory extraction queue (2026-06-03) ---
 # Per-exchange fact/memory extraction is fire-and-forget but shares the single

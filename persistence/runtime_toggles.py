@@ -132,6 +132,14 @@ _DEFAULTS: dict = {
     # blend on elliptical follow-ups; no effect on self-contained queries.
     # Default OFF (opt-in A/B). Read live per retrieve() -- no restart to flip.
     "query_resolution_enabled": False,
+    # --- Privacy / guest gate (2026-06-18, Dan) -------------------------------
+    # When True, facts classified sensitive (memory/pii.py: contact, location,
+    # financial, health/credentials, family_minor) are dropped from prompt
+    # injection in conversation/turn.py so Timmy can't speak them via TTS in
+    # front of guests. Manual toggle (LT-OS target). Read live per turn. The
+    # presence-driven AUTO layer will OR into the gate later -- manual wins.
+    # Default OFF.
+    "guest_mode": False,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
