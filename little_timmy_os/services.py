@@ -584,6 +584,8 @@ async def check_lt_toggles_status() -> dict:
         "proactive_speech_master": True,
         "classifier_enabled": False,
         "classifier_up": False,
+        "query_resolution_enabled": False,
+        "query_resolution_up": False,
         "error": None,
     }
     try:
@@ -592,6 +594,7 @@ async def check_lt_toggles_status() -> dict:
             h = await client.get(f"{cfg.TIMMY_BASE_URL}/api/hearing")
             p = await client.get(f"{cfg.TIMMY_BASE_URL}/api/proactive")
             c = await client.get(f"{cfg.TIMMY_BASE_URL}/api/classifier")
+            qr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/query_resolution")
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
             pj = p.json()
@@ -600,6 +603,9 @@ async def check_lt_toggles_status() -> dict:
             cj = c.json()
             out["classifier_enabled"] = bool(cj.get("enabled", False))
             out["classifier_up"] = bool(cj.get("up", False))
+            qj = qr.json()
+            out["query_resolution_enabled"] = bool(qj.get("enabled", False))
+            out["query_resolution_up"] = bool(qj.get("up", False))
     except Exception as e:
         out["error"] = str(e)[:120]
     return out
@@ -691,5 +697,30 @@ async def toggle_classifier(enabled: bool) -> dict:
             return result
     except Exception as e:
         await _broadcast_status(f"Classifier toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_query_resolution(enabled: bool) -> dict:
+    """Enable/disable LT's elliptical-query coreference resolution. Persists the
+    LT-side runtime toggle; read live per retrieve() by memory/retrieval.py (no
+    restart, once the code is loaded). When ON, a deictic follow-up is rewritten
+    to a standalone query via :8092 before embedding. Safe to flip even if :8092
+    is down -- retrieval degrades gracefully to the context blend."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} query resolution...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/query_resolution",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Query resolution {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Query resolution toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}

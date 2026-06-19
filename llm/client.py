@@ -262,6 +262,48 @@ async def classify_constrained(
         return None
 
 
+_RESOLVE_SYS = (
+    "Rewrite the user's LAST message as a single standalone search query. Replace "
+    "every pronoun or vague reference (it, its, that, there, them, they, he, him, "
+    "she, her) with the specific thing it refers to, taken from the conversation. "
+    "Keep it a short question. If nothing needs resolving, repeat the message "
+    "unchanged. Output ONLY the rewritten query, nothing else."
+)
+
+
+async def resolve_query(utterance: str, context_text: str) -> str | None:
+    """Coreference-resolve an elliptical utterance into a standalone search query
+    via the :8092 classifier server (UNCONSTRAINED, thinking-OFF). `context_text`
+    is the recent conversation transcript supplying antecedents. Returns the
+    rewritten query, or None on ANY failure / empty output (callers fall back to
+    the bare/blended query -- graceful degradation, same contract as
+    classify_constrained). Extractive by design: the model resolves the REFERENCE
+    from context, it does not invent the answer (cf. the rejected HyDE arm)."""
+    try:
+        client = await _get_client()
+        convo = f"{context_text}\nUser: {utterance}" if context_text else f"User: {utterance}"
+        resp = await client.post(
+            f"{config.LLM_CLASSIFIER_URL}/v1/chat/completions",
+            json={
+                "messages": [{"role": "system", "content": _RESOLVE_SYS},
+                             {"role": "user", "content": convo}],
+                "temperature": config.CLASSIFIER_TEMPERATURE,
+                "max_tokens": 64,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "stream": False,
+            },
+            timeout=config.CLASSIFIER_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+        if "</think>" in content:  # strip any stray thinking block
+            content = content.split("</think>")[-1].strip()
+        return content.strip().strip('"') or None
+    except Exception as e:
+        log.warning("[RESOLVE] query resolution failed (%s); using bare/blended query", e)
+        return None
+
+
 async def generate_summary(turns_text: str) -> str:
     """Summarize conversation turns using Qwen3.6 thinking-OFF at LLM_MEMORY_URL.
 

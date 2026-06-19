@@ -120,6 +120,18 @@ _DEFAULTS: dict = {
     # (classify returns None -> fall through), so flipping this ON is safe even
     # if :8092 is down.
     "classifier_enabled": False,
+    # --- Elliptical-query coreference resolution (2026-06-18) -----------------
+    # When True, retrieval rewrites a deictic/elliptical utterance ("what's its
+    # name again?") into a standalone semantic query via the :8092 classifier
+    # server BEFORE embedding, replacing the role-tagged context blend. Gated on
+    # a cheap Python deixis check (memory/retrieval._needs_resolution) so the
+    # extra ~170ms call only fires on turns that actually contain a pronoun/
+    # reference; clean queries skip it and pay nothing. Falls back to the current
+    # _build_semantic_query blend on resolver error or empty output, so a :8092
+    # outage degrades gracefully. Measured 2026-06-18: MRR 0.71->0.85 over the
+    # blend on elliptical follow-ups; no effect on self-contained queries.
+    # Default OFF (opt-in A/B). Read live per retrieve() -- no restart to flip.
+    "query_resolution_enabled": False,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
