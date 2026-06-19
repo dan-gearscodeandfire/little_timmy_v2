@@ -119,7 +119,7 @@ class EnrollerConfig:
     # Armed by TIMMY_AUTO_ENROLL_ENABLED, but the emergency kill switch
     # (TIMMY_AUTO_ENROLL_KILL) hard-overrides it off — a crowd of look-alike
     # strangers + mode="add" append corrupts the face DB at scale
-    # (Dan<->Devon, 2026-06-09).
+    # (Dan<->Robin, 2026-06-09).
     enabled: bool = _b("TIMMY_AUTO_ENROLL_ENABLED", False) and not _b("TIMMY_AUTO_ENROLL_KILL", False)
     # How long after the most recent unknown-voice utterance a CANDIDATE still
     # counts as "talking to me" (engagement gate, decision 3).

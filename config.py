@@ -237,7 +237,7 @@ AUTO_ENROLL_ENGAGE_ANY_SPEECH = os.getenv(
 # ON, hard-disables BOTH auto-enrollment paths — the interactive face FSM
 # (presence/face_enroller.py) AND the voiceprint face-hint streak (main.py) —
 # regardless of their individual flags. Rationale: in a crowd a recognizer
-# false-accept + mode="add" append corrupts identities at scale (the Dan<->Devon
+# false-accept + mode="add" append corrupts identities at scale (the Dan<->Robin
 # face-DB pollution, 2026-06-09). To kill enrollment: set
 # Environment=TIMMY_AUTO_ENROLL_KILL=1 in little-timmy.service.d/auto-enroll.conf,
 # then daemon-reload + restart.

@@ -104,12 +104,12 @@ def test_dan_real_short_utterance_still_accepted():
 # --- margin-aware continuity (anti-latch), added 2026-06-15 ------------------
 
 def test_latch_rejected_when_runnerup_is_close():
-    """The live Archer->thea latch: a kid whose nearest known IS the last speaker
-    (thea, within the cap) but who sits nearly as close to ANOTHER known identity
-    must NOT be continued — the small margin means we can't be sure it's thea
+    """The live Archer->sky latch: a kid whose nearest known IS the last speaker
+    (sky, within the cap) but who sits nearly as close to ANOTHER known identity
+    must NOT be continued — the small margin means we can't be sure it's sky
     continuing rather than a different similar voice."""
     params = dict(
-        audio_len=40000, best_known_name="thea", last_known_name="thea",
+        audio_len=40000, best_known_name="sky", last_known_name="sky",
         best_known_dist=0.33, elapsed_s=4.0, regime="",
     )
     # Without runner-up info (default inf) the old gate would have latched:
@@ -150,8 +150,8 @@ def test_long_audio_never_uses_continuity():
 
 def test_nearest_identity_must_match_last_speaker():
     """Continuity only fires when the stranger's nearest identity IS the last
-    speaker — a stranger nearest 'devon' after Dan spoke must abstain."""
-    params = {**LIVE_STRANGER, "best_known_name": "devon", "best_known_dist": 0.30}
+    speaker — a stranger nearest 'robin' after Dan spoke must abstain."""
+    params = {**LIVE_STRANGER, "best_known_name": "robin", "best_known_dist": 0.30}
     assert continuity_allowed(**params) is False
 
 

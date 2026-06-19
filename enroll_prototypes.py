@@ -16,7 +16,7 @@ The prototype build + atomic save reuse the runtime's own
 
 Usage:
   ./.venv/bin/python enroll_prototypes.py dan
-  ./.venv/bin/python enroll_prototypes.py devon --samples 6 --seconds 4
+  ./.venv/bin/python enroll_prototypes.py robin --samples 6 --seconds 4
   ./.venv/bin/python enroll_prototypes.py dan --dry-run   # capture + report, don't save
 
 After saving, restart Little Timmy to load the new voiceprint.

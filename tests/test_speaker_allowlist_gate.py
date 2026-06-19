@@ -20,12 +20,12 @@ CASES = [
     ("dan", ["dan"], False),
     ("Dan", ["dan"], False),            # case-insensitive name
     ("dan", ["Dan"], False),            # case-insensitive allowlist
-    ("devon", ["dan", "devon"], False),
+    ("robin", ["dan", "robin"], False),
     # Non-allowlisted enrolled speaker drops
     ("erin", ["dan"], True),
     # Unknown speakers always drop when an allowlist is set
     ("unknown_1", ["dan"], True),
-    ("unknown_12", ["dan", "devon"], True),
+    ("unknown_12", ["dan", "robin"], True),
     # Empty/None allowlist == allow all (energy floor only)
     ("dan", [], False),
     ("unknown_1", [], False),

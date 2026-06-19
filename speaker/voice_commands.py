@@ -17,7 +17,7 @@ _INTENT_PATTERNS = [
     r"\b(?:learn|hear) (?:my|his|her|their)? ?voice (?:again|better|fresh)\b",
     r"\b(?:redo|re-?do) (?:my|his|her|their)? ?voice ?(?:print)?\b",
     # Permissive: "re-enroll" alone is rare enough in normal speech that it's
-    # itself a strong signal -- catches "re-enroll thea" without a voice keyword.
+    # itself a strong signal -- catches "re-enroll sky" without a voice keyword.
     r"\bre-?enroll\b",
 ]
 

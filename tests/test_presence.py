@@ -31,10 +31,10 @@ from presence.types import (
 class TestCanonicalize:
     def test_lowercases(self):
         assert canonicalize("Dan") == "dan"
-        assert canonicalize("THEA") == "thea"
+        assert canonicalize("SKY") == "sky"
 
     def test_strips_whitespace(self):
-        assert canonicalize("  Devon  ") == "devon"
+        assert canonicalize("  Robin  ") == "robin"
         assert canonicalize("\tDan\n") == "dan"
 
     def test_none_returns_none(self):
@@ -72,7 +72,7 @@ def _face_obs(predictions, behavior=None, image_size=(640, 480)):
     )
 
 
-def _pred(name="Devon", confidence=0.91, bbox=(100, 80, 220, 210)):
+def _pred(name="Robin", confidence=0.91, bbox=(100, 80, 220, 210)):
     return FacePrediction(user_id=name, confidence=confidence, bbox=bbox)
 
 
@@ -86,19 +86,19 @@ class TestFuseIdentity:
         v = fuse_identity(
             voice_name="dan",
             voice_is_unknown=False,
-            face=_face_obs([_pred("Thea", 0.95)], _good_behavior()),
+            face=_face_obs([_pred("Sky", 0.95)], _good_behavior()),
         )
         assert v.final_name == "dan"
         assert v.resolution_source == "voice"
-        assert v.face_hint_name == "thea"
+        assert v.face_hint_name == "sky"
 
     def test_voice_unknown_plus_sole_steady_face_promotes(self):
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("Devon", 0.91)], _good_behavior()),
+            face=_face_obs([_pred("Robin", 0.91)], _good_behavior()),
         )
-        assert v.final_name == "devon"
+        assert v.final_name == "robin"
         assert v.resolution_source == "face_hint"
         assert v.face_hint_confidence == pytest.approx(0.91)
         assert v.head_steady is True
@@ -108,7 +108,7 @@ class TestFuseIdentity:
             voice_name="unknown_3",
             voice_is_unknown=True,
             face=_face_obs(
-                [_pred("Devon", 0.91), _pred("Thea", 0.88)],
+                [_pred("Robin", 0.91), _pred("Sky", 0.88)],
                 _good_behavior(),
             ),
         )
@@ -120,7 +120,7 @@ class TestFuseIdentity:
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("Devon", 0.91)], _good_behavior(elapsed_ms=800)),
+            face=_face_obs([_pred("Robin", 0.91)], _good_behavior(elapsed_ms=800)),
         )
         assert v.final_name == "unknown_3"
         assert v.resolution_source == "voice"
@@ -130,7 +130,7 @@ class TestFuseIdentity:
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("Devon", 0.70)], _good_behavior()),
+            face=_face_obs([_pred("Robin", 0.70)], _good_behavior()),
         )
         assert v.final_name == "unknown_3"
         assert v.resolution_source == "voice"
@@ -140,7 +140,7 @@ class TestFuseIdentity:
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("Devon", 0.91)], behavior=None),
+            face=_face_obs([_pred("Robin", 0.91)], behavior=None),
         )
         assert v.final_name == "unknown_3"
         assert v.resolution_source == "voice"
@@ -151,7 +151,7 @@ class TestFuseIdentity:
             voice_name="unknown_3",
             voice_is_unknown=True,
             face=_face_obs(
-                [_pred("Devon", 0.91)],
+                [_pred("Robin", 0.91)],
                 _good_behavior(face_visible=False),
             ),
         )
@@ -163,7 +163,7 @@ class TestFuseIdentity:
             voice_name="unknown_3",
             voice_is_unknown=True,
             face=_face_obs(
-                [_pred("Devon", 0.91)],
+                [_pred("Robin", 0.91)],
                 _good_behavior(mode="idle"),
             ),
         )
@@ -185,7 +185,7 @@ class TestFuseIdentity:
             voice_name="unknown_3",
             voice_is_unknown=True,
             face=_face_obs(
-                [_pred("Devon", 0.91)],
+                [_pred("Robin", 0.91)],
                 _good_behavior(mode="engage"),
             ),
         )
@@ -195,10 +195,10 @@ class TestFuseIdentity:
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("DEVON", 0.91)], _good_behavior()),
+            face=_face_obs([_pred("ROBIN", 0.91)], _good_behavior()),
         )
-        assert v.face_hint_name == "devon"
-        assert v.final_name == "devon"
+        assert v.face_hint_name == "robin"
+        assert v.final_name == "robin"
 
 
 # ---------------------------------------------------------------------------
@@ -216,14 +216,14 @@ class TestRoomLedger:
 
     def test_second_face_update_clears_first_persons_on_camera_in_latest_frame(self):
         # on_camera_now is smoothed (~30s window) so both will show as on_camera_now
-        # immediately after Thea's update. The RAW "in latest frame" signal is
+        # immediately after Sky's update. The RAW "in latest frame" signal is
         # exposed as on_camera_in_latest_frame.
         led = RoomLedger(presence_ttl_sec=900)
         led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()))
-        led.update_from_face(_face_obs([_pred("Thea", 0.90)], _good_behavior()))
+        led.update_from_face(_face_obs([_pred("Sky", 0.90)], _good_behavior()))
         state = led.current_state()
         latest_frame = {p["name"] for p in state["present"] if p["on_camera_in_latest_frame"]}
-        assert latest_frame == {"thea"}
+        assert latest_frame == {"sky"}
         dan = next(p for p in state["present"] if p["name"] == "dan")
         assert dan["on_camera_in_latest_frame"] is False
         # smoothed flag still True because Dan was seen <30s ago
@@ -401,7 +401,7 @@ class TestRoomLedger:
         assert cy == pytest.approx(140 / 480)
 
     def test_two_faces_same_frame_get_distinct_poses(self):
-        """The whole point: Dan on left and Thea on right get DIFFERENT poses
+        """The whole point: Dan on left and Sky on right get DIFFERENT poses
         even though the camera is at one orientation."""
         led = RoomLedger(presence_ttl_sec=900)
         beh = BehaviorSnapshot(
@@ -411,24 +411,24 @@ class TestRoomLedger:
             last_face_pan=0.0,
             last_face_tilt=0.0,
         )
-        # Dan on left third, Thea on right third
+        # Dan on left third, Sky on right third
         dan_bbox = (50, 200, 150, 350)    # center x=100, y=275 -> (0.156, 0.573)
-        thea_bbox = (490, 200, 590, 350)  # center x=540, y=275 -> (0.844, 0.573)
+        sky_bbox = (490, 200, 590, 350)  # center x=540, y=275 -> (0.844, 0.573)
         obs = _face_obs(
-            [_pred("Dan", 0.92, bbox=dan_bbox), _pred("Thea", 0.90, bbox=thea_bbox)],
+            [_pred("Dan", 0.92, bbox=dan_bbox), _pred("Sky", 0.90, bbox=sky_bbox)],
             beh,
         )
         led.update_from_face(obs)
         dan_pose = led.find_pose_for("dan")
-        thea_pose = led.find_pose_for("thea")
+        sky_pose = led.find_pose_for("sky")
         assert dan_pose is not None
-        assert thea_pose is not None
+        assert sky_pose is not None
         # Same camera pose but different person poses
-        assert dan_pose["camera_pan"] == thea_pose["camera_pan"] == 0.0
-        assert dan_pose["pan"] != thea_pose["pan"]
+        assert dan_pose["camera_pan"] == sky_pose["camera_pan"] == 0.0
+        assert dan_pose["pan"] != sky_pose["pan"]
         # Dan on left of frame -> POSITIVE pan (per streamerpi inverted convention)
         assert dan_pose["pan"] > 0
-        assert thea_pose["pan"] < 0
+        assert sky_pose["pan"] < 0
 
     def test_pose_none_when_no_behavior(self):
         led = RoomLedger(presence_ttl_sec=900)
@@ -462,9 +462,9 @@ class TestRoomLedger:
     def test_present_list_sorted_visible_first(self):
         led = RoomLedger(presence_ttl_sec=900)
         led.update_from_voice("dan")
-        led.update_from_face(_face_obs([_pred("Thea", 0.92)], _good_behavior()))
+        led.update_from_face(_face_obs([_pred("Sky", 0.92)], _good_behavior()))
         state = led.current_state()
-        assert state["present"][0]["name"] == "thea"
+        assert state["present"][0]["name"] == "sky"
         assert state["present"][0]["on_camera_now"] is True
 
 
@@ -488,71 +488,71 @@ class TestFaceHintStreak:
 
     def test_below_threshold_does_not_fire(self):
         s = FaceHintStreak(threshold=3)
-        assert s.observe("Devon", "unknown_3") is None
-        assert s.observe("Devon", "unknown_3") is None
+        assert s.observe("Robin", "unknown_3") is None
+        assert s.observe("Robin", "unknown_3") is None
         assert s.current.count == 2
 
     def test_at_threshold_fires(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
-        s.observe("Devon", "unknown_3")
-        result = s.observe("Devon", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        result = s.observe("Robin", "unknown_3")
         assert result is not None
-        assert result.face_hint_name == "devon"
+        assert result.face_hint_name == "robin"
         assert result.voice_temp_id == "unknown_3"
         assert result.count == 3
 
     def test_different_name_resets(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
-        s.observe("Devon", "unknown_3")
-        s.observe("Thea", "unknown_3")  # different face name
-        assert s.current.face_hint_name == "thea"
+        s.observe("Robin", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        s.observe("Sky", "unknown_3")  # different face name
+        assert s.current.face_hint_name == "sky"
         assert s.current.count == 1
 
     def test_different_temp_id_resets(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
-        s.observe("Devon", "unknown_3")
-        s.observe("Devon", "unknown_4")  # different unknown speaker
+        s.observe("Robin", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        s.observe("Robin", "unknown_4")  # different unknown speaker
         assert s.current.voice_temp_id == "unknown_4"
         assert s.current.count == 1
 
     def test_no_promotion_clears_streak(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
-        s.observe("Devon", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        s.observe("Robin", "unknown_3")
         s.observe(None, None)  # voice was confident this turn
         assert s.current is None
 
     def test_canonicalizes_face_name(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
-        s.observe("DEVON", "unknown_3")
-        result = s.observe("  devon  ", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        s.observe("ROBIN", "unknown_3")
+        result = s.observe("  robin  ", "unknown_3")
         assert result is not None
-        assert result.face_hint_name == "devon"
+        assert result.face_hint_name == "robin"
 
     def test_reset_clears_state(self):
         s = FaceHintStreak(threshold=2)
-        s.observe("Devon", "unknown_3")
-        result = s.observe("Devon", "unknown_3")
+        s.observe("Robin", "unknown_3")
+        result = s.observe("Robin", "unknown_3")
         assert result is not None  # threshold met
         s.reset()
         assert s.current is None
         # Next observation starts a fresh streak
-        s.observe("Devon", "unknown_3")
+        s.observe("Robin", "unknown_3")
         assert s.current.count == 1
 
     def test_threshold_one_fires_immediately(self):
         s = FaceHintStreak(threshold=1)
-        result = s.observe("Devon", "unknown_3")
+        result = s.observe("Robin", "unknown_3")
         assert result is not None
         assert result.count == 1
 
     def test_empty_face_name_treated_as_no_promotion(self):
         s = FaceHintStreak(threshold=3)
-        s.observe("Devon", "unknown_3")
+        s.observe("Robin", "unknown_3")
         s.observe("", "unknown_3")
         assert s.current is None
 
@@ -707,8 +707,8 @@ class TestLookAtPolicy:
     def test_per_speaker_cooldown_independent(self):
         p = LookAtPolicy(cooldown_sec=30)
         p.record_look_at("dan", 1000.0)
-        # Thea has not been looked at — no cooldown for her
-        v = p.evaluate("thea", _present("thea", face_age=120), _pose(ts=1010.0), "scan", 1020.0)
+        # Sky has not been looked at — no cooldown for her
+        v = p.evaluate("sky", _present("sky", face_age=120), _pose(ts=1010.0), "scan", 1020.0)
         assert v.should_look is True
 
     def test_cooldown_remaining(self):
@@ -741,14 +741,14 @@ class TestRoomLedgerPersistence:
         save_file = tmp_path / "ledger.json"
         led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
         led.update_from_face(_face_obs([_pred("Dan", 0.92)], _good_behavior()))
-        led.update_from_voice("thea")
+        led.update_from_voice("sky")
 
         # New ledger reads the same file
         led2 = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
         state = led2.current_state()
         names = {p["name"] for p in state["present"]}
         assert "dan" in names
-        assert "thea" in names
+        assert "sky" in names
 
     def test_pose_survives_roundtrip(self, tmp_path):
         save_file = tmp_path / "ledger.json"
@@ -787,8 +787,8 @@ class TestRoomLedgerPersistence:
                     "times_seen_face": 1,
                     "times_heard_voice": 0,
                 },
-                "thea": {
-                    "name": "thea",
+                "sky": {
+                    "name": "sky",
                     "last_seen_face_ts": time.time() - 60,  # fresh
                     "last_seen_voice_ts": None,
                     "last_pose": None,
@@ -798,11 +798,11 @@ class TestRoomLedgerPersistence:
             },
         }
         save_file.write_text(json.dumps(payload))
-        # presence_ttl_sec=900 (15 min) — Dan at 1h is expired, Thea at 1m is fresh
+        # presence_ttl_sec=900 (15 min) — Dan at 1h is expired, Sky at 1m is fresh
         led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
         state = led.current_state()
         names = {p["name"] for p in state["present"]}
-        assert "thea" in names
+        assert "sky" in names
         assert "dan" not in names
 
     def test_load_drops_expired_unknown_voice_with_tighter_ttl(self, tmp_path):
@@ -857,7 +857,7 @@ class TestRoomLedgerPersistence:
         save_file = tmp_path / "ledger.json"
         led = RoomLedger(presence_ttl_sec=900, save_path=str(save_file))
         led.update_from_voice("dan")
-        led.update_from_voice("thea")
+        led.update_from_voice("sky")
         # Final file is valid JSON, no .tmp left behind
         assert save_file.exists()
         json.loads(save_file.read_text())
@@ -967,11 +967,11 @@ class TestConvertInTreeResults:
 
     def test_keeps_medium_confidence(self):
         out = _convert_in_tree_results([
-            {"name": "Thea", "distance": 0.35, "confidence": "medium",
+            {"name": "Sky", "distance": 0.35, "confidence": "medium",
              "bbox": [10, 10, 100, 100]},
         ])
         assert len(out) == 1
-        assert out[0].user_id == "Thea"
+        assert out[0].user_id == "Sky"
 
     def test_drops_low_confidence_even_if_named(self):
         out = _convert_in_tree_results([
@@ -1105,9 +1105,9 @@ class TestSymmetricFusion:
     def test_real_face_hint_not_overwritten_by_synthesis(self):
         # A present face already gives a hint; symmetric must not clobber it.
         v = fuse_identity(voice_name="dan", voice_is_unknown=False,
-                          face=_face_obs([_pred("Thea", 0.95)], _good_behavior()),
+                          face=_face_obs([_pred("Sky", 0.95)], _good_behavior()),
                           voice_confidence=0.9, symmetric_enabled=True)
-        assert v.face_hint_name == "thea"
+        assert v.face_hint_name == "sky"
         assert v.face_hint_source == "face"
         assert v.stabilized is False
 
@@ -1167,22 +1167,22 @@ class TestIdentityFusionWrapper:
 
     def test_memory_refreshes_only_from_real_face(self):
         f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True))
-        # Real face sighting at t=0 -> memory holds "devon".
+        # Real face sighting at t=0 -> memory holds "robin".
         f.resolve(voice_name="unknown_1", voice_is_unknown=True,
-                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
-        # 1s later, face dropped -> temporal hold carries "devon".
+                  face=_face_obs([_pred("Robin", 0.91)], _good_behavior()), now=0.0)
+        # 1s later, face dropped -> temporal hold carries "robin".
         v = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
-        assert v.face_hint_name == "devon"
+        assert v.face_hint_name == "robin"
         assert v.face_hint_source == "temporal"
 
     def test_hold_cannot_self_perpetuate_past_window(self):
         f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True,
                                              identity_continuity_window_s=2.5))
         f.resolve(voice_name="unknown_1", voice_is_unknown=True,
-                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
+                  face=_face_obs([_pred("Robin", 0.91)], _good_behavior()), now=0.0)
         # A held verdict at t=1 must NOT refresh memory...
         held = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
-        assert held.face_hint_name == "devon"
+        assert held.face_hint_name == "robin"
         # ...so at t=3 (>2.5s since the REAL sighting at t=0) the hold expires.
         expired = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=3.0)
         assert expired.face_hint_name is None
@@ -1191,7 +1191,7 @@ class TestIdentityFusionWrapper:
         f = IdentityFusion(knobs=self._knobs(identity_continuity_enabled=True,
                                              identity_regime="party"))
         f.resolve(voice_name="unknown_1", voice_is_unknown=True,
-                  face=_face_obs([_pred("Devon", 0.91)], _good_behavior()), now=0.0)
+                  face=_face_obs([_pred("Robin", 0.91)], _good_behavior()), now=0.0)
         v = f.resolve(voice_name="unknown_1", voice_is_unknown=True, face=None, now=1.0)
         assert v.face_hint_name is None
 
@@ -1201,7 +1201,7 @@ class TestFaceHintProvenance:
 
     def test_real_promotion_is_face_sourced(self):
         v = fuse_identity(voice_name="unknown_3", voice_is_unknown=True,
-                          face=_face_obs([_pred("Devon", 0.91)], _good_behavior()))
+                          face=_face_obs([_pred("Robin", 0.91)], _good_behavior()))
         assert v.resolution_source == "face_hint"
         assert v.face_hint_source == "face"
 

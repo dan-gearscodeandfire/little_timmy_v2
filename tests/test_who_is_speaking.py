@@ -1,7 +1,7 @@
 """Regression tests for the per-turn [WHO IS SPEAKING] addressee steering in
 build_ephemeral_block.
 
-Context (2026-06-11): the voice matcher correctly tags turns ([Thea], [Dan],
+Context (2026-06-11): the voice matcher correctly tags turns ([Sky], [Dan],
 [Unknown_15]) but Timmy's *replies* kept calling non-Dan / unrecognized speakers
 "Dan" — the Dan-anchored persona steamrolls the "[Name]:" history prefix, the
 only speaker signal the model otherwise gets. Party-critical: every OpenSauce
@@ -33,9 +33,9 @@ def _block(speaker_name, *, fusion_source=None, face_hint_name=None):
 
 
 def test_known_non_dan_speaker_is_named_and_dan_default_forbidden():
-    block = _block("thea")
+    block = _block("sky")
     assert "[WHO IS SPEAKING]" in block
-    assert "speaking with Thea" in block
+    assert "speaking with Sky" in block
     # The crux: it must explicitly steer away from Dan.
     assert "NOT Dan" in block
 

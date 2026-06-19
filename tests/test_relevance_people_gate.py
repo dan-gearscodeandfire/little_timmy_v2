@@ -114,19 +114,19 @@ class TestFlapScenario:
         """A sustained genuine arrival crosses the threshold exactly once."""
         history = [rec(["dan"]) for _ in range(5)]
         # Frame 1 of guest: unconfirmed (1 of 5 < 2)
-        r1 = classify(rec(["dan", "devon"]), history)
-        assert "devon" not in r1.confirmed_people
+        r1 = classify(rec(["dan", "robin"]), history)
+        assert "robin" not in r1.confirmed_people
         assert r1.new_people == []
         # Frame 2: 2 of 5 -> confirmed, rising edge fires
-        history = history[1:] + [rec(["dan", "devon"])]
-        r2 = classify(rec(["dan", "devon"]), history)
-        assert "devon" in r2.confirmed_people
-        assert r2.new_people == ["devon"]
+        history = history[1:] + [rec(["dan", "robin"])]
+        r2 = classify(rec(["dan", "robin"]), history)
+        assert "robin" in r2.confirmed_people
+        assert r2.new_people == ["robin"]
         assert r2.novelty_score > 0.0
         # Frame 3: still confirmed, edge does NOT re-fire
-        history = history[1:] + [rec(["dan", "devon"])]
-        r3 = classify(rec(["dan", "devon"]), history)
-        assert "devon" in r3.confirmed_people
+        history = history[1:] + [rec(["dan", "robin"])]
+        r3 = classify(rec(["dan", "robin"]), history)
+        assert "robin" in r3.confirmed_people
         assert r3.new_people == []
 
     def test_flap_with_vlm_novelty_spike_still_no_new_people(self, gate_on):

@@ -89,8 +89,8 @@ CONTINUITY_WINDOW_SEC = 15.0       # was 60.0 — a guest 15-60s later isn't "Da
 # The last speaker must beat the 2nd-nearest KNOWN identity by this margin to be
 # "continued". Without it, continuity latches a different speaker who is merely
 # coincidentally near the last speaker's prototype — live 2026-06-15, a boy
-# (Archer) stamped `thea` at 0.33 because Thea was last and within the cap, with
-# no check that Thea was still decisively his nearest. In a crowd of similar
+# (Archer) stamped `sky` at 0.33 because Sky was last and within the cap, with
+# no check that Sky was still decisively his nearest. In a crowd of similar
 # (e.g. kids') voices the margin collapses, so continuity abstains -> unknown
 # instead of holding the wrong name. Live-tunable via runtime_toggles.
 
