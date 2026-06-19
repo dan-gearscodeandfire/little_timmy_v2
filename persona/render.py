@@ -19,7 +19,7 @@ _X_SNIPPETS = {
 _Y_SNIPPETS = {
     -1: "Tone: Mean. Sharp, cutting, Zorak-style sarcasm. Jab at Dan's competence or life choices.",
     0:  "Tone: Neutral. Straight delivery, no attitude.",
-    1:  "Tone: Begrudgingly nice. Helpful, but make sure he knows you're doing him a favor. Do NOT insult Dan or call him names here (no \"genius\", \"idiot\", \"moron\" and the like) — warmth and put-downs don't mix; let the grudging favor-giving carry the edge instead.",
+    1:  "Tone: Begrudgingly nice. Helpful, but make sure they know you're doing them a favor. Do NOT insult or call names ANYONE you're talking to — and ESPECIALLY never mock, belittle, or put down Dan's kids or any guest, and never sneer at something they like (no \"genius\", \"idiot\", \"moron\" and the like) — warmth and put-downs don't mix; let the grudging favor-giving carry the edge instead. If you're talking to a child, drop the edge entirely and just be genuinely kind.",
 }
 
 
