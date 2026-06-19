@@ -15,6 +15,7 @@ class Fact:
     value: str
     learned_at: object
     confidence: float
+    sensitive: bool = False
 
 
 async def store_fact(
@@ -30,17 +31,27 @@ async def store_fact(
     subject = subject.strip().lower()
     predicate = predicate.strip().lower()
 
+    # Classify sensitivity at creation (PII gating). Both fact writers -- the
+    # extraction pipeline and the :8092 tool-call classifier -- pass through
+    # here, so this is the single chokepoint. Recomputed on every upsert so a
+    # changed value re-evaluates (e.g. a value that newly contains a phone#).
+    from memory.pii import classify_sensitivity
+    sensitive, pii_category = classify_sensitivity(subject, predicate, value)
+
     row = await pool.fetchrow(
-        """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence)
-           VALUES ($1, $2, $3, $4, $5, $6)
+        """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL
            DO UPDATE SET value = EXCLUDED.value,
                          learned_at = now(),
                          confidence = EXCLUDED.confidence,
                          source_memory_id = EXCLUDED.source_memory_id,
-                         speaker_id = EXCLUDED.speaker_id
+                         speaker_id = EXCLUDED.speaker_id,
+                         sensitive = EXCLUDED.sensitive,
+                         pii_category = EXCLUDED.pii_category
            RETURNING id, (xmax = 0) AS inserted""",
         subject, predicate, value, source_memory_id, speaker_id, confidence,
+        sensitive, pii_category,
     )
     new_id = row["id"]
     if row["inserted"]:
@@ -81,7 +92,7 @@ async def get_facts_about(subject: str, limit: int = 10) -> list[Fact]:
     """Get all active facts about a subject."""
     pool = await get_pool()
     rows = await pool.fetch(
-        """SELECT id, subject, predicate, value, learned_at, confidence
+        """SELECT id, subject, predicate, value, learned_at, confidence, sensitive
            FROM facts
            WHERE (subject = $1 OR subject % $1)
            AND superseded_by IS NULL
@@ -134,7 +145,7 @@ async def get_facts_about_speaker(
     name = speaker_name.strip().lower()
     aliases = (name, *_SELF_REFERENCE_ALIASES)
     rows = await pool.fetch(
-        """SELECT id, subject, predicate, value, learned_at, confidence
+        """SELECT id, subject, predicate, value, learned_at, confidence, sensitive
            FROM facts
            WHERE subject = ANY($1::text[])
            AND superseded_by IS NULL

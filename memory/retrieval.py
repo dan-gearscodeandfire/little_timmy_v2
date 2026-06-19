@@ -2,12 +2,30 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from db.connection import get_pool
 from memory.manager import embed, touch_memories
+from persistence import runtime_toggles
 import config
 
 log = logging.getLogger(__name__)
+
+# Cheap deixis gate for query resolution. A turn only pays the ~170ms resolver
+# call (llm.client.resolve_query) when its utterance contains a pronoun/reference
+# that needs a conversational antecedent. Word-boundary, case-insensitive. Biased
+# toward recall (over-firing just resolves a near-clean query, which is ~idempotent;
+# under-firing silently keeps an unresolvable elliptical query). See the
+# query_resolution_enabled toggle. Measured 2026-06-18 (ops/elliptical_*.py).
+_DEIXIS_RE = re.compile(
+    r"\b(it|its|it's|that|there|them|they|their|theirs|he|him|his|she|her|hers|those)\b",
+    re.IGNORECASE,
+)
+
+
+def _needs_resolution(query: str) -> bool:
+    """True when the utterance has a deictic reference worth resolving."""
+    return bool(_DEIXIS_RE.search(query or ""))
 
 
 @dataclass
@@ -168,7 +186,40 @@ async def retrieve(
     candidates = config.RETRIEVAL_CANDIDATES
 
     pool = await get_pool()
-    semantic_query = _build_semantic_query(query, context_turns)
+
+    # Semantic-query construction. Default: the role-tagged context blend
+    # (_build_semantic_query). When query_resolution_enabled AND the utterance is
+    # deictic AND we have context, rewrite it into a standalone query via :8092
+    # FIRST and embed THAT instead -- measured to beat the blend on elliptical
+    # follow-ups (MRR 0.71->0.85). Resolver failure/empty -> fall back to the
+    # blend (graceful). FTS/trigram below always use the bare `query`, unaffected.
+    semantic_query = None
+    resolved = None
+    if (runtime_toggles.get("query_resolution_enabled")
+            and context_turns and _needs_resolution(query)):
+        from llm import client  # local import: avoid any import-time cycle
+        context_text = "\n".join(
+            f"{getattr(t, 'role', 'user')}: {(getattr(t, 'content', '') or '').strip()}"
+            for t in context_turns if (getattr(t, "content", "") or "").strip()
+        )
+        import time
+        t0 = time.perf_counter()
+        resolved = await client.resolve_query(query, context_text)
+        resolution_ms = int((time.perf_counter() - t0) * 1000)
+        # Publish the per-turn resolve cost to the HUDs (LT-OS WS + Booth poll),
+        # mirroring the classifier-latency pip. Non-fatal if web.app isn't up.
+        try:
+            from web.app import broadcast_event, update_metrics
+            update_metrics(last_resolution_ms=resolution_ms)
+            await broadcast_event("resolution_metric",
+                                  {"ms": resolution_ms, "resolved": bool(resolved)})
+        except Exception:
+            log.debug("[RESOLVE] latency publish failed (non-fatal)", exc_info=True)
+        if resolved:
+            semantic_query = resolved
+            log.info("[RESOLVE] %r -> %r (%dms)", query, resolved, resolution_ms)
+    if semantic_query is None:
+        semantic_query = _build_semantic_query(query, context_turns)
     query_emb = await embed(semantic_query)
 
     # Run all three searches in parallel. Semantic uses the (possibly

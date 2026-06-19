@@ -36,6 +36,10 @@ _metrics: dict = {
     # Tier-1 route latency (ms) of the :8092 first-pass filter, per turn. Shown
     # as its own HUD row above payload->LLM on the Booth + LT-OS.
     "last_classifier_ms": None,
+    # Coreference-resolution latency (ms) of the :8092 resolve call, set only on
+    # turns where the deixis gate fired AND resolution is enabled. None until the
+    # first resolved turn. Shown as its own HUD row on the LT-OS.
+    "last_resolution_ms": None,
 }
 
 
@@ -93,7 +97,9 @@ async def get_metrics():
     # Merge the live classifier toggle so the Booth poll (which only reads
     # /api/metrics) can show the classifier-ON pip without a second request.
     from persistence import runtime_toggles
-    return {**_metrics, "classifier_enabled": bool(runtime_toggles.get("classifier_enabled"))}
+    return {**_metrics,
+            "classifier_enabled": bool(runtime_toggles.get("classifier_enabled")),
+            "query_resolution_enabled": bool(runtime_toggles.get("query_resolution_enabled"))}
 
 
 @app.get("/api/conversation")
@@ -197,6 +203,27 @@ async def set_tts_mute(payload: dict | None = None):
     muted = bool((payload or {}).get("muted", True))
     runtime_toggles.set("tts_muted", muted)
     return {"ok": True, "muted": bool(runtime_toggles.get("tts_muted"))}
+
+
+@app.get("/api/guest_mode")
+async def get_guest_mode():
+    """Read the privacy/guest gate. When on, facts classified sensitive
+    (memory/pii.py: contact, location, financial, health/credentials,
+    family_minor) are withheld from prompt injection so Timmy can't speak them
+    via TTS in front of guests."""
+    from persistence import runtime_toggles
+    return {"guest_mode": bool(runtime_toggles.get("guest_mode"))}
+
+
+@app.post("/api/guest_mode")
+async def set_guest_mode(payload: dict | None = None):
+    """Flip the privacy/guest gate live (persisted by runtime_toggles, read per
+    turn in conversation/turn.py — no restart). Manual toggle wins; a
+    presence-driven auto layer may OR in later."""
+    from persistence import runtime_toggles
+    on = bool((payload or {}).get("guest_mode", True))
+    runtime_toggles.set("guest_mode", on)
+    return {"ok": True, "guest_mode": bool(runtime_toggles.get("guest_mode"))}
 
 
 @app.get("/api/mood")
@@ -679,6 +706,31 @@ async def set_classifier(payload: dict | None = None):
     enabled = bool((payload or {}).get("enabled", False))
     runtime_toggles.set("classifier_enabled", enabled)
     return {"ok": True, "enabled": bool(runtime_toggles.get("classifier_enabled")),
+            "up": await _classifier_up()}
+
+
+@app.get("/api/query_resolution")
+async def get_query_resolution():
+    """Read the elliptical-query coreference-resolution gate + whether the :8092
+    server it shares with the classifier is reachable."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("query_resolution_enabled")),
+        "up": await _classifier_up(),  # same :8092 server as the classifier
+    }
+
+
+@app.post("/api/query_resolution")
+async def set_query_resolution(payload: dict | None = None):
+    """Enable/disable query resolution. Persisted by runtime_toggles, read live
+    per retrieve() by memory/retrieval.py -- no restart to flip (once the code is
+    loaded). When ON, a deictic/elliptical utterance is rewritten to a standalone
+    query via :8092 before embedding; clean queries and a :8092 outage both fall
+    back to the context blend, so flipping this ON is safe even if :8092 is down."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("query_resolution_enabled", enabled)
+    return {"ok": True, "enabled": bool(runtime_toggles.get("query_resolution_enabled")),
             "up": await _classifier_up()}
 
 

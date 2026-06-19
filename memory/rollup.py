@@ -74,16 +74,24 @@ async def maybe_rollup(conversation) -> bool:
     conversation.hot_turns = conversation.hot_turns[split:]
     log.info("Rolled up %d turns -> warm summary (%d chars)", split, len(summary))
 
-    # If warm tier is too large, promote oldest to cold (stored in DB).
-    # Skip persistence for the hard-ceiling backstop placeholder — it carries
-    # no content, just a marker that turns were dropped under load.
+    # If warm tier is too large, evict the oldest. Whether the evicted summary
+    # is persisted to the embedded memories table is gated by
+    # config.PERSIST_COLD_SUMMARIES (default False since 2026-06-18, per Dan):
+    # rollups summarize live hot/warm context for the in-prompt session, but the
+    # stalest one is DROPPED on overflow rather than auto-embedded as a durable
+    # conversation_summary memory. See config.PERSIST_COLD_SUMMARIES.
+    # The hard-ceiling backstop placeholder is never persisted regardless — it
+    # carries no content, just a marker that turns were dropped under load.
     if len(conversation.warm_summaries) > config.WARM_MAX_SUMMARIES:
         cold = conversation.warm_summaries.pop(0)
         if cold.text == getattr(config, "HARD_CEILING_PLACEHOLDER",
                                 "[earlier turns omitted under load]"):
             log.info("Dropped backstop placeholder from warm tier (not persisted)")
-        else:
+        elif getattr(config, "PERSIST_COLD_SUMMARIES", False):
             await store_memory("conversation_summary", cold.text)
             log.info("Promoted warm summary to cold storage")
+        else:
+            log.info("Evicted stalest warm summary without persisting "
+                     "(PERSIST_COLD_SUMMARIES=False)")
 
     return True

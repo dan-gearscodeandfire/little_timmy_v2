@@ -102,7 +102,7 @@ async def timmy_ws_relay():
                 async for msg in ws:
                     try:
                         data = json.loads(msg)
-                        if data.get("type") in ("turn", "metrics", "retrieval", "tool_call", "classifier_metric"):
+                        if data.get("type") in ("turn", "metrics", "retrieval", "tool_call", "classifier_metric", "resolution_metric"):
                             log.debug("Relay: %s event", data["type"])
                             await broadcast_event(data["type"], data)
                     except (json.JSONDecodeError, KeyError):
@@ -169,6 +169,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         await broadcast_event("lt_toggles", toggles)
                     elif svc_id == "classifier":
                         result = await services.toggle_classifier(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "query_resolution":
+                        result = await services.toggle_query_resolution(desired)
                         toggles = await services.check_lt_toggles_status()
                         await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
@@ -708,6 +712,13 @@ async def toggle_proactive_speech(data: dict):
 async def toggle_classifier(data: dict):
     """Enable/disable LT's first-pass tool-call classifier (:8092). Live; no restart."""
     return await services.toggle_classifier(bool(data.get("enabled", True)))
+
+
+@app.post("/api/query_resolution/toggle")
+async def toggle_query_resolution(data: dict):
+    """Enable/disable LT's elliptical-query coreference resolution (:8092). Live;
+    no restart once the retrieval code is loaded."""
+    return await services.toggle_query_resolution(bool(data.get("enabled", True)))
 
 
 async def health_poll_loop():
@@ -1334,6 +1345,20 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <!-- Elliptical-query coreference resolution (:8092, 2026-06-18). When ON,
+             a deictic follow-up ("what's its name again?") is rewritten to a
+             standalone query via :8092 before semantic retrieval; clean queries
+             skip it. Detail line shows whether :8092 is reachable. -->
+        <div class="service-card" id="query_resolution-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Query Resolution (coref :8092)</div>
+            <div class="service-detail" id="query_resolution-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="query_resolution-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('query_resolution', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
         <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
@@ -1585,6 +1610,7 @@ header .uptime {
       <div id="metrics">
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
         <div class="metric-row"><span class="label">Tool filter (Qwen3-4B)</span><span class="value" id="m-classifier">--</span></div>
+        <div class="metric-row"><span class="label">Query resolve (coref)</span><span class="value" id="m-resolution">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
         <div class="metric-row"><span class="label">LLM 1st token</span><span class="value" id="m-llm-ft">--</span></div>
         <div class="metric-row"><span class="label">LLM total</span><span class="value" id="m-llm">--</span></div>
@@ -1803,6 +1829,7 @@ function connectWS() {
       ltFlagBusy.hearing = false;
       ltFlagBusy.proactive_speech = false;
       ltFlagBusy.classifier = false;
+      ltFlagBusy.query_resolution = false;
       applyLTToggles(msg);
     } else if (msg.type === "turn") {
       addTurn(msg.role, msg.content, msg.speaker);
@@ -1815,6 +1842,9 @@ function connectWS() {
     } else if (msg.type === "classifier_metric") {
       const el = document.getElementById("m-classifier");
       if (el && typeof msg.ms === "number") el.textContent = msg.ms + "ms";
+    } else if (msg.type === "resolution_metric") {
+      const el = document.getElementById("m-resolution");
+      if (el && typeof msg.ms === "number") el.textContent = msg.ms + "ms" + (msg.resolved ? "" : " (no-op)");
     }
   };
 }
@@ -2162,6 +2192,7 @@ async function pollMetrics() {
     if (!m.error) {
       document.getElementById("m-stt").textContent = m.last_stt_ms != null ? m.last_stt_ms + "ms" : "--";
       document.getElementById("m-classifier").textContent = m.last_classifier_ms != null ? m.last_classifier_ms + "ms" : (m.classifier_enabled ? "--" : "off");
+      document.getElementById("m-resolution").textContent = m.last_resolution_ms != null ? m.last_resolution_ms + "ms" : (m.query_resolution_enabled ? "--" : "off");
       document.getElementById("m-retrieval").textContent = m.last_retrieval_ms != null ? m.last_retrieval_ms + "ms" : "--";
       document.getElementById("m-llm-ft").textContent = m.last_llm_first_token_ms != null ? m.last_llm_first_token_ms + "ms" : "--";
       document.getElementById("m-llm").textContent = m.last_llm_total_ms != null ? m.last_llm_total_ms + "ms" : "--";
@@ -2462,11 +2493,20 @@ const LT_FLAGS = {
     enabledDetail: 'Routing utterances (:8092 up)',
     disabledDetail: 'Off — all utterances go straight to the brain',
   },
+  query_resolution: {
+    cardId: 'query_resolution-card',
+    toggleId: 'query_resolution-toggle',
+    detailId: 'query_resolution-detail',
+    route: '/api/query_resolution/toggle',
+    enabledDetail: 'Resolving deictic follow-ups before retrieval (:8092 up)',
+    disabledDetail: 'Off — semantic query uses the context blend',
+  },
 };
-const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null };
-const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false };
+const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null, query_resolution: null };
+const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false, query_resolution: false };
 let ltProactiveMaster = true;  // config kill-switch; false => toggle is inert
 let ltClassifierUp = false;    // :8092 reachable? surfaced in the classifier detail line
+let ltQueryResolutionUp = false;  // same :8092 server; surfaced in the query-resolution detail line
 
 function applyLTToggles(data) {
   if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
@@ -2475,6 +2515,8 @@ function applyLTToggles(data) {
   if (typeof data.proactive_speech_master === 'boolean') ltProactiveMaster = data.proactive_speech_master;
   if (typeof data.classifier_enabled === 'boolean') ltFlagState.classifier = data.classifier_enabled;
   if (typeof data.classifier_up === 'boolean') ltClassifierUp = data.classifier_up;
+  if (typeof data.query_resolution_enabled === 'boolean') ltFlagState.query_resolution = data.query_resolution_enabled;
+  if (typeof data.query_resolution_up === 'boolean') ltQueryResolutionUp = data.query_resolution_up;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
 }
 
@@ -2517,7 +2559,10 @@ function updateLTFlagUI(flag) {
   // Classifier enabled but its :8092 server is unreachable: surface as amber —
   // LT still works (degrades to normal pipeline), but the tool path is inert.
   const clsDown = (flag === 'classifier' && enabled && !ltClassifierUp);
-  if (card)   card.style.borderLeftColor = (masterOff || clsDown) ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
+  // Query resolution enabled but :8092 unreachable: amber — retrieval still
+  // works (degrades to the context blend), but resolution is inert.
+  const qrDown = (flag === 'query_resolution' && enabled && !ltQueryResolutionUp);
+  if (card)   card.style.borderLeftColor = (masterOff || clsDown || qrDown) ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
   if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
   if (detail) {
@@ -2525,6 +2570,7 @@ function updateLTFlagUI(flag) {
     else if (enabled === null) detail.textContent = 'Checking...';
     else if (masterOff)        detail.textContent = 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)';
     else if (clsDown)          detail.textContent = 'ON, but :8092 unreachable — utterances fall through to the brain';
+    else if (qrDown)           detail.textContent = 'ON, but :8092 unreachable — falls back to the context blend';
     else if (enabled)          detail.textContent = def.enabledDetail;
     else                       detail.textContent = def.disabledDetail;
   }

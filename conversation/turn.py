@@ -44,6 +44,20 @@ from conversation.reply_filter import (
 log = logging.getLogger(__name__)
 
 
+def _privacy_gate_active() -> bool:
+    """True when sensitive facts should be withheld from prompt injection.
+
+    Manual 'guest_mode' runtime toggle (Dan flips it when hosting). The
+    presence-driven auto layer (phase 2) will OR in here -- manual always wins,
+    so once auto exists this becomes `manual or presence_has_guests()`.
+    """
+    try:
+        from persistence import runtime_toggles
+        return bool(runtime_toggles.get("guest_mode"))
+    except Exception:
+        return False
+
+
 def _normalize_remark(text: str) -> str:
     """Casefold + strip punctuation/whitespace so trivial variants ("Hello!"
     vs "hello") still count as the same proactive remark."""
@@ -457,13 +471,24 @@ class LiveMemory:
             get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         )
         memories, non_speaker_facts, speaker_facts = gathered
+        # Privacy gate: when active, drop sensitive facts from prompt injection so
+        # the brain never receives them and can't speak them via TTS near guests
+        # (memory/pii.py classifies at write time). Manual 'guest_mode' toggle
+        # wins; the presence-driven auto layer will OR into _privacy_gate_active.
+        gate = _privacy_gate_active()
         # Dedupe by fact id, speaker-side first (already learned_at-ordered).
-        seen, resolved = set(), []
+        seen, resolved, gated = set(), [], 0
         for f in (*speaker_facts, *non_speaker_facts):
             if f.id in seen:
                 continue
             seen.add(f.id)
+            if gate and getattr(f, "sensitive", False):
+                gated += 1
+                continue
             resolved.append(f)
+        if gated:
+            log.info("Privacy gate active: withheld %d sensitive fact(s) from "
+                     "prompt injection", gated)
         return Retrieved(memories=memories, facts=resolved)
 
     async def save(self, *, user_text, response, speaker_id, speaker_name):
