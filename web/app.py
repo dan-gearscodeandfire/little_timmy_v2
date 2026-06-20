@@ -40,7 +40,100 @@ _metrics: dict = {
     # turns where the deixis gate fired AND resolution is enabled. None until the
     # first resolved turn. Shown as its own HUD row on the LT-OS.
     "last_resolution_ms": None,
+    # Classifier latency split (2026-06-20): Tier-1 route vs Tier-2 arg-extraction.
+    # last_classifier_ms (above) stays = total classifier wall on the turn (route,
+    # or route+args on a hit) for back-compat with the existing HUD row. These two
+    # break it down so "why was the classifier slow" is answerable per turn.
+    "last_classifier_route_ms": None,
+    "last_classifier_args_ms": None,
+    # E2E wall of a TOOL-routed turn (classifier+args+store+ack TTS, early-return).
+    # The conversation-path e2e (last_e2e_ms) never covers these since the brain
+    # pipeline is skipped; this is the only place a routed turn's total surfaces.
+    "last_tool_turn_e2e_ms": None,
 }
+
+# --- Rolling latency stats (in-memory, reset on restart) ---------------------
+# The _metrics dict above answers "what did the LAST turn cost?". These answer
+# "what's the DISTRIBUTION under each condition?" -- the question point samples
+# can't. Bounded ring buffers per series; percentiles computed on read. Series
+# are keyed "<bucket>:<stage>" so the same stage can be sliced by turn class:
+#   conversation:*  full-brain turns (banter / normal reply)
+#   tool:*          classifier-routed early-return turns (e.g. store_fact)
+#   stage:*         cross-cutting stages that run regardless of turn class
+#                   (classifier_route every turn; classifier_args / resolution
+#                    only when they fire -- so their series .n == fire count)
+#   all:*           cross-class aggregate of a per-turn stage
+from collections import deque, defaultdict
+
+_STATS_WINDOW = 300  # samples retained per series (~ last 300 of each)
+_stats: dict = defaultdict(lambda: deque(maxlen=_STATS_WINDOW))
+_stats_counts: dict = defaultdict(int)  # turn/condition tallies for the "mix"
+
+
+def _percentile(vals: list, p: float) -> float:
+    if not vals:
+        return 0.0
+    s = sorted(vals)
+    k = (len(s) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(s) - 1)
+    return round(s[lo] + (s[hi] - s[lo]) * (k - lo), 1)
+
+
+def _series_summary(vals: list) -> dict:
+    if not vals:
+        return {"n": 0}
+    return {
+        "n": len(vals),
+        "mean": round(sum(vals) / len(vals), 1),
+        "p50": _percentile(vals, 0.50),
+        "p95": _percentile(vals, 0.95),
+        "min": round(min(vals), 1),
+        "max": round(max(vals), 1),
+    }
+
+
+def record_stage(series_key: str, ms) -> None:
+    """Append one cross-cutting stage latency (e.g. classifier_route, resolution).
+    Skips None / non-positive so a stage that didn't run never dilutes its own
+    distribution. series_key is stored verbatim (caller adds the 'stage:' prefix)."""
+    try:
+        ms = float(ms)
+    except (TypeError, ValueError):
+        return
+    if ms > 0:
+        _stats[series_key].append(ms)
+
+
+def record_turn_stats(turn_class: str, stages: dict, flags: dict | None = None) -> None:
+    """Append one turn's per-stage latencies to its class bucket + the cross-class
+    aggregate. turn_class: "conversation" | "tool". stages: {name: ms|None}.
+    flags: truthy condition tags -> bumped in _stats_counts for the mix readout."""
+    _stats_counts["turns"] += 1
+    _stats_counts[f"class:{turn_class}"] += 1
+    for name, ms in stages.items():
+        try:
+            ms = float(ms) if ms is not None else None
+        except (TypeError, ValueError):
+            continue
+        if ms is None or ms <= 0:
+            continue
+        _stats[f"{turn_class}:{name}"].append(ms)
+        _stats[f"all:{name}"].append(ms)
+    for k, v in (flags or {}).items():
+        if v:
+            _stats_counts[f"flag:{k}"] += 1
+
+
+def latency_stats_snapshot() -> dict:
+    """Serializable summary of every series + the condition mix. Used by the
+    /api/latency_stats endpoint and the periodic [PERF-AGG] log line."""
+    return {
+        "window": _STATS_WINDOW,
+        "since": _metrics.get("started_at"),
+        "counts": dict(_stats_counts),
+        "series": {k: _series_summary(list(v)) for k, v in _stats.items() if v},
+    }
 
 
 def init(conversation_manager, orchestrator=None):
@@ -100,6 +193,14 @@ async def get_metrics():
     return {**_metrics,
             "classifier_enabled": bool(runtime_toggles.get("classifier_enabled")),
             "query_resolution_enabled": bool(runtime_toggles.get("query_resolution_enabled"))}
+
+
+@app.get("/api/latency_stats")
+async def get_latency_stats():
+    """Rolling latency distributions (count/mean/p50/p95/min/max) per stage,
+    sliced by turn class (conversation vs tool-routed) plus cross-cutting stages.
+    Resets on restart; window = last _STATS_WINDOW samples per series."""
+    return latency_stats_snapshot()
 
 
 @app.get("/api/conversation")

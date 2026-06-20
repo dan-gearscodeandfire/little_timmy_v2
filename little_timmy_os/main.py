@@ -312,6 +312,18 @@ async def get_timmy_metrics():
         return {"error": "Little Timmy not reachable"}
 
 
+@app.get("/api/timmy/latency_stats")
+async def get_timmy_latency_stats():
+    """Proxy rolling latency distributions from Little Timmy (:8893)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{config.TIMMY_BASE_URL}/api/latency_stats")
+            return r.json()
+    except Exception:
+        return {"error": "Little Timmy not reachable"}
+
+
 @app.get("/api/timmy/conversation")
 async def get_timmy_conversation():
     """Proxy conversation history from Little Timmy."""
@@ -1624,6 +1636,27 @@ header .uptime {
         <div><span style="color:#484f58;">completion</span> <span id="latency-completion-tokens" style="color:#bc8cff; font-weight:bold;">--</span> <span style="color:#484f58;">tokens (estimated)</span></div>
       </div>
     </details>
+    <!-- Rolling latency distributions (2026-06-20): point samples above answer
+         "last turn?"; this answers "distribution under each condition?" via
+         /api/timmy/latency_stats. Resets when little_timmy restarts. -->
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Latency Distributions (rolling)</h2></summary>
+      <div id="lat-stats-mix" style="font-size:10px; color:#8b949e; margin-bottom:6px;">collecting…</div>
+      <table id="lat-stats-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead>
+          <tr style="color:#8b949e; text-align:right;">
+            <th style="text-align:left; font-weight:normal; padding:2px 4px;">stage</th>
+            <th style="font-weight:normal; padding:2px 4px;">n</th>
+            <th style="font-weight:normal; padding:2px 4px;">p50</th>
+            <th style="font-weight:normal; padding:2px 4px;">p95</th>
+            <th style="font-weight:normal; padding:2px 4px;">max</th>
+          </tr>
+        </thead>
+        <tbody id="lat-stats-body">
+          <tr><td colspan="5" style="color:#484f58; padding:4px;">no turns yet</td></tr>
+        </tbody>
+      </table>
+    </details>
     <details class="panel" open style="margin-top:16px;">
       <summary><h2>Latency History</h2></summary>
       <div style="display:flex; justify-content:flex-end; align-items:center; margin-bottom:4px;">
@@ -2206,6 +2239,53 @@ async function pollMetrics() {
       // producing phantom samples during quiet stretches (H7 fix 2026-05-13).
       // Text labels above still update from poll — that part is useful.
     }
+  } catch(e) {}
+}
+
+// Friendly labels for the distribution table. Keys are the server series keys
+// ("<bucket>:<stage>"). Order here = display order; series absent from the
+// snapshot are skipped silently (e.g. tool:* before any tool fires).
+const LAT_STATS_ROWS = [
+  ["conversation:e2e",        "Conversation e2e"],
+  ["conversation:llm_ft",     "  LLM 1st token"],
+  ["conversation:llm_total",  "  LLM total"],
+  ["conversation:tts",        "  TTS"],
+  ["conversation:retrieval",  "  Retrieval"],
+  ["conversation:stt",        "  STT"],
+  ["stage:classifier_route",  "Classifier route (every turn)"],
+  ["stage:classifier_args",   "Classifier args (on hit)"],
+  ["stage:resolution",        "Query resolve (deictic turns)"],
+  ["tool:e2e",                "Tool turn e2e"],
+];
+
+async function pollLatencyStats() {
+  try {
+    const r = await fetch("/api/timmy/latency_stats");
+    const d = await r.json();
+    const body = document.getElementById("lat-stats-body");
+    const mix = document.getElementById("lat-stats-mix");
+    if (!body || d.error || !d.series) return;
+    const c = d.counts || {};
+    mix.textContent = "turns " + (c.turns || 0)
+      + "  ·  conv " + (c["class:conversation"] || 0)
+      + "  ·  tool " + (c["class:tool"] || 0)
+      + "  ·  window " + (d.window || "?") + " samples/series";
+    let html = "";
+    for (const [key, label] of LAT_STATS_ROWS) {
+      const s = d.series[key];
+      if (!s || !s.n) continue;
+      const pad = label.startsWith("  ");
+      html += '<tr style="text-align:right;">'
+        + '<td style="text-align:left; padding:2px 4px; color:'
+        + (pad ? "#8b949e;" : "#c9d1d9; font-weight:bold;") + '">'
+        + label.trim() + '</td>'
+        + '<td style="padding:2px 4px; color:#484f58;">' + s.n + '</td>'
+        + '<td style="padding:2px 4px; color:#c9d1d9;">' + s.p50 + '</td>'
+        + '<td style="padding:2px 4px; color:#bc8cff;">' + s.p95 + '</td>'
+        + '<td style="padding:2px 4px; color:#484f58;">' + s.max + '</td>'
+        + '</tr>';
+    }
+    body.innerHTML = html || '<tr><td colspan="5" style="color:#484f58; padding:4px;">no turns yet</td></tr>';
   } catch(e) {}
 }
 
@@ -2899,6 +2979,8 @@ const _latencyClearBtn = document.getElementById("latency-clear-btn");
 if (_latencyClearBtn) _latencyClearBtn.addEventListener("click", clearLatencyChart);
 pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
+pollLatencyStats();
+setInterval(pollLatencyStats, 15000);
 pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
 pollStreamerpiMain();

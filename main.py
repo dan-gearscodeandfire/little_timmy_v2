@@ -44,7 +44,8 @@ from conversation.turn import (
 )
 from conversation.introductions import Introductions
 from speaker.identifier import SpeakerIdentifier
-from web.app import app, init as web_init, broadcast_event, update_metrics
+from web.app import (app, init as web_init, broadcast_event, update_metrics,
+                     record_turn_stats, latency_stats_snapshot)
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
 from conversation.enroll_intent import detect_enroll_intent
@@ -496,7 +497,8 @@ class Orchestrator:
         # (or a classifier-server outage) returns False and falls through to the
         # normal pipeline unchanged. The user turn was already added/broadcast above.
         if await tool_router.maybe_handle_tool_call(
-                user_text, speaker_name, speaker_db_id, self.conversation, self.tts):
+                user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
+                t_start=t_start):
             return
 
         await self._generate_response(
@@ -524,7 +526,7 @@ class Orchestrator:
             # speaker is the operator/Dan on the typed path (matches the
             # _generate_response defaults below).
             if await tool_router.maybe_handle_tool_call(
-                    text, "dan", 1, self.conversation, self.tts):
+                    text, "dan", 1, self.conversation, self.tts, t_start=t_start):
                 return
             await self._generate_response(text, stt_ms=0, t_start=t_start,
                                            speaker_name="dan", speaker_db_id=1, spk_ms=0)
@@ -907,6 +909,33 @@ class Orchestrator:
             last_est_prompt_tokens=est_prompt_tokens,
             last_est_completion_tokens=est_completion_tokens,
         )
+        # Rolling distributions for the "conversation" (full-brain) turn class.
+        # Tool-routed turns record themselves in tool_router (early-return path);
+        # classifier_route / resolution land in their own cross-cutting series.
+        record_turn_stats("conversation", {
+            "stt": stt_ms,
+            "retrieval": retrieval_ms,
+            "llm_ft": llm_first_token_ms,
+            "llm_total": llm_total_ms,
+            "tts": tts_ms,
+            "e2e": e2e_ms,
+        }, flags={"long_reply": user_invites_longer_reply(user_text)})
+        # Periodic aggregate so the distribution is greppable in the log, not only
+        # via /api/latency_stats. Every 10th turn keeps it cheap and skimmable.
+        if self.conversation.turn_count % 10 == 0:
+            snap = latency_stats_snapshot()
+            ce2e = snap["series"].get("conversation:e2e", {})
+            cft = snap["series"].get("conversation:llm_ft", {})
+            cr = snap["series"].get("stage:classifier_route", {})
+            te2e = snap["series"].get("tool:e2e", {})
+            log.info("[PERF-AGG] turns=%s | conv_e2e p50=%s p95=%s (n=%s) | "
+                     "conv_llm_ft p50=%s p95=%s | classifier_route p50=%s p95=%s (n=%s) | "
+                     "tool_e2e p50=%s (n=%s)",
+                     snap["counts"].get("turns"),
+                     ce2e.get("p50"), ce2e.get("p95"), ce2e.get("n"),
+                     cft.get("p50"), cft.get("p95"),
+                     cr.get("p50"), cr.get("p95"), cr.get("n"),
+                     te2e.get("p50"), te2e.get("n"))
 
         # (the assistant turn was already persisted inside ConversationTurn)
 
