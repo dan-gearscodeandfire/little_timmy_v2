@@ -32,6 +32,22 @@ _WEEKDAYS = {
     "sunday": 6, "sun": 6,
 }
 
+# Named months + common abbreviations -> month number (1..12).
+_MONTHS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
 # Small number-word map for "X days/weeks ago" and "a couple/few".
 _NUM_WORDS = {
     "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -66,6 +82,23 @@ def _word_to_int(tok: str) -> int | None:
     if tok.isdigit():
         return int(tok)
     return _NUM_WORDS.get(tok)
+
+
+def _month_window(year: int, month: int, now: datetime):
+    """Half-open `[first of month 00:00, first of next month 00:00)`, carrying
+    `now`'s tzinfo. Handles the December -> next-January rollover."""
+    start = now.replace(year=year, month=month, day=1,
+                        hour=0, minute=0, second=0, microsecond=0)
+    end = (start.replace(year=year + 1, month=1) if month == 12
+           else start.replace(month=month + 1))
+    return (start, end)
+
+
+def _resolve_month_year(month: int, now: datetime) -> int:
+    """Year of the most recent occurrence of `month` at/before the current
+    month. For recall we only ever look backward, so a month later in the
+    calendar than `now`'s resolves to last year (e.g. "in December" in June)."""
+    return now.year if month <= now.month else now.year - 1
 
 
 def resolve_date_range(phrase: str, now: datetime):
@@ -141,6 +174,23 @@ def resolve_date_range(phrase: str, now: datetime):
         # First day of next month.
         next_month0 = (this_month0 + timedelta(days=32)).replace(day=1)
         return (this_month0, next_month0)
+
+    # --- named months: "in March", "back in April 2025", "last December" ---
+    # Cue-guarded to avoid false matches on month names that double as common
+    # words ("may", "march" the verb, "august" the adjective): a bare month
+    # only resolves when led by a temporal cue OR followed by an explicit year.
+    # No year given -> the most recent PAST occurrence (recall looks backward).
+    _month_alt = "|".join(_MONTHS)
+    m = re.search(
+        r"\b(?:back in|in|during|around|last|this past|sometime in|month of)\s+"
+        r"(" + _month_alt + r")\b(?:\s+(?:of\s+)?(\d{4}))?", p)
+    if not m:
+        # "<month> <year>" with no leading cue ("March 2026", "Apr 2025").
+        m = re.search(r"\b(" + _month_alt + r")\s+(?:of\s+)?(\d{4})\b", p)
+    if m:
+        month = _MONTHS[m.group(1)]
+        year = int(m.group(2)) if m.group(2) else _resolve_month_year(month, now)
+        return _month_window(year, month, now)
 
     # --- "last <weekday>" and bare "<weekday>" -----------------------------
     m = re.search(r"\blast (" + "|".join(_WEEKDAYS) + r")\b", p)

@@ -128,6 +128,65 @@ def test_this_month():
 
 
 # --------------------------------------------------------------------------
+# named months (S3 follow-up: "back in March", "in April 2025", "last December")
+# --------------------------------------------------------------------------
+
+def test_back_in_march_is_this_year():
+    # NOW = June 2026; March already passed this year.
+    assert resolve_date_range("what did we talk about back in March", NOW) == (
+        _d(2026, 3, 1), _d(2026, 4, 1))
+
+
+def test_in_april_full_word():
+    assert resolve_date_range("in April", NOW) == (_d(2026, 4, 1), _d(2026, 5, 1))
+
+
+def test_in_december_resolves_to_last_year():
+    # December is after June -> most recent PAST December is last year.
+    assert resolve_date_range("anything from in December", NOW) == (
+        _d(2025, 12, 1), _d(2026, 1, 1))
+
+
+def test_december_rollover_end_is_january_next_year():
+    start, end = resolve_date_range("in December 2025", NOW)
+    assert start == _d(2025, 12, 1)
+    assert end == _d(2026, 1, 1)
+
+
+def test_month_with_explicit_year():
+    assert resolve_date_range("back in April 2025", NOW) == (
+        _d(2025, 4, 1), _d(2025, 5, 1))
+
+
+def test_month_year_no_cue_word():
+    assert resolve_date_range("March 2024", NOW) == (_d(2024, 3, 1), _d(2024, 4, 1))
+
+
+def test_month_of_year_with_of():
+    assert resolve_date_range("sometime in March of 2023", NOW) == (
+        _d(2023, 3, 1), _d(2023, 4, 1))
+
+
+def test_abbreviated_month():
+    assert resolve_date_range("in Feb", NOW) == (_d(2026, 2, 1), _d(2026, 3, 1))
+
+
+def test_last_march():
+    # "last March" -> most recent past March (this year, since it's passed).
+    assert resolve_date_range("last March", NOW) == (_d(2026, 3, 1), _d(2026, 4, 1))
+
+
+def test_bare_ambiguous_month_without_cue_does_not_match():
+    # "may"/"march" as common words must NOT resolve without a temporal cue.
+    assert resolve_date_range("you may have told me", NOW) is None
+    assert resolve_date_range("we should march forward", NOW) is None
+
+
+def test_in_june_is_current_month():
+    assert resolve_date_range("in June", NOW) == (_d(2026, 6, 1), _d(2026, 7, 1))
+
+
+# --------------------------------------------------------------------------
 # N ago + fuzzy windows
 # --------------------------------------------------------------------------
 

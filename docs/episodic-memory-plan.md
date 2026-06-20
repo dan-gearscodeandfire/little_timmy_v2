@@ -105,7 +105,7 @@
 
 **LIVE 2026-06-20** (both services restarted **18:12 EDT** to load the gate code; `needs_retrieval_gate` toggle flipped **ON**, read live per turn — rollback = flip toggle OFF, no restart). Live validation matrix (mouth muted): banter/ON → **no** `Retrieved N memories` *and* no `[RESOLVE]` log line (retrieve() + query_resolution both skipped); recall/ON ("what is **my** favorite tool") → `Retrieved 5`, grounded answer; banter/OFF → `Retrieved 5` (retrieve-always preserved). Matches the hermetic skip-vs-retrieve matrix exactly.
 
-**Known follow-up carried from S3 (not blocking):** named-month resolver gap in `memory/temporal.py` ("back in March"/"in April") — still open.
+**~~Known follow-up carried from S3~~ RESOLVED 2026-06-20:** named-month resolver gap closed in `memory/temporal.py` — `resolve_date_range` now handles `"in March"` / `"back in April 2025"` / `"last December"` / `"March 2026"` / `"in Feb"`. Cue-guarded (a temporal lead-in or explicit year required) so common-word months ("may", "march" the verb) don't false-match; no year → most recent PAST occurrence. +11 hermetic tests. **Code-complete + tested; deploys on the next service restart (batched with S5 go-live so the quiet shop isn't restarted twice).**
 
 ## Session 5 — Restore vector embedding on episodes, *fixed* (scale phase)
 
