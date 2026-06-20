@@ -90,13 +90,22 @@
 - Gate: `classifier_enabled` + `RECALL_TEMPORAL_ENABLED`. Dead-port/parse failure → normal pipeline.
 - **Exit:** live test several time phrases; routing accuracy ≥ store_fact bar; answers grounded in real episodes, not hallucinated.
 
-## Session 4 — Gate the read path (`needs_retrieval`)
+## Session 4 — Gate the read path (`needs_retrieval`) ✅ DONE 2026-06-20 (default OFF, go-live pending)
 
-**Goal:** stop running vector `retrieve()` on every banter turn over the empty store.
+**Goal:** stop running vector `retrieve()` on every banter turn over the (frozen, near-empty) store.
 
-- Add a `needs_retrieval` decision (router flag or cheap heuristic): banter → skip `retrieve()` at `conversation/turn.py:468`, inject only facts-about-speaker. Recall/question turns → retrieve.
-- Independent of the episodic work; pure latency/token win (~202 tok + a DB round-trip per skipped turn).
-- **Exit:** banter turns show `retrieval_ms≈0` / no memories block; recall turns unchanged.
+**Decision (Dan, 2026-06-20):** **cheap local heuristic**, not a router signal. The `:8092` route only emits `store_fact | recall_temporal | none`, so a non-temporal recall question ("what's my dog's name?") routes as `none` — indistinguishable from banter without a new grammar class. The heuristic catches questions directly, adds zero latency/classify calls, lives at the skip seam, and is hermetically testable. `recall_temporal` already handles temporal recall upstream, so the gate only separates non-temporal questions/requests from banter.
+
+**Implementation:**
+- `conversation/turn.py`: `_RETRIEVAL_RE` + `_needs_retrieval(text)` — True (retrieve) on any `?`, wh-word, recall verb (`remember/recall/forget/told/tell/said/mention/know`…), possessive `\bmy\b`, or question lead-in (`do/did/have/is… you/i/we/there`); False (skip) only on plain declarative banter. **Biased toward retrieving** — a wrong retrieve = today's behaviour; a wrong skip would silently drop a recall once the vector store is repopulated in S5.
+- `LiveMemory.gather()`: when `_retrieval_gate_active()` AND `not _needs_retrieval(user_text)`, swap `retrieve()` for `_empty()` in the `asyncio.gather` (arity unchanged). Facts-about-speaker **and** facts-about-subject lookups always run. As a bonus the skip also elides the `query_resolution` RESOLVE call (it lives *inside* `retrieve()`).
+- Gate: `needs_retrieval_gate` runtime toggle (default **False**, live-read per turn — no config master, mirrors `query_resolution_enabled`). Degrades to False on any persistence error.
+
+**Validation:** 27 new hermetic tests in `tests/test_needs_retrieval.py` (banter/recall heuristic matrix + `gather()` skip-vs-retrieve under gate ON/OFF, with `retrieve()`/facts/toggle monkeypatched) — green alongside the S2/S3 suites (66 total). `test_conversation_turn.py` still green.
+
+**Go-live pending (Dan):** the running service predates the edit, so live skip-validation needs `sudo -n systemctl restart little-timmy{,-os}.service` + flip `needs_retrieval_gate` ON (`POST :8893/api/…` toggle or edit `data/lt_runtime_toggles.json`). Expected after restart: a banter turn shows **no** `Retrieved N memories` log line; recall/question turns unchanged. (Pre-restart live run on 2026-06-20 confirmed toggle plumbing + turn completion but ran the old retrieve-always code, as expected.)
+
+**Known follow-up carried from S3 (not blocking):** named-month resolver gap in `memory/temporal.py` ("back in March"/"in April") — still open.
 
 ## Session 5 — Restore vector embedding on episodes, *fixed* (scale phase)
 

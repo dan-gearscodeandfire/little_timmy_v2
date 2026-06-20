@@ -25,6 +25,7 @@ turn, voice learning) happen at the doorway, OUTSIDE this module; the resolved
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -42,6 +43,44 @@ from conversation.reply_filter import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# S4 read-path gate (needs_retrieval). We skip the vector retrieve() ONLY on
+# confidently-banter turns; anything that smells like a question, a reference to
+# stored knowledge, or a possessive referent retrieves as before. Biased toward
+# retrieving: a wrong retrieve just reproduces today's behaviour, while a wrong
+# skip would silently drop a recall once the (currently frozen) vector store is
+# repopulated in S5. recall_temporal already handles temporal recall upstream,
+# so this only needs to separate non-temporal questions/requests from banter.
+_RETRIEVAL_RE = re.compile(
+    r"\?"                                                    # any question
+    r"|\b(?:who|what|whats|when|where|which|why|whose|whom|how)\b"  # wh-words
+    r"|\b(?:remember|recall|forget|forgot|told|tell|telling|said|saying"
+    r"|mention|mentioned|know|knew)\b"                       # recall verbs
+    r"|\bmy\b"                                               # possessive referent
+    r"|\b(?:do|did|have|has|are|is|was|were)\s+(?:you|i|we|there)\b",  # question lead-ins
+    re.IGNORECASE,
+)
+
+
+def _needs_retrieval(user_text: str) -> bool:
+    """Heuristic banter filter for the S4 read-path gate. True (-> retrieve) on
+    any question / recall verb / possessive referent; False (-> skip) only on
+    plain declarative banter. Pure-function, zero added latency. See
+    _RETRIEVAL_RE for the rationale (biased toward retrieving)."""
+    return bool(_RETRIEVAL_RE.search(user_text or ""))
+
+
+def _retrieval_gate_active() -> bool:
+    """True when the S4 needs_retrieval read-path gate is enabled (skip vector
+    retrieve() on banter). Live-read 'needs_retrieval_gate' runtime toggle,
+    default False. Mirrors _privacy_gate_active's read-live, degrade-to-False
+    convention so a persistence hiccup never drops retrieval."""
+    try:
+        from persistence import runtime_toggles
+        return bool(runtime_toggles.get("needs_retrieval_gate"))
+    except Exception:
+        return False
 
 
 def _privacy_gate_active() -> bool:
@@ -470,8 +509,16 @@ class LiveMemory:
             return []
 
         speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
+        # S4 read-path gate: skip the vector retrieve() on confidently-banter
+        # turns (gate ON + heuristic says no recall intent). The facts lookups
+        # always run -- only the (currently frozen, near-empty) `memories` store
+        # query is elided. _empty() keeps the gather arity/shape identical.
+        skip_retrieval = _retrieval_gate_active() and not _needs_retrieval(user_text)
+        if skip_retrieval:
+            log.debug("needs_retrieval gate: banter turn -> skipping vector retrieve()")
         gathered = await asyncio.gather(
-            retrieve(user_text, top_k=self._top_k, context_turns=context_turns),
+            _empty() if skip_retrieval
+            else retrieve(user_text, top_k=self._top_k, context_turns=context_turns),
             get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty(),
             get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         )

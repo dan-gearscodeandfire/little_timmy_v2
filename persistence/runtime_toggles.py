@@ -140,6 +140,18 @@ _DEFAULTS: dict = {
     # presence-driven AUTO layer will OR into the gate later -- manual wins.
     # Default OFF.
     "guest_mode": False,
+    # --- S4 read-path gate: needs_retrieval (2026-06-20) ----------------------
+    # When True, conversation/turn.py:LiveMemory.gather() SKIPS the vector
+    # retrieve() over the `memories` store on confidently-banter turns (no
+    # question / recall verb / possessive referent -- see turn._RETRIEVAL_RE),
+    # saving a DB round-trip + ~202 prompt tokens per skipped turn. Recall /
+    # question turns retrieve exactly as before; the facts-about-speaker (and
+    # facts-about-subject) lookups ALWAYS run, gate or no gate. Conservative by
+    # design -- biased toward retrieving, so a misread costs latency, never a
+    # dropped recall. Independent of the episodic work; recall_temporal handles
+    # temporal recall upstream. Read live per turn -- no restart to flip.
+    # Default OFF (opt-in A/B). No config master (cf. query_resolution_enabled).
+    "needs_retrieval_gate": False,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
