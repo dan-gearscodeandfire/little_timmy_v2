@@ -135,6 +135,7 @@ def build_ephemeral_block(
     fusion_source: str | None = None,
     face_hint_name: str | None = None,
     situation_regime: str | None = None,
+    recall_block: str | None = None,
 ) -> str:
     """Build the per-turn dynamic context block.
 
@@ -224,6 +225,14 @@ def build_ephemeral_block(
             content = m.content if len(m.content) <= 200 else m.content[:200] + "..."
             mem_lines.append(f"- ({time_str}) {content}")
         parts.append("\n".join(mem_lines))
+
+    # [WHAT WE TALKED ABOUT] — episodic recall augmentation (recall_temporal
+    # router intent). The router resolves the user's date phrase, fetches the
+    # overlapping episode summaries UNTRUNCATED, and hands the fully-formed block
+    # in. Placed after the (truncated) vector memories so it has recency, and
+    # before the vision/speaker tail. Empty string / None emits nothing.
+    if recall_block:
+        parts.append(recall_block)
 
     if visual_question and vision_subject_absent:
         # Averted-gaze guard (C6): the user asked about themselves but the

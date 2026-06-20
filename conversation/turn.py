@@ -126,6 +126,10 @@ class TurnContext:
     # from runtime_toggles at doorway assembly (main.py) so the per-turn read
     # happens in one place, mirroring how the other live toggles are read there.
     situation_regime: Optional[str] = None
+    # [WHAT WE TALKED ABOUT] block from the recall_temporal router intent
+    # (episodic date-range recall). Pre-formatted by the doorway/router and
+    # injected verbatim into the context block. None = no episodic recall.
+    recall_block: Optional[str] = None
     on_first_token: Optional[Callable[[], Awaitable[None]]] = None
     on_first_sentence: Optional[Callable[[], Awaitable[None]]] = None
 
@@ -237,6 +241,7 @@ class ConversationTurn:
             fusion_source=ctx.fusion_source,
             face_hint_name=ctx.face_hint_name,
             situation_regime=ctx.situation_regime,
+            recall_block=ctx.recall_block,
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)

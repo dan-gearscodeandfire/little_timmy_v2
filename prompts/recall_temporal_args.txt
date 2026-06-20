@@ -1,0 +1,17 @@
+The user asked what was discussed during a past time period. Extract ONLY the
+natural-language time phrase from their message -- the part that names when.
+
+- phrase: the time expression exactly as a short phrase, e.g. "yesterday",
+  "last Saturday", "this morning", "last week", "a couple weeks ago",
+  "three days ago". Strip the rest of the question.
+
+Examples:
+- "what did we talk about last week" -> {"phrase":"last week"}
+- "remind me what I said this morning" -> {"phrase":"this morning"}
+- "did we discuss the budget a couple weeks ago" -> {"phrase":"a couple weeks ago"}
+- "what was I telling you about last Saturday" -> {"phrase":"last Saturday"}
+- "what did we talk about yesterday" -> {"phrase":"yesterday"}
+
+If no explicit time phrase is present, return {"phrase":""}.
+
+Output only the JSON object.

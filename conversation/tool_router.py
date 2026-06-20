@@ -25,8 +25,11 @@ classifier-server outage degrades gracefully and never drops a turn.
 import json
 import logging
 import random
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
+import config
 from llm import client
 from memory.facts import store_fact
 from memory.extraction import _normalize_subject
@@ -37,6 +40,30 @@ log = logging.getLogger(__name__)
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _ROUTE_PROMPT = (_PROMPTS_DIR / "classify_route.txt").read_text(encoding="utf-8")
 _ARGS_PROMPT = (_PROMPTS_DIR / "store_fact_args.txt").read_text(encoding="utf-8")
+_RECALL_ARGS_PROMPT = (_PROMPTS_DIR / "recall_temporal_args.txt").read_text(encoding="utf-8")
+
+# Max episode summaries injected into one [WHAT WE TALKED ABOUT] block.
+_RECALL_EPISODE_LIMIT = 12
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    """Result of the first-pass router.
+
+    `handled=True`  -> the router OWNS the turn (terminal tool, e.g. store_fact);
+                       the caller early-returns, skipping the brain.
+    `handled=False` -> fall through to the normal conversation pipeline. If
+                       `recall_block` is set (recall_temporal), the caller passes
+                       it into _generate_response so the brain answers grounded
+                       in the recalled episodes -- this is retrieval AUGMENTATION,
+                       not a terminal action.
+    """
+    handled: bool = False
+    recall_block: str | None = None
+
+
+# Falsy-by-convention sentinel for the common "do nothing, fall through" path.
+_FALLTHROUGH = ToolOutcome(handled=False, recall_block=None)
 
 
 def _load_acks() -> list[str]:
@@ -54,13 +81,23 @@ def _load_acks() -> list[str]:
 # tool_router_bench_constrained.py). char excludes the JSON string delimiters so
 # the emitted object is always parseable.
 _ROUTE_GRAMMAR = r'''
-root        ::= store-call | none-call
-store-call  ::= "{\"tool\":\"store_fact\"}"
-none-call   ::= "{\"tool\":\"none\"}"
+root         ::= store-call | recall-call | none-call
+store-call   ::= "{\"tool\":\"store_fact\"}"
+recall-call  ::= "{\"tool\":\"recall_temporal\"}"
+none-call    ::= "{\"tool\":\"none\"}"
 '''
 
 _ARGS_GRAMMAR = r'''
 root  ::= "{\"subject\":\"" str "\",\"predicate\":\"" str "\",\"value\":\"" str "\"}"
+str   ::= char+
+char  ::= [^"\\]
+'''
+
+# Tier-2 for recall_temporal: extract the natural-language time phrase only
+# ("last Saturday", "yesterday", "a couple weeks ago"). resolve_date_range
+# turns it into a concrete window downstream.
+_RECALL_ARGS_GRAMMAR = r'''
+root  ::= "{\"phrase\":\"" str "\"}"
 str   ::= char+
 char  ::= [^"\\]
 '''
@@ -102,6 +139,107 @@ async def extract_store_fact_args(user_text: str) -> dict | None:
     return obj
 
 
+async def extract_recall_phrase(user_text: str) -> str | None:
+    """Tier-2 for recall_temporal. Returns the time phrase, or None on error."""
+    content = await client.classify_constrained(
+        messages=[{"role": "system", "content": _RECALL_ARGS_PROMPT},
+                  {"role": "user", "content": user_text}],
+        grammar=_RECALL_ARGS_GRAMMAR,
+    )
+    if not content:
+        return None
+    try:
+        obj = json.loads(content)
+    except json.JSONDecodeError:
+        log.warning("[CLASSIFIER] unparseable recall-args output: %r", content)
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return (obj.get("phrase") or "").strip()
+
+
+def _fmt_local(dt: datetime) -> datetime:
+    """Render a (tz-aware, UTC-from-DB) datetime in the host's local tz."""
+    return dt.astimezone()
+
+
+def _fmt_episode_line(span_start: datetime, span_end: datetime, text: str) -> str:
+    s = _fmt_local(span_start)
+    e = _fmt_local(span_end)
+    if s.date() == e.date():
+        when = f"{s.strftime('%a %b %d, %-I:%M')}–{e.strftime('%-I:%M %p')}"
+    else:
+        when = f"{s.strftime('%a %b %d %-I:%M %p')} – {e.strftime('%a %b %d %-I:%M %p')}"
+    return f"- ({when}) {text.strip()}"
+
+
+def _fmt_window_label(phrase: str, start: datetime, end: datetime) -> str:
+    """Human label for the resolved window, e.g. 'Saturday, June 13' or
+    'June 8-15'. Prefers the user's own phrase when present."""
+    s = _fmt_local(start)
+    e = _fmt_local(end)
+    # Day-granular window (<= ~26h) -> name the single day.
+    span_days = (e - s).total_seconds() / 86400.0
+    if span_days <= 1.1:
+        label = s.strftime("%A, %B %-d")
+    else:
+        label = f"{s.strftime('%B %-d')}–{(e).strftime('%B %-d')}"
+    if phrase:
+        return f"{phrase} ({label})"
+    return label
+
+
+def _build_recall_block(phrase: str, start: datetime, end: datetime,
+                        episodes: list[dict]) -> str:
+    """Format the [WHAT WE TALKED ABOUT] context block (hit or empty-marker)."""
+    label = _fmt_window_label(phrase, start, end)
+    if not episodes:
+        return (
+            f"[WHAT WE TALKED ABOUT] You have NO recorded conversation summaries "
+            f"from {label}. Tell the user honestly that you don't have anything "
+            f"saved from then; do NOT invent or guess what was discussed."
+        )
+    lines = [
+        f"[WHAT WE TALKED ABOUT] Your recorded conversation summaries from "
+        f"{label}. Answer the user's question using ONLY these; if they don't "
+        f"cover what was asked, say so rather than guessing:"
+    ]
+    for ep in episodes:
+        lines.append(_fmt_episode_line(ep["span_start"], ep["span_end"], ep["text"]))
+    return "\n".join(lines)
+
+
+async def _resolve_recall_block(user_text: str) -> str | None:
+    """Run the recall_temporal tool: phrase -> date range -> episodes -> block.
+
+    Returns the pre-formatted [WHAT WE TALKED ABOUT] block (including the
+    empty-window 'nothing from then' marker), or None when no date range can be
+    resolved at all (-> caller falls through to the normal pipeline unchanged)."""
+    from memory.temporal import resolve_date_range
+    from memory.manager import query_episodes_by_range
+
+    phrase = await extract_recall_phrase(user_text)
+    if phrase is None:
+        phrase = ""  # extractor error -> fall back to scanning the raw utterance
+    now = datetime.now().astimezone()
+    # Prefer the extracted phrase; fall back to the whole utterance (the resolver
+    # scans for a time expression anywhere in the string).
+    rng = resolve_date_range(phrase, now) or resolve_date_range(user_text, now)
+    if not rng:
+        log.info("[TOOL recall_temporal] no date range from %r / %r; falling through",
+                 phrase, user_text[:60])
+        return None
+    start, end = rng
+    try:
+        episodes = await query_episodes_by_range(start, end, limit=_RECALL_EPISODE_LIMIT)
+    except Exception:
+        log.exception("[TOOL recall_temporal] episode query failed; falling through")
+        return None
+    log.info("[TOOL recall_temporal] phrase=%r range=%s..%s -> %d episode(s)",
+             phrase or f"(from utterance) {user_text[:40]}", start, end, len(episodes))
+    return _build_recall_block(phrase, start, end, episodes)
+
+
 async def maybe_handle_tool_call(
     user_text: str,
     speaker_name: str | None,
@@ -109,16 +247,20 @@ async def maybe_handle_tool_call(
     conversation,
     tts,
     t_start: float | None = None,
-) -> bool:
-    """Classify `user_text`; if it routes to a tool, execute it and return True
-    (the caller must then early-return, skipping the normal LLM pipeline).
-    Returns False to fall through to normal conversation.
+) -> ToolOutcome:
+    """Classify `user_text` and route it. Returns a ToolOutcome:
+
+    - terminal tool hit (store_fact): executes the tool, speaks the ACK, injects
+      the assistant turn, returns ToolOutcome(handled=True) -> caller early-returns.
+    - recall_temporal: returns ToolOutcome(handled=False, recall_block=...) ->
+      caller passes the block into the normal pipeline (augmentation, not terminal).
+    - everything else / any error: ToolOutcome(handled=False) -> fall through.
 
     The caller has ALREADY added + broadcast the user turn before calling this,
-    so on a tool hit we only inject the assistant ACK turn.
+    so on a terminal tool hit we only inject the assistant ACK turn.
     """
     if not runtime_toggles.get("classifier_enabled"):
-        return False
+        return _FALLTHROUGH
 
     # Time the Tier-1 route -- the "first-pass tool-call filter" latency that every
     # utterance pays when the classifier is on. Published on EVERY turn (hit or
@@ -139,8 +281,34 @@ async def maybe_handle_tool_call(
     except Exception:
         log.debug("[CLASSIFIER] latency publish failed (non-fatal)", exc_info=True)
 
+    # recall_temporal: retrieval AUGMENTATION, not a terminal tool. Gated
+    # additionally by RECALL_TEMPORAL_ENABLED; when off, a recall route just
+    # falls through to the normal pipeline (the brain answers from vector recall
+    # as before). The user turn is NOT consumed here — we hand a context block
+    # back and let _generate_response run the brain grounded in it.
+    if route == "recall_temporal":
+        if not getattr(config, "RECALL_TEMPORAL_ENABLED", False):
+            return _FALLTHROUGH
+        t_args = time.perf_counter()
+        block = await _resolve_recall_block(user_text)
+        args_ms = int((time.perf_counter() - t_args) * 1000)
+        try:
+            from web.app import update_metrics, record_stage, broadcast_event
+            update_metrics(last_classifier_args_ms=args_ms,
+                           last_classifier_ms=classifier_ms + args_ms)
+            record_stage("stage:classifier_args", args_ms)
+            if block is not None:
+                update_metrics(last_tool_call="recall_temporal",
+                               last_tool_call_ts=time.time())
+                await broadcast_event("tool_call", {"name": "recall_temporal"})
+        except Exception:
+            log.debug("[TOOL recall_temporal] publish failed (non-fatal)", exc_info=True)
+        # block is None when no date range could be resolved -> fall through with
+        # no augmentation (recall_block=None is a no-op in build_ephemeral_block).
+        return ToolOutcome(handled=False, recall_block=block)
+
     if route != "store_fact":
-        return False  # 'none', None (error), or unknown tool -> normal pipeline
+        return _FALLTHROUGH  # 'none', None (error), or unknown tool -> pipeline
 
     t_args = time.perf_counter()
     args = await extract_store_fact_args(user_text)
@@ -158,7 +326,7 @@ async def maybe_handle_tool_call(
         # Grammar guarantees shape, not sense -- a failed/empty extraction
         # degrades to a normal conversational reply rather than a junk fact.
         log.info("[TOOL store_fact] extraction empty/failed (%r); falling through", args)
-        return False
+        return _FALLTHROUGH
 
     subject = _normalize_subject(args["subject"], speaker_name)
     predicate = (args.get("predicate") or "fact").strip()
@@ -167,7 +335,7 @@ async def maybe_handle_tool_call(
         await store_fact(subject, predicate, value, speaker_id=speaker_db_id)
     except Exception:
         log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
-        return False
+        return _FALLTHROUGH
 
     ack = random.choice(_load_acks())
     # Inject the assistant ACK turn ONLY (user turn already added by caller).
@@ -203,4 +371,4 @@ async def maybe_handle_tool_call(
 
     log.info("[TOOL store_fact] %s.%s = %s (speaker=%s) -> %r",
              subject, predicate, value, speaker_name, ack)
-    return True
+    return ToolOutcome(handled=True)

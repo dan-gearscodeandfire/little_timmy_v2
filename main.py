@@ -496,9 +496,10 @@ class Orchestrator:
         # this turn -> early return, skipping the brain. Any non-tool utterance
         # (or a classifier-server outage) returns False and falls through to the
         # normal pipeline unchanged. The user turn was already added/broadcast above.
-        if await tool_router.maybe_handle_tool_call(
+        outcome = await tool_router.maybe_handle_tool_call(
                 user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
-                t_start=t_start):
+                t_start=t_start)
+        if outcome.handled:
             return
 
         await self._generate_response(
@@ -507,6 +508,7 @@ class Orchestrator:
             speaker_db_id=speaker_db_id,
             spk_ms=spk_ms,
             voice_confidence=speaker_result.confidence,
+            recall_block=outcome.recall_block,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -525,11 +527,13 @@ class Orchestrator:
             # First-pass tool-call classifier on the text path too (default OFF).
             # speaker is the operator/Dan on the typed path (matches the
             # _generate_response defaults below).
-            if await tool_router.maybe_handle_tool_call(
-                    text, "dan", 1, self.conversation, self.tts, t_start=t_start):
+            outcome = await tool_router.maybe_handle_tool_call(
+                    text, "dan", 1, self.conversation, self.tts, t_start=t_start)
+            if outcome.handled:
                 return
             await self._generate_response(text, stt_ms=0, t_start=t_start,
-                                           speaker_name="dan", speaker_db_id=1, spk_ms=0)
+                                           speaker_name="dan", speaker_db_id=1, spk_ms=0,
+                                           recall_block=outcome.recall_block)
 
     async def maybe_speak_proactively(self, record, is_new_arrival: bool) -> None:
         """Maybe emit a short unprompted remark in reaction to a visual event.
@@ -643,7 +647,8 @@ class Orchestrator:
                                   speaker_name: str = "dan",
                                   speaker_db_id: int | None = 1,
                                   spk_ms: int = 0,
-                                  voice_confidence: float | None = None):
+                                  voice_confidence: float | None = None,
+                                  recall_block: str | None = None):
         """Core response pipeline: presence doorway → delegate to the turn."""
 
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
@@ -858,6 +863,7 @@ class Orchestrator:
                 # Slice A: live regime knob, read once here per turn (re-reads
                 # disk so an LT-OS change takes effect without restart).
                 situation_regime=runtime_toggles.get("situation_regime"),
+                recall_block=recall_block,
                 on_first_sentence=_on_first_sentence,
             ),
         )
