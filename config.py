@@ -58,7 +58,7 @@ PERSIST_EXTRACTED_MEMORIES = False # 2026-06-18 (Dan): do NOT auto-create vector
 # Both flags default OFF: Session 0 only lays the `episodes` table schema; no
 # runtime path reads or writes it yet. They are armed in later sessions.
 PERSIST_EPISODES = True         # S1 LIVE 2026-06-20 (Dan): write rollup summaries to `episodes` (with real turn-timestamp spans) on warm->cold eviction. Independent of PERSIST_COLD_SUMMARIES (which targets the legacy `memories` tier). Rollback = set False + restart.
-RECALL_TEMPORAL_ENABLED = False  # S3: enable the `recall_temporal` router intent (date-range query over `episodes`). Also requires classifier_enabled.
+RECALL_TEMPORAL_ENABLED = True   # S3 LIVE 2026-06-20 (Dan): enable the `recall_temporal` router intent (date-range query over `episodes`). Also requires classifier_enabled (ON). Rollback = set False + restart.
 
 # --- Privacy / PII gating (2026-06-18, Dan) ---
 # Facts are classified for sensitivity at creation (memory/pii.py, called from
