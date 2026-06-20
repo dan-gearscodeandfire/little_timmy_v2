@@ -75,9 +75,15 @@
 - Query: episodes whose `[span_start, span_end]` **overlaps** `[start, end]`, `ORDER BY span_start`. Cap + untruncated text (these don't go through the 200-char guillotine).
 - **Exit:** unit tests for resolver edge cases + overlap query over seeded episodes. No conversation wiring.
 
-## Session 3 — `recall_temporal` router tool (the original goal, realized)
+## Session 3 — `recall_temporal` router tool (the original goal, realized) ✅ DONE + LIVE 2026-06-20
 
 **Goal:** "what did we talk about last Saturday" returns a grounded answer.
+
+**Implemented (2026-06-20, branch `feat/episodic-memory-s1-summaries`, commits `2747136` + go-live `<flag>`):** Tier-1 route grammar + `classify_route.txt` gained `recall_temporal` ("last week" example flipped from `none`); Tier-2 `recall_temporal_args.txt` extracts the time phrase. `tool_router.maybe_handle_tool_call` now returns `ToolOutcome(handled, recall_block)` instead of `bool` (both `main.py` call sites updated). `recall_temporal` is retrieval-AUGMENTATION, not terminal: `_resolve_recall_block()` runs `extract_recall_phrase` → `resolve_date_range` → `query_episodes_by_range` → formats a `[WHAT WE TALKED ABOUT]` block (untruncated episodes, or an honest "NO recorded summaries from <window>" marker on empty), and hands it back; the caller falls through to `_generate_response`. `recall_block` threads `_generate_response` → `TurnContext` → `build_ephemeral_block` (after vector memories, inside `[CONTEXT]`). Gated by `RECALL_TEMPORAL_ENABLED` (now **True**) + `classifier_enabled` (ON). Graceful fall-through on unresolved phrase / query error / parse failure.
+
+**Validation:** 8 offline router tests + 31 S2 resolver tests green. Live routing battery on `:8092`: **15/15 intents, 4/4 phrases** (above the store_fact bar). Live end-to-end turns (services restarted 17:53 EDT): HIT ("yesterday" → 1 episode → grounded answer), EMPTY ("three days ago" → 0 episodes → honest "I have no memory of it", no confabulation), and fall-through ("back in March" → unresolved → normal pipeline). All `[TOOL recall_temporal]` log lines confirm correct ranges + episode counts.
+
+**Known follow-up (not blocking):** `resolve_date_range` does NOT handle named-month phrases ("back in March", "in April") — they fall through harmlessly but don't recall. Add named-month + "in <month> <year>" support to `memory/temporal.py` as a quick enhancement.
 
 - Add intent to `conversation/tool_router.py`: Tier-1 route gains `recall_temporal`; Tier-2 emits the date phrase. Reuse the `store_fact` GBNF harness.
 - **Key difference from `store_fact`:** this is a *retrieval-augmentation* intent, not a terminal action — it does **not** early-return with an ACK. On hit: `resolve_date_range` → query episodes → inject as a dedicated untruncated `[WHAT WE TALKED ABOUT]` block → fall through to `_generate_response` so the brain answers from it. On empty range → graceful "I don't have anything from then."
