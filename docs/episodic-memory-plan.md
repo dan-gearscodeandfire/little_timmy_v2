@@ -90,7 +90,7 @@
 - Gate: `classifier_enabled` + `RECALL_TEMPORAL_ENABLED`. Dead-port/parse failure → normal pipeline.
 - **Exit:** live test several time phrases; routing accuracy ≥ store_fact bar; answers grounded in real episodes, not hallucinated.
 
-## Session 4 — Gate the read path (`needs_retrieval`) ✅ DONE 2026-06-20 (default OFF, go-live pending)
+## Session 4 — Gate the read path (`needs_retrieval`) ✅ DONE + LIVE 2026-06-20
 
 **Goal:** stop running vector `retrieve()` on every banter turn over the (frozen, near-empty) store.
 
@@ -103,7 +103,7 @@
 
 **Validation:** 27 new hermetic tests in `tests/test_needs_retrieval.py` (banter/recall heuristic matrix + `gather()` skip-vs-retrieve under gate ON/OFF, with `retrieve()`/facts/toggle monkeypatched) — green alongside the S2/S3 suites (66 total). `test_conversation_turn.py` still green.
 
-**Go-live pending (Dan):** the running service predates the edit, so live skip-validation needs `sudo -n systemctl restart little-timmy{,-os}.service` + flip `needs_retrieval_gate` ON (`POST :8893/api/…` toggle or edit `data/lt_runtime_toggles.json`). Expected after restart: a banter turn shows **no** `Retrieved N memories` log line; recall/question turns unchanged. (Pre-restart live run on 2026-06-20 confirmed toggle plumbing + turn completion but ran the old retrieve-always code, as expected.)
+**LIVE 2026-06-20** (both services restarted **18:12 EDT** to load the gate code; `needs_retrieval_gate` toggle flipped **ON**, read live per turn — rollback = flip toggle OFF, no restart). Live validation matrix (mouth muted): banter/ON → **no** `Retrieved N memories` *and* no `[RESOLVE]` log line (retrieve() + query_resolution both skipped); recall/ON ("what is **my** favorite tool") → `Retrieved 5`, grounded answer; banter/OFF → `Retrieved 5` (retrieve-always preserved). Matches the hermetic skip-vs-retrieve matrix exactly.
 
 **Known follow-up carried from S3 (not blocking):** named-month resolver gap in `memory/temporal.py` ("back in March"/"in April") — still open.
 
