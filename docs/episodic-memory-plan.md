@@ -105,18 +105,25 @@
 
 **LIVE 2026-06-20** (both services restarted **18:12 EDT** to load the gate code; `needs_retrieval_gate` toggle flipped **ON**, read live per turn — rollback = flip toggle OFF, no restart). Live validation matrix (mouth muted): banter/ON → **no** `Retrieved N memories` *and* no `[RESOLVE]` log line (retrieve() + query_resolution both skipped); recall/ON ("what is **my** favorite tool") → `Retrieved 5`, grounded answer; banter/OFF → `Retrieved 5` (retrieve-always preserved). Matches the hermetic skip-vs-retrieve matrix exactly.
 
-**~~Known follow-up carried from S3~~ RESOLVED 2026-06-20:** named-month resolver gap closed in `memory/temporal.py` — `resolve_date_range` now handles `"in March"` / `"back in April 2025"` / `"last December"` / `"March 2026"` / `"in Feb"`. Cue-guarded (a temporal lead-in or explicit year required) so common-word months ("may", "march" the verb) don't false-match; no year → most recent PAST occurrence. +11 hermetic tests. **Code-complete + tested; deploys on the next service restart (batched with S5 go-live so the quiet shop isn't restarted twice).**
+**~~Known follow-up carried from S3~~ RESOLVED + LIVE 2026-06-20** (`9cbe71c`): named-month resolver gap closed in `memory/temporal.py` — `resolve_date_range` now handles `"in March"` / `"back in April 2025"` / `"last December"` / `"March 2026"` / `"in Feb"`. Cue-guarded (a temporal lead-in or explicit year required) so common-word months ("may", "march" the verb) don't false-match; no year → most recent PAST occurrence. +11 hermetic tests. **LIVE (restart 18:33 EDT):** validated — `"back in March"` now resolves to `2026-03-01..2026-04-01` (was a fall-through) and answers honestly ("no records from March", 0 episodes).
 
-## Session 5 — Restore vector embedding on episodes, *fixed* (scale phase)
+## Session 5 — Restore vector embedding on episodes, *fixed* (scale phase) 🟡 BUILT 2026-06-20, corpus-gated (flags OFF)
 
 **Goal:** semantic "find the time I mentioned something like X" — only once the corpus is big enough that embedding beats date-range + facts.
 
-- Fill `episodes.embedding` at write. **Prerequisite fixes (or it re-rots):**
-  - **Dedup at write:** content-hash or similarity threshold before insert (no blind INSERT).
-  - **Recency in rank:** add decay to `_fuse` — `score = similarity × halflife_decay(now − span_end)`. `access_count` is already written and unused — free usage signal.
-  - **Index:** pgvector HNSW (or IVFFlat) once row count warrants.
-- Add `recall_semantic` router intent: vector + FTS over `episodes` (with decay). Distinct from `recall_temporal` (which stays pure date-range).
-- **Exit:** A/B retrieval quality vs date-range-only; decay half-life tuned; index latency acceptable.
+**Reality at build time (2026-06-20):** the `episodes` table is **EMPTY (0 rows)** — S1 went live 16:54 but episodes only write on warm→cold eviction, which hasn't fired yet. So S5's exit criteria (A/B vs date-range, half-life tuning) **cannot be met now**. Decision (Dan): *build all of S5 now behind flags, "most long-term robust"*; arming is deferred until a corpus exists. Commit `ef9bef6`.
+
+**Built (commit `ef9bef6`):**
+- **Dedup-at-write — ALWAYS ON (no flag), LIVE 18:33.** `memory/manager.store_episode`: exact content-hash (`_episode_content_hash`, normalized) + a UNIQUE partial index; a verbatim re-summary reuses the existing row (`ON CONFLICT … DO NOTHING` → returns existing id) instead of double-writing — guards the rollup double-encode re-rot. Never drops a *distinct* episode. Deployed before episodes flow, by design.
+- **Near-dupe similarity layer — `EPISODE_DEDUP_SIM_ENABLED` (OFF).** Cosine-distance skip on top of the hash floor; OFF because its threshold can only be tuned on a real corpus and a mistune *drops data*.
+- **Recency decay — `memory/decay.py` (pure, 12 tests).** `score = similarity × 0.5^(age/halflife) × access_boost`. Half-life `EPISODE_DECAY_HALFLIFE_S` = 30 d (tunable). Closes the no-recency hole ([[feedback_lt_semantic_retrieval_no_recency]]) for the episode path; `access_count` is now **read** (was written-never-read) via a saturating log boost. `touch_episodes` added.
+- **Semantic search — `memory/episodic_search.py`.** vector+FTS+trigram over `episodes`, RRF-fused (reuses `retrieval._fuse`), then decay-reranked. Reads only embedded rows → returns nothing until embeddings exist (the corpus gate itself).
+- **`recall_semantic` router intent — `RECALL_SEMANTIC_ENABLED` (OFF).** Topic recall, no time anchor. Uses an **extended** route grammar/prompt (`prompts/classify_route_semantic.txt`) selected ONLY when the flag is on → live classifier byte-identical by default. Empty match falls through (doesn't assert "nothing saved" — may live in `facts`).
+- **embed-at-write — `EMBED_EPISODES` (OFF).** Fills `episodes.embedding` at write; backfill via `ops/backfill_episode_embeddings.py`.
+- **Schema (applied, idempotent ALTERs):** `episodes` += `access_count, accessed_at, content_hash (UNIQUE partial), content_tsv`, partial HNSW + GIN(FTS) + trigram indexes.
+
+**Arming order when a corpus exists (Dan):** (1) `EMBED_EPISODES=True` + restart → new episodes embed; run the backfill for any already written. (2) Let episodes accumulate. (3) `RECALL_SEMANTIC_ENABLED=True` + `classifier_enabled` → topic recall live. (4) Tune `EPISODE_DECAY_HALFLIFE_S` + optionally enable the similarity-dedup layer against real dupes. (5) A/B vs date-range-only; check HNSW latency.
+- **Exit (still open, corpus-gated):** A/B retrieval quality vs date-range-only; decay half-life tuned; index latency acceptable.
 
 ---
 
