@@ -251,6 +251,11 @@
   .faceid .scan { position: absolute; left: 2px; right: 2px; height: 1px; background: var(--red-hot);
     box-shadow: 0 0 8px 1px rgba(255,45,45,0.7); animation: fscan 2.6s ease-in-out infinite; }
   @keyframes fscan { 0%, 100% { top: 5%; } 50% { top: 95%; } }
+  /* secondary reticles: other identified faces — same brackets + tag, NO scan line */
+  .faceid.secondary { opacity: 0.82; }
+  .faceid.secondary .scan { display: none; }
+  .faceid.secondary .bk { width: 14px; height: 14px; }
+  .faceid.secondary .tag .nm { font-size: 13px; }
   .faceid .tag { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 11px;
     white-space: nowrap; text-align: center; }
   .faceid .tag .nm { font-family: var(--cop); font-weight: 700; font-size: 15px; letter-spacing: 0.18em;
@@ -701,15 +706,30 @@
       }
     }
 
-    // ----- targeting reticle: live-tracks the face Timmy is locked onto -----
-    // Old per-face caret/caption/leader annotations removed (Dan 2026-06-17:
-    // "the victorian note-taking one"). The single .faceid reticle now marks
-    // the locked face, positioned + sized on its real bbox.
+    // ----- targeting reticles: primary lock + secondary identified faces -----
+    // The PRIMARY .faceid reticle (with the bouncing scan line) marks the face
+    // Timmy is locked onto, else the biggest identified face. Every OTHER
+    // identified face gets a SECONDARY reticle — same brackets + name tag, but
+    // no scan line (.secondary) — so a crowd reads as one "active" target and N
+    // tagged bystanders. (Old per-face caret/caption/leader system, Dan
+    // 2026-06-17 "victorian note-taking", stays removed.)
     const faceidEl   = document.querySelector('.faceid');
-    const faceidNm   = faceidEl && faceidEl.querySelector('.nm');
-    const faceidMt   = faceidEl && faceidEl.querySelector('.mt');
-    const faceidDemo = faceidEl && faceidEl.querySelector('.demo');
     let lockedIdentity = '';   // set by pollBehavior from behavior_status.face_identity
+
+    // Secondary reticles are cloned from the primary on demand and pooled.
+    const reticlePool = [];
+    function ensureReticlePool(n) {
+      while (faceidEl && reticlePool.length < n) {
+        const el = faceidEl.cloneNode(true);
+        el.classList.add('secondary');
+        el.style.display = 'none';
+        faceidEl.parentNode.appendChild(el);
+        reticlePool.push(el);
+      }
+      for (let i = n; i < reticlePool.length; i++) reticlePool[i].style.display = 'none';
+    }
+
+    const bboxArea = b => (Array.isArray(b) && b.length === 4) ? b[2] * b[3] : 0;
 
     // bbox [x,y,w,h] (in source 640x360 px) -> reticle box centre + size in
     // viewport px, matching the cover-fit transform the video feed uses.
@@ -723,38 +743,43 @@
                w: w * scale, h: h * scale };
     }
 
-    function updateReticle(face) {
-      if (!faceidEl) return;
+    function updateReticle(el, face) {
+      if (!el) return;
       if (!face || !Array.isArray(face.bbox) || face.bbox.length !== 4) {
-        faceidEl.style.display = 'none';
+        el.style.display = 'none';
         return;
       }
       const b = bboxToBox(face.bbox, getVideoInfo());
-      faceidEl.style.left    = b.cx + 'px';
-      faceidEl.style.top     = b.cy + 'px';
-      faceidEl.style.width   = Math.max(64, b.w * 1.3) + 'px';
-      faceidEl.style.height  = Math.max(76, b.h * 1.3) + 'px';
-      faceidEl.style.display = '';
-      if (faceidNm) faceidNm.textContent = String(face.name || '').toUpperCase();
-      if (faceidMt) {
+      el.style.left    = b.cx + 'px';
+      el.style.top     = b.cy + 'px';
+      el.style.width   = Math.max(64, b.w * 1.3) + 'px';
+      el.style.height  = Math.max(76, b.h * 1.3) + 'px';
+      el.style.display = '';
+      const nm = el.querySelector('.nm'), mt = el.querySelector('.mt'), demo = el.querySelector('.demo');
+      if (nm) nm.textContent = String(face.name || '').toUpperCase();
+      if (mt) {
         const dist = (typeof face.distance === 'number') ? face.distance.toFixed(2) : '–';
-        faceidMt.textContent = `dist ${dist} · ${face.confidence || '–'} · attending`;
+        mt.textContent = `dist ${dist} · ${face.confidence || '–'} · attending`;
       }
-      if (faceidDemo) faceidDemo.textContent = '';
+      if (demo) demo.textContent = '';
     }
 
     function renderFaces(faces) {
-      // Pick the locked face: prefer the one matching the behavior-status
-      // identity; fall back to the sole known face so the reticle stays
-      // responsive despite the slower (1.5s) behavior poll.
+      // Identified faces = named (not "unknown") with a valid bbox.
       const known = (faces || []).filter(f =>
         Array.isArray(f.bbox) && f.bbox.length === 4 &&
         f.name && !String(f.name).toLowerCase().startsWith('unknown'));
-      let target = null;
+      // Primary = the behavior-locked face if present, else the biggest face.
+      let primary = null;
       if (lockedIdentity)
-        target = known.find(f => String(f.name).toLowerCase() === lockedIdentity) || null;
-      if (!target && known.length === 1) target = known[0];
-      updateReticle(target);
+        primary = known.find(f => String(f.name).toLowerCase() === lockedIdentity) || null;
+      if (!primary && known.length)
+        primary = known.reduce((a, b) => bboxArea(b.bbox) > bboxArea(a.bbox) ? b : a);
+      updateReticle(faceidEl, primary);
+      // Secondaries = every other identified face, scan-less.
+      const others = known.filter(f => f !== primary);
+      ensureReticlePool(others.length);
+      others.forEach((f, i) => updateReticle(reticlePool[i], f));
     }
 
     async function pollFaces() {
