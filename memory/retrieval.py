@@ -209,8 +209,11 @@ async def retrieve(
         # Publish the per-turn resolve cost to the HUDs (LT-OS WS + Booth poll),
         # mirroring the classifier-latency pip. Non-fatal if web.app isn't up.
         try:
-            from web.app import broadcast_event, update_metrics
+            from web.app import broadcast_event, update_metrics, record_stage
             update_metrics(last_resolution_ms=resolution_ms)
+            # Only logged when the deixis gate fires -> this series' sample count
+            # is the resolution-fired turn count (the "deictic turn" condition).
+            record_stage("stage:resolution", resolution_ms)
             await broadcast_event("resolution_metric",
                                   {"ms": resolution_ms, "resolved": bool(resolved)})
         except Exception:

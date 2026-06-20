@@ -108,6 +108,7 @@ async def maybe_handle_tool_call(
     speaker_db_id: int | None,
     conversation,
     tts,
+    t_start: float | None = None,
 ) -> bool:
     """Classify `user_text`; if it routes to a tool, execute it and return True
     (the caller must then early-return, skipping the normal LLM pipeline).
@@ -127,8 +128,13 @@ async def maybe_handle_tool_call(
     route = await classify_intent(user_text)
     classifier_ms = int((time.perf_counter() - t0) * 1000)
     try:
-        from web.app import broadcast_event, update_metrics
-        update_metrics(last_classifier_ms=classifier_ms)
+        from web.app import broadcast_event, update_metrics, record_stage
+        update_metrics(last_classifier_ms=classifier_ms,
+                       last_classifier_route_ms=classifier_ms,
+                       last_classifier_args_ms=None)
+        # Tier-1 route runs on EVERY turn the classifier is on -> this series'
+        # sample count is the total classified-turn count since restart.
+        record_stage("stage:classifier_route", classifier_ms)
         await broadcast_event("classifier_metric", {"ms": classifier_ms, "route": route})
     except Exception:
         log.debug("[CLASSIFIER] latency publish failed (non-fatal)", exc_info=True)
@@ -136,7 +142,18 @@ async def maybe_handle_tool_call(
     if route != "store_fact":
         return False  # 'none', None (error), or unknown tool -> normal pipeline
 
+    t_args = time.perf_counter()
     args = await extract_store_fact_args(user_text)
+    args_ms = int((time.perf_counter() - t_args) * 1000)
+    try:
+        from web.app import update_metrics, record_stage
+        # On a hit the turn pays route + args; surface the split and let the HUD
+        # "Tool filter" row show the full classifier wall for this routed turn.
+        update_metrics(last_classifier_args_ms=args_ms,
+                       last_classifier_ms=classifier_ms + args_ms)
+        record_stage("stage:classifier_args", args_ms)
+    except Exception:
+        log.debug("[CLASSIFIER] args-latency publish failed (non-fatal)", exc_info=True)
     if not args or not args.get("subject") or not args.get("value"):
         # Grammar guarantees shape, not sense -- a failed/empty extraction
         # degrades to a normal conversational reply rather than a junk fact.
@@ -170,6 +187,17 @@ async def maybe_handle_tool_call(
             "subject": subject, "predicate": predicate, "value": value,
         })
         update_metrics(last_tool_call="store_fact", last_tool_call_ts=time.time())
+        # Tool-routed turn total wall (classifier+args+store+ack TTS). The brain
+        # pipeline is skipped, so this is the ONLY place a routed turn's e2e and
+        # its per-stage distribution get recorded.
+        from web.app import record_turn_stats
+        tool_e2e_ms = int((time.time() - t_start) * 1000) if t_start else None
+        update_metrics(last_tool_turn_e2e_ms=tool_e2e_ms)
+        record_turn_stats("tool", {
+            "classifier_route": classifier_ms,
+            "classifier_args": args_ms,
+            "e2e": tool_e2e_ms,
+        })
     except Exception:
         log.debug("[TOOL store_fact] UI publish failed (non-fatal)", exc_info=True)
 
