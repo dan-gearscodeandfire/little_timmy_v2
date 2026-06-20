@@ -55,17 +55,21 @@
 - Add config flags (all default-safe): `PERSIST_EPISODES=False`, `RECALL_TEMPORAL_ENABLED=False`.
 - **Exit:** migration applies + reverts cleanly; no runtime path touches the table.
 
-## Session 1 — Specific summaries + episodic dual-write
+## Session 1 — Specific summaries + episodic dual-write ✅ DONE + LIVE 2026-06-20
 
 **Goal:** episodes accumulate with real time spans and *specific* text; quarantined from semantic retrieval by construction (different table).
+
+**Implemented (2026-06-20, branch `feat/episodic-memory-s1-summaries`, commits `dceac7c` + go-live `d8d6201`):** `generate_summary()` prompt rewritten (`llm/client.py`) — one-line topic header + ~4-6 sentences preserving proper nouns/dates/numbers/decisions/who-did-what; thinking OFF, temp 0.3. A/B on a synthetic transcript confirmed the new prompt retains every name/figure/date the old "2-3 sentences" prompt dropped. `WarmSummary` gained `span_start/span_end` (epoch secs), set from min/max turn timestamps in `maybe_rollup`. New `store_episode()` (`memory/manager.py`) inserts to `episodes` via `to_timestamp()`, embedding left NULL. Eviction block (`memory/rollup.py`) writes an evicted summary to `episodes` when `PERSIST_EPISODES`, independent of `PERSIST_COLD_SUMMARIES`; placeholder still never persisted; never written to `memories` (quarantined from `retrieve()`, which only reads `FROM memories`). Validated: store_episode roundtrip (540s span, NULL embedding, jsonb source) + real `maybe_rollup` eviction test (480s span, evicted-not-fresh text, memories count unchanged, placeholder skipped). **Live: `PERSIST_EPISODES=True` committed + both services restarted 16:54 EDT, flag confirmed loaded.**
 
 - **Rewrite `generate_summary()` prompt** (`llm/client.py:326`) for specificity: preserve proper nouns, dates/times mentioned, numbers, decisions, and **who said/did what**; drop the "2-3 sentences" brevity cap (allow ~4-6); lead with a one-line topic. Keep thinking OFF, temp ~0.3. A/B a few real transcripts before/after.
 - **Write episodes on cold eviction** (`memory/rollup.py:86`): when `PERSIST_EPISODES`, insert into `episodes` with `span_start/span_end` derived from the timestamps of the turns the evicted summary covers (thread the min/max turn `timestamp` through the rollup). Still NOT written to `memories`.
 - **Exit:** trigger a real rollup live; verify an episode row with a sane span + specific text; confirm it does **not** appear in `retrieve()` output.
 
-## Session 2 — Temporal resolver + date-range query (pure, offline-testable)
+## Session 2 — Temporal resolver + date-range query (pure, offline-testable) ✅ DONE 2026-06-20
 
 **Goal:** deterministic "phrase → date range → matching episodes", no router yet.
+
+**Implemented (2026-06-20, branch `feat/episodic-memory-s1-summaries`):** `memory/temporal.py` — pure `resolve_date_range(phrase, now) -> (start, end) | None`, half-open windows, tz-aware (operates in `now`'s tz; caller passes local `datetime.now().astimezone()`). Covers: today / yesterday / day-before-yesterday / earlier-today; dayparts (this/yesterday morning·afternoon·evening, last night); bare + "last" weekdays; this/last week, this/last weekend, this/last month; "N days/weeks ago" (digit or word); fuzzy windows ("a couple/few weeks ago", "recently", "the last few days"); None for non-temporal input. `memory/manager.py:query_episodes_by_range(start, end, limit)` — overlap `span_start < end AND span_end >= start`, `ORDER BY span_start`, untruncated text. `tests/test_temporal_resolver.py` — 31 tests (resolver edge cases at a fixed Wed `now` + DB overlap query over seeded episodes, self-cleaning). All green; no conversation wiring (that's S3).
 
 - `resolve_date_range(phrase, now)` — pure Python: "yesterday", "last Saturday", "last week", "this morning", "a couple weeks ago". Return `(start, end)` or None. Heavily unit-tested (this is the deterministic core that sidesteps the recency-blind ranker).
 - Query: episodes whose `[span_start, span_end]` **overlaps** `[start, end]`, `ORDER BY span_start`. Cap + untruncated text (these don't go through the 200-char guillotine).

@@ -85,6 +85,27 @@ async def store_episode(
     return row["id"]
 
 
+async def query_episodes_by_range(start, end, limit: int = 20) -> list[dict]:
+    """Return episodes whose [span_start, span_end] overlaps [start, end).
+
+    Overlap test: `span_start < end AND span_end >= start` (the query window is
+    half-open, episode spans are inclusive). Ordered oldest-first by span_start
+    and capped at `limit`. Text is returned UNTRUNCATED — episodic recall does
+    not go through the 200-char retrieval guillotine. `start`/`end` are tz-aware
+    datetimes (see memory.temporal.resolve_date_range). Read-only.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """SELECT id, span_start, span_end, created_at, text, token_count, source
+           FROM episodes
+           WHERE span_start < $2 AND span_end >= $1
+           ORDER BY span_start
+           LIMIT $3""",
+        start, end, limit,
+    )
+    return [dict(r) for r in rows]
+
+
 async def touch_memory(memory_id: int):
     """Update access timestamp and count for a single memory."""
     pool = await get_pool()
