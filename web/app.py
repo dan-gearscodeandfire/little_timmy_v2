@@ -327,6 +327,27 @@ async def set_guest_mode(payload: dict | None = None):
     return {"ok": True, "guest_mode": bool(runtime_toggles.get("guest_mode"))}
 
 
+@app.get("/api/active")
+async def get_active():
+    """Whether Dan is actively conversing with Timmy right now: a stream is in
+    flight, or it's been fewer than conversation_idle_gate_seconds since the
+    last one. The shared signal background workers poll to back off the single
+    :8083 brain slot -- consumed by the demerzel-mail ingest loop (defer email
+    fetches while LT is talking) and mirrored in-process by the extraction /
+    rollup idle gate. Read-only; tune the window via the
+    conversation_idle_gate_seconds runtime toggle."""
+    import time as _time
+    from llm import client as _llm
+    last = _llm._last_conversation_activity_ts
+    idle = (_time.time() - last) if last > 0 else None
+    return {
+        "active": _llm.conversation_active(),
+        "in_flight": _llm._conversation_in_flight.is_set(),
+        "idle_seconds": round(idle, 2) if idle is not None else None,
+        "gate_seconds": _llm._idle_gate_seconds(),
+    }
+
+
 @app.get("/api/mood")
 async def get_mood():
     """Current 2-axis mood state.

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncIterator
 import httpx
 import config
@@ -21,6 +22,41 @@ _client: httpx.AsyncClient | None = None
 # call always takes preference over summarization.'
 _conversation_in_flight = asyncio.Event()
 _slow_call_tasks: set[asyncio.Task] = set()
+# Wall-clock of the last conversation-stream activity (stamped at stream start
+# AND end). Lets "idle" mean "the user has actually been quiet for a beat",
+# not just "no stream is in flight this microsecond" -- so background slow
+# calls defer through the gaps between rapid turns instead of firing into them
+# and getting cancelled mid-decode. 0.0 == no conversation has happened yet.
+_last_conversation_activity_ts = 0.0
+
+
+def _idle_gate_seconds() -> float:
+    """Quiet-gap (seconds) a conversation slow call waits for before issuing,
+    ON TOP OF the in-flight check. Read live from runtime_toggles so Dan can
+    tune the 'wait until I'm not actively using you' window without a restart.
+    0 == legacy behavior (defer only while a stream is literally in flight)."""
+    try:
+        from persistence import runtime_toggles
+        v = runtime_toggles.get("conversation_idle_gate_seconds")
+        return float(v) if v is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def conversation_active(window: float | None = None) -> bool:
+    """The shared 'is Dan actively conversing with Timmy right now' signal:
+    True if a stream is in flight, or if fewer than `window` seconds have
+    elapsed since the last conversation activity (defaults to the live
+    conversation_idle_gate_seconds toggle). Consumed by /api/active -- and
+    through it the demerzel-mail ingest loop, which polls it to defer email
+    fetches while LT is talking -- and mirrors the in-process slow-call idle
+    gate below. Pure activity signal, independent of brain topology."""
+    if _conversation_in_flight.is_set():
+        return True
+    w = _idle_gate_seconds() if window is None else float(window)
+    if w <= 0.0 or _last_conversation_activity_ts <= 0.0:
+        return False
+    return (time.time() - _last_conversation_activity_ts) < w
 
 
 def _current_conversation_url() -> str:
@@ -44,12 +80,27 @@ def _conversation_shares_brain() -> bool:
 
 
 async def _wait_for_conversation_idle() -> None:
-    """Block until no conversation stream is in flight. No-op when
-    conversation and memory live on separate servers."""
+    """Block until the conversation brain is free for background work: no
+    stream in flight AND at least conversation_idle_gate_seconds elapsed since
+    the last conversation activity. No-op when conversation and memory live on
+    separate servers. The widened window (vs. the bare in-flight check) keeps
+    memory extraction / rollup from firing into the micro-gaps between rapid
+    turns and then getting cancelled mid-decode -- which left the single shared
+    :8083 slot server-side busy and stalled the next reply (the 43s hang Dan
+    hit live 2026-06-20). Cancellable: callers run as registered slow tasks."""
     if not _conversation_shares_brain():
         return
-    while _conversation_in_flight.is_set():
-        await asyncio.sleep(0.1)
+    window = _idle_gate_seconds()
+    while True:
+        if _conversation_in_flight.is_set():
+            await asyncio.sleep(0.1)
+            continue
+        if window > 0.0:
+            elapsed = time.time() - _last_conversation_activity_ts
+            if elapsed < window:
+                await asyncio.sleep(min(0.5, window - elapsed))
+                continue
+        return
 
 
 def _register_slow_call() -> asyncio.Task | None:
@@ -140,8 +191,10 @@ async def stream_conversation(
     any in-flight slow call before starting and mark the conversation as
     in-flight so new slow calls wait.
     """
+    global _last_conversation_activity_ts
     _cancel_in_flight_slow_calls()
     _conversation_in_flight.set()
+    _last_conversation_activity_ts = time.time()
     client = await _get_client()
     payload = {
         "messages": messages,
@@ -178,6 +231,10 @@ async def stream_conversation(
                     continue
     finally:
         _conversation_in_flight.clear()
+        # Re-stamp on END so the idle window measures quiet-since-last-reply,
+        # not quiet-since-stream-start (a long reply would otherwise let the
+        # window expire before the user even finishes hearing it).
+        _last_conversation_activity_ts = time.time()
 
 
 async def generate_memory(prompt: str, thinking: bool | None = None) -> str:

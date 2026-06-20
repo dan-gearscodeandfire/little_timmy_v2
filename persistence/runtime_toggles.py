@@ -152,6 +152,21 @@ _DEFAULTS: dict = {
     # temporal recall upstream. Read live per turn -- no restart to flip.
     # Default OFF (opt-in A/B). No config master (cf. query_resolution_enabled).
     "needs_retrieval_gate": False,
+    # --- Conversation-active gate for background slow calls (2026-06-20, Dan) --
+    # Quiet-gap (seconds) that memory extraction + rollup wait for AFTER the
+    # last conversation stream before issuing their :8083 call, on top of the
+    # existing in-flight check (llm/client._wait_for_conversation_idle). Also
+    # the window /api/active reports "active" for, which the demerzel-mail
+    # ingest loop polls to defer email fetches while Dan is talking. Widened
+    # from the old effective 0 (defer only while literally streaming) because
+    # per-turn extraction was firing into the micro-gaps between rapid turns
+    # and then getting cancelled mid-decode, leaving the single shared slot
+    # server-side busy and stalling the next reply (the 43s hang Dan hit live
+    # 2026-06-20). Tradeoff: during continuous conversation, extraction/rollup
+    # defer until Dan pauses -- exactly his stated priority (conversation wins;
+    # background memory waits). Read live -- tune without restart; 0.0 restores
+    # legacy behavior.
+    "conversation_idle_gate_seconds": 20.0,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in
