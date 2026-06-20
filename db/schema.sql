@@ -55,6 +55,29 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active
     ON facts (subject, predicate) WHERE superseded_by IS NULL;
 
+-- Episodic memory (Session 0, 2026-06-20; docs/episodic-memory-plan.md).
+-- Time-indexed rollup summaries for date-range recall ("what did we talk about
+-- last Saturday"). DISTINCT from the `memories` vector tier: episodes carry a
+-- real event-time SPAN (span_start..span_end) derived from turn timestamps and
+-- are queried by RANGE OVERLAP, not similarity -- which sidesteps the
+-- recency-blind ranker entirely. `embedding` is nullable and stays NULL until
+-- Session 5 (vector restore, gated on dedup-at-write + recency decay); its
+-- HNSW/FTS/trigram indexes are deliberately deferred to that session.
+CREATE TABLE IF NOT EXISTS episodes (
+    id SERIAL PRIMARY KEY,
+    span_start TIMESTAMPTZ NOT NULL,
+    span_end TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    text TEXT NOT NULL,
+    token_count INTEGER,
+    embedding vector(768),              -- nullable; filled in Session 5
+    source JSONB DEFAULT '{}'::jsonb     -- provenance: turn count, trigger, etc.
+);
+
+-- Date-range overlap queries: episode [span_start, span_end] vs query window.
+CREATE INDEX IF NOT EXISTS idx_episodes_span_start ON episodes (span_start);
+CREATE INDEX IF NOT EXISTS idx_episodes_span_end ON episodes (span_end);
+
 -- Vector similarity search (use HNSW for small datasets, works from row 1)
 CREATE INDEX IF NOT EXISTS idx_memories_embedding
     ON memories USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);

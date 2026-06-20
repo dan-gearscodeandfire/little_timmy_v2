@@ -54,6 +54,12 @@ HARD_CEILING_PLACEHOLDER = "[earlier turns omitted under load]"  # marker WarmSu
 PERSIST_COLD_SUMMARIES = False # 2026-06-18 (Dan): do NOT auto-embed stale warm rollups into the memories table. Rollups still summarize live hot/warm context for the in-prompt session; the OLDEST warm summary is simply dropped on overflow instead of persisted. Rationale: rollup summaries are low-density interaction gist that polluted retrieval (75% party noise, cleaned 69->16 on 2026-06-18) and the writer is dedup-free + the ranker is recency-blind. Set True to restore cold-storage persistence. See Obsidian lt-conversation-summary-cleanup-policy-2026-06-18.
 PERSIST_EXTRACTED_MEMORIES = False # 2026-06-18 (Dan): do NOT auto-create vectorized episodic/semantic memories from the extraction pipeline. The two-pass extractor (classify_durable -> extract_facts) STILL runs and STILL writes structured rows to the `facts` table (subject/predicate/value, deduped) -- only the `memories[]` -> store_memory (embedded) branch is suppressed. Rationale: with rollup persistence already off, this makes the structured `facts` table the sole auto-writer of durable memory; the vectorized `memories` tier is a low-frequency, low-signal byproduct (0 memories produced in the 24h before this change; last episodic 6-13, last semantic 6-11). Set True to restore extracted-memory persistence.
 
+# --- Episodic memory (Session 0, 2026-06-20; docs/episodic-memory-plan.md) ---
+# Both flags default OFF: Session 0 only lays the `episodes` table schema; no
+# runtime path reads or writes it yet. They are armed in later sessions.
+PERSIST_EPISODES = False        # S1: write rollup summaries to `episodes` (with real turn-timestamp spans) on warm->cold eviction. Independent of PERSIST_COLD_SUMMARIES (which targets the legacy `memories` tier).
+RECALL_TEMPORAL_ENABLED = False  # S3: enable the `recall_temporal` router intent (date-range query over `episodes`). Also requires classifier_enabled.
+
 # --- Privacy / PII gating (2026-06-18, Dan) ---
 # Facts are classified for sensitivity at creation (memory/pii.py, called from
 # memory.facts.store_fact). When the guest/privacy gate is active
