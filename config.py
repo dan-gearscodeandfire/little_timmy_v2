@@ -60,6 +60,27 @@ PERSIST_EXTRACTED_MEMORIES = False # 2026-06-18 (Dan): do NOT auto-create vector
 PERSIST_EPISODES = True         # S1 LIVE 2026-06-20 (Dan): write rollup summaries to `episodes` (with real turn-timestamp spans) on warm->cold eviction. Independent of PERSIST_COLD_SUMMARIES (which targets the legacy `memories` tier). Rollback = set False + restart.
 RECALL_TEMPORAL_ENABLED = True   # S3 LIVE 2026-06-20 (Dan): enable the `recall_temporal` router intent (date-range query over `episodes`). Also requires classifier_enabled (ON). Rollback = set False + restart.
 
+# --- Session 5 (2026-06-20): vector restore on episodes (scale phase) --------
+# All DEFAULT OFF — built + tested, but corpus-gated: episodes only began
+# accumulating 6-20 and the A/B/half-life tuning needs a real corpus. Arming
+# any of these is Dan's call once episodes exist. The dedup CONTENT-HASH floor
+# (memory/manager.store_episode) is ALWAYS on (no flag) — it must guard the very
+# first writes; it needs no embedding and never drops a distinct episode.
+EMBED_EPISODES = False           # compute + store episodes.embedding at write (else NULL, today's behavior). Backfill: ops/backfill_episode_embeddings.py.
+RECALL_SEMANTIC_ENABLED = False  # `recall_semantic` router intent: vector+FTS+trigram over episodes, recency-DECAYED. Requires EMBED_EPISODES (embeddings to search) + classifier_enabled. Adds a route grammar class — default OFF keeps the live classifier byte-identical.
+# Recency decay (memory/decay.py) for the episode semantic rank: a fresh episode
+# outranks a stale one of equal similarity. Half-life 30d = recent-favored but
+# old still retrievable (90d -> 0.125 weight). Tunable once there's data.
+EPISODE_DECAY_HALFLIFE_S = float(os.getenv("TIMMY_EPISODE_DECAY_HALFLIFE_S", str(30 * 24 * 3600)))
+EPISODE_ACCESS_BOOST = float(os.getenv("TIMMY_EPISODE_ACCESS_BOOST", "0.05"))  # mild saturating log-boost from the free access_count signal
+EPISODE_SEMANTIC_TOP_K = int(os.getenv("TIMMY_EPISODE_SEMANTIC_TOP_K", "5"))
+# Optional near-dupe dedup LAYER on top of the content-hash floor (catches
+# re-summaries that aren't byte-identical). OFF: needs embeddings + a threshold
+# that can only be calibrated against a real corpus, and a mistuned threshold
+# DROPS distinct episodes — so it stays off until there's data. Cosine-distance.
+EPISODE_DEDUP_SIM_ENABLED = False
+EPISODE_DEDUP_SIM_MAX_DIST = float(os.getenv("TIMMY_EPISODE_DEDUP_SIM_MAX_DIST", "0.05"))
+
 # --- Privacy / PII gating (2026-06-18, Dan) ---
 # Facts are classified for sensitivity at creation (memory/pii.py, called from
 # memory.facts.store_fact). When the guest/privacy gate is active

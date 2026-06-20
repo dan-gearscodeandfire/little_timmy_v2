@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _ROUTE_PROMPT = (_PROMPTS_DIR / "classify_route.txt").read_text(encoding="utf-8")
+# Extended route prompt (adds recall_semantic) — used ONLY when
+# config.RECALL_SEMANTIC_ENABLED, so the default classifier stays byte-identical.
+_ROUTE_PROMPT_SEM = (_PROMPTS_DIR / "classify_route_semantic.txt").read_text(encoding="utf-8")
 _ARGS_PROMPT = (_PROMPTS_DIR / "store_fact_args.txt").read_text(encoding="utf-8")
 _RECALL_ARGS_PROMPT = (_PROMPTS_DIR / "recall_temporal_args.txt").read_text(encoding="utf-8")
 
@@ -87,6 +90,16 @@ recall-call  ::= "{\"tool\":\"recall_temporal\"}"
 none-call    ::= "{\"tool\":\"none\"}"
 '''
 
+# Extended grammar adding recall_semantic — selected ONLY when
+# config.RECALL_SEMANTIC_ENABLED. Default OFF => _ROUTE_GRAMMAR above, unchanged.
+_ROUTE_GRAMMAR_SEM = r'''
+root          ::= store-call | recall-call | semantic-call | none-call
+store-call    ::= "{\"tool\":\"store_fact\"}"
+recall-call   ::= "{\"tool\":\"recall_temporal\"}"
+semantic-call ::= "{\"tool\":\"recall_semantic\"}"
+none-call     ::= "{\"tool\":\"none\"}"
+'''
+
 _ARGS_GRAMMAR = r'''
 root  ::= "{\"subject\":\"" str "\",\"predicate\":\"" str "\",\"value\":\"" str "\"}"
 str   ::= char+
@@ -104,11 +117,18 @@ char  ::= [^"\\]
 
 
 async def classify_intent(user_text: str) -> str | None:
-    """Tier-1 route. Returns 'store_fact' | 'none', or None on any classifier error."""
+    """Tier-1 route. Returns 'store_fact' | 'recall_temporal' | 'none' (or also
+    'recall_semantic' when config.RECALL_SEMANTIC_ENABLED), or None on any
+    classifier error. The extended prompt/grammar is selected ONLY when the
+    semantic flag is on, so the default routing stays byte-identical."""
+    if getattr(config, "RECALL_SEMANTIC_ENABLED", False):
+        prompt, grammar = _ROUTE_PROMPT_SEM, _ROUTE_GRAMMAR_SEM
+    else:
+        prompt, grammar = _ROUTE_PROMPT, _ROUTE_GRAMMAR
     content = await client.classify_constrained(
-        messages=[{"role": "system", "content": _ROUTE_PROMPT},
+        messages=[{"role": "system", "content": prompt},
                   {"role": "user", "content": user_text}],
-        grammar=_ROUTE_GRAMMAR,
+        grammar=grammar,
         max_tokens=16,
     )
     if not content:
@@ -240,6 +260,40 @@ async def _resolve_recall_block(user_text: str) -> str | None:
     return _build_recall_block(phrase, start, end, episodes)
 
 
+def _build_semantic_block(episodes: list[dict]) -> str:
+    """Format the [WHAT WE TALKED ABOUT] block for a topic (recall_semantic) hit,
+    most-relevant first. Only called with a non-empty list (an empty semantic
+    search falls through rather than asserting "nothing saved" — absence of an
+    episode match doesn't prove we never discussed it; it may live in facts)."""
+    lines = [
+        "[WHAT WE TALKED ABOUT] Your recorded conversation summaries most "
+        "relevant to the user's question, most relevant first. Answer using "
+        "ONLY these; if they don't actually cover it, say so rather than guessing:"
+    ]
+    for ep in episodes:
+        lines.append(_fmt_episode_line(ep["span_start"], ep["span_end"], ep["text"]))
+    return "\n".join(lines)
+
+
+async def _resolve_semantic_block(user_text: str) -> str | None:
+    """Run recall_semantic: similarity search over episodes (recency-decayed) ->
+    [WHAT WE TALKED ABOUT] block. Returns None (fall through) on error OR when
+    nothing matches — see _build_semantic_block for why empty falls through."""
+    from memory.episodic_search import search_episodes
+    now = datetime.now().astimezone()
+    try:
+        episodes = await search_episodes(user_text, now)
+    except Exception:
+        log.exception("[TOOL recall_semantic] episode search failed; falling through")
+        return None
+    if not episodes:
+        log.info("[TOOL recall_semantic] no episode match for %r; falling through",
+                 user_text[:50])
+        return None
+    log.info("[TOOL recall_semantic] %r -> %d episode(s)", user_text[:50], len(episodes))
+    return _build_semantic_block(episodes)
+
+
 async def maybe_handle_tool_call(
     user_text: str,
     speaker_name: str | None,
@@ -305,6 +359,29 @@ async def maybe_handle_tool_call(
             log.debug("[TOOL recall_temporal] publish failed (non-fatal)", exc_info=True)
         # block is None when no date range could be resolved -> fall through with
         # no augmentation (recall_block=None is a no-op in build_ephemeral_block).
+        return ToolOutcome(handled=False, recall_block=block)
+
+    # recall_semantic: topic (no time) similarity recall over episodes, recency-
+    # decayed. Same AUGMENTATION shape as recall_temporal. Gated by
+    # RECALL_SEMANTIC_ENABLED; the route can only be emitted when the flag is on
+    # (it selects the extended grammar), but we re-check defensively.
+    if route == "recall_semantic":
+        if not getattr(config, "RECALL_SEMANTIC_ENABLED", False):
+            return _FALLTHROUGH
+        t_args = time.perf_counter()
+        block = await _resolve_semantic_block(user_text)
+        args_ms = int((time.perf_counter() - t_args) * 1000)
+        try:
+            from web.app import update_metrics, record_stage, broadcast_event
+            update_metrics(last_classifier_args_ms=args_ms,
+                           last_classifier_ms=classifier_ms + args_ms)
+            record_stage("stage:classifier_args", args_ms)
+            if block is not None:
+                update_metrics(last_tool_call="recall_semantic",
+                               last_tool_call_ts=time.time())
+                await broadcast_event("tool_call", {"name": "recall_semantic"})
+        except Exception:
+            log.debug("[TOOL recall_semantic] publish failed (non-fatal)", exc_info=True)
         return ToolOutcome(handled=False, recall_block=block)
 
     if route != "store_fact":

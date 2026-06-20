@@ -1,13 +1,23 @@
 """Memory CRUD and embedding generation."""
 
+import hashlib
 import json
 import logging
+import re
 import httpx
 import numpy as np
 from db.connection import get_pool
 import config
 
 log = logging.getLogger(__name__)
+
+
+def _episode_content_hash(text: str) -> str:
+    """SHA-256 of normalized episode text (lowercased, whitespace-collapsed) —
+    the dedup-at-write floor. Normalization absorbs trivial formatting churn so
+    a verbatim re-summary collides even if spacing differs."""
+    norm = re.sub(r"\s+", " ", (text or "").strip().lower())
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 _embed_client: httpx.AsyncClient | None = None
 
@@ -64,23 +74,57 @@ async def store_episode(
     Writes to the `episodes` table — distinct from `store_memory`'s vector
     `memories` tier. `span_start`/`span_end` are epoch seconds (turn
     `time.time()` timestamps), converted to TIMESTAMPTZ via `to_timestamp`.
-    The `embedding` column is left NULL: episodic recall is date-range only
-    until Session 5 restores (fixed) vector search. Returns the episode id.
+    Dedup-at-write (Session 5): an exact content-hash UNIQUE floor (ALWAYS on)
+    skips a verbatim re-summary instead of double-writing it — guarding the
+    rollup double-encode re-rot. With config.EMBED_EPISODES on, the embedding is
+    also computed and stored (else left NULL = pre-S5 behavior), and an optional
+    near-dupe similarity layer (config.EPISODE_DEDUP_SIM_ENABLED) can skip
+    almost-identical re-summaries. Returns the episode id — the NEW row's id, or
+    the EXISTING row's id when the write was deduped.
     """
     pool = await get_pool()
+    content_hash = _episode_content_hash(text)
+    embedding = await embed(text) if config.EMBED_EPISODES else None
+
+    # Near-dupe layer (opt-in, on top of the hash floor): if the closest already
+    # embedded episode is within the threshold, treat this as the same episode.
+    if embedding is not None and config.EPISODE_DEDUP_SIM_ENABLED:
+        near = await pool.fetchrow(
+            """SELECT id, embedding <=> $1 AS distance FROM episodes
+               WHERE embedding IS NOT NULL
+               ORDER BY embedding <=> $1 LIMIT 1""",
+            embedding,
+        )
+        if near is not None and float(near["distance"]) <= config.EPISODE_DEDUP_SIM_MAX_DIST:
+            log.info("Episode dedup (similarity %.4f <= %.4f): reusing id=%d",
+                     float(near["distance"]), config.EPISODE_DEDUP_SIM_MAX_DIST, near["id"])
+            return near["id"]
+
     row = await pool.fetchrow(
-        """INSERT INTO episodes (span_start, span_end, text, token_count, source)
-           VALUES (to_timestamp($1), to_timestamp($2), $3, $4, $5::jsonb)
+        """INSERT INTO episodes (span_start, span_end, text, token_count, source,
+                                 content_hash, embedding)
+           VALUES (to_timestamp($1), to_timestamp($2), $3, $4, $5::jsonb, $6, $7)
+           ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING
            RETURNING id""",
         span_start,
         span_end,
         text,
         token_count,
         json.dumps(source or {}),
+        content_hash,
+        embedding,
     )
+    if row is None:
+        # Hash collision -> a verbatim duplicate already exists; return its id.
+        existing = await pool.fetchrow(
+            "SELECT id FROM episodes WHERE content_hash = $1", content_hash)
+        log.info("Episode dedup (content-hash): reusing id=%s for verbatim re-summary",
+                 existing["id"] if existing else "?")
+        return existing["id"] if existing else None
     log.info(
-        "Stored episode id=%d span=%.0f..%.0f (%d chars)",
+        "Stored episode id=%d span=%.0f..%.0f (%d chars%s)",
         row["id"], span_start, span_end, len(text),
+        ", embedded" if embedding is not None else "",
     )
     return row["id"]
 
@@ -124,4 +168,17 @@ async def touch_memories(memory_ids: list[int]):
         "UPDATE memories SET accessed_at = NOW(), access_count = access_count + 1 "
         "WHERE id = ANY($1::int[])",
         memory_ids,
+    )
+
+
+async def touch_episodes(episode_ids: list[int]):
+    """Batched access-stat update for episodes (recall_semantic re-rank signal).
+    Feeds memory.decay.access_boost — the formerly-unused access_count, now read."""
+    if not episode_ids:
+        return
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE episodes SET accessed_at = NOW(), access_count = COALESCE(access_count, 0) + 1 "
+        "WHERE id = ANY($1::int[])",
+        episode_ids,
     )

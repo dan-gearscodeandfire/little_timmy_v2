@@ -78,6 +78,30 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE INDEX IF NOT EXISTS idx_episodes_span_start ON episodes (span_start);
 CREATE INDEX IF NOT EXISTS idx_episodes_span_end ON episodes (span_end);
 
+-- Session 5 (2026-06-20): vector restore on episodes (scale phase; flags default
+-- OFF, see config.py). Idempotent ALTERs so this applies to the S0-created table
+-- without a migration step (db/migrate.run re-executes this file on startup).
+ALTER TABLE episodes ADD COLUMN IF NOT EXISTS access_count INTEGER DEFAULT 0;
+ALTER TABLE episodes ADD COLUMN IF NOT EXISTS accessed_at TIMESTAMPTZ;
+ALTER TABLE episodes ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE episodes ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', text)) STORED;
+
+-- Dedup-at-write FLOOR: exact content-hash. UNIQUE so a re-summarized verbatim
+-- episode can't double-write (guards the rollup double-encode re-rot). Partial
+-- so legacy NULL-hash rows (none today) don't collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_content_hash
+    ON episodes (content_hash) WHERE content_hash IS NOT NULL;
+
+-- Vector similarity (partial: only embedded rows; pgvector HNSW works from row 1).
+CREATE INDEX IF NOT EXISTS idx_episodes_embedding
+    ON episodes USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64) WHERE embedding IS NOT NULL;
+
+-- FTS + trigram channels for recall_semantic.
+CREATE INDEX IF NOT EXISTS idx_episodes_tsv ON episodes USING GIN (content_tsv);
+CREATE INDEX IF NOT EXISTS idx_episodes_text_trgm ON episodes USING GIN (text gin_trgm_ops);
+
 -- Vector similarity search (use HNSW for small datasets, works from row 1)
 CREATE INDEX IF NOT EXISTS idx_memories_embedding
     ON memories USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
