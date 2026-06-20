@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from llm.client import generate_summary
-from memory.manager import store_memory
+from memory.manager import store_memory, store_episode
 import config
 
 log = logging.getLogger(__name__)
@@ -64,12 +64,18 @@ async def maybe_rollup(conversation) -> bool:
         )
         return False
 
-    # Move to warm tier
+    # Move to warm tier. Capture the real wall-clock span of the summarized
+    # turns (not the rollup time) so episodic memory is queryable by date range
+    # on cold eviction.
+    span_start = min(t.timestamp for t in to_summarize)
+    span_end = max(t.timestamp for t in to_summarize)
     from conversation.models import WarmSummary
     conversation.warm_summaries.append(WarmSummary(
         text=summary,
         timestamp=time.time(),
         turn_count=len(to_summarize),
+        span_start=span_start,
+        span_end=span_end,
     ))
     conversation.hot_turns = conversation.hot_turns[split:]
     log.info("Rolled up %d turns -> warm summary (%d chars)", split, len(summary))
@@ -86,12 +92,36 @@ async def maybe_rollup(conversation) -> bool:
         cold = conversation.warm_summaries.pop(0)
         if cold.text == getattr(config, "HARD_CEILING_PLACEHOLDER",
                                 "[earlier turns omitted under load]"):
+            # The backstop placeholder carries no content and no real span —
+            # never persisted to either tier.
             log.info("Dropped backstop placeholder from warm tier (not persisted)")
-        elif getattr(config, "PERSIST_COLD_SUMMARIES", False):
-            await store_memory("conversation_summary", cold.text)
-            log.info("Promoted warm summary to cold storage")
         else:
-            log.info("Evicted stalest warm summary without persisting "
-                     "(PERSIST_COLD_SUMMARIES=False)")
+            # Two independent persistence channels for an evicted summary:
+            #   - episodes: date-range-queryable episodic memory (S1+), gated
+            #     by PERSIST_EPISODES. NOT vectorized (embedding NULL until S5).
+            #   - memories: legacy vector tier, gated by PERSIST_COLD_SUMMARIES
+            #     (False since 2026-06-18). Kept separate so episodic memory is
+            #     unaffected by the frozen-vector-writer decision.
+            persisted = False
+            if getattr(config, "PERSIST_EPISODES", False):
+                # Real turn span; fall back to creation time if a legacy summary
+                # lacks spans (shouldn't happen for summaries minted by S1 code).
+                span_start = cold.span_start if cold.span_start is not None else cold.timestamp
+                span_end = cold.span_end if cold.span_end is not None else cold.timestamp
+                await store_episode(
+                    span_start,
+                    span_end,
+                    cold.text,
+                    token_count=max(1, len(cold.text) // 4),
+                    source={"trigger": "warm_eviction", "turn_count": cold.turn_count},
+                )
+                persisted = True
+            if getattr(config, "PERSIST_COLD_SUMMARIES", False):
+                await store_memory("conversation_summary", cold.text)
+                log.info("Promoted warm summary to cold storage")
+                persisted = True
+            if not persisted:
+                log.info("Evicted stalest warm summary without persisting "
+                         "(PERSIST_EPISODES=False, PERSIST_COLD_SUMMARIES=False)")
 
     return True

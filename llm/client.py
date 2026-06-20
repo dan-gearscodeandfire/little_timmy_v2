@@ -323,8 +323,17 @@ async def generate_summary(turns_text: str) -> str:
         payload = {
             "messages": [
                 {"role": "user", "content": (
-                    "Summarize this conversation segment in 2-3 concise sentences. "
-                    "Preserve key facts, names, and decisions.\n\n"
+                    "Summarize this conversation segment so it can be searched "
+                    "and recalled later by date. Write for a reader who wasn't "
+                    "there.\n\n"
+                    "Start with a one-line topic header. Then, in about 4-6 "
+                    "sentences, record the specifics: who said or did what, the "
+                    "exact proper nouns (people, places, products, projects), any "
+                    "dates, times, or numbers mentioned, and any decisions, plans, "
+                    "or open questions. Prefer concrete detail over generality — "
+                    "name names instead of saying 'someone', quote the actual "
+                    "figure instead of 'a number'. Do not add information that "
+                    "isn't in the segment, and do not editorialize.\n\n"
                     f"{turns_text}"
                 )},
             ],

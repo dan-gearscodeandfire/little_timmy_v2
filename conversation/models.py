@@ -17,6 +17,12 @@ class WarmSummary:
     text: str
     timestamp: float
     turn_count: int
+    # Real wall-clock span of the turns this summary covers (epoch seconds).
+    # Threaded through to `episodes.span_start/span_end` on cold eviction so
+    # episodic memory is queryable by date range. None for the hard-ceiling
+    # placeholder (which is never persisted) and any legacy/restored summary.
+    span_start: float | None = None
+    span_end: float | None = None
 
 
 @dataclass

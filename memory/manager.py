@@ -52,6 +52,39 @@ async def store_memory(
     return row["id"]
 
 
+async def store_episode(
+    span_start: float,
+    span_end: float,
+    text: str,
+    token_count: int | None = None,
+    source: dict | None = None,
+) -> int:
+    """Store an episodic memory (a rollup summary with a real time span).
+
+    Writes to the `episodes` table — distinct from `store_memory`'s vector
+    `memories` tier. `span_start`/`span_end` are epoch seconds (turn
+    `time.time()` timestamps), converted to TIMESTAMPTZ via `to_timestamp`.
+    The `embedding` column is left NULL: episodic recall is date-range only
+    until Session 5 restores (fixed) vector search. Returns the episode id.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """INSERT INTO episodes (span_start, span_end, text, token_count, source)
+           VALUES (to_timestamp($1), to_timestamp($2), $3, $4, $5::jsonb)
+           RETURNING id""",
+        span_start,
+        span_end,
+        text,
+        token_count,
+        json.dumps(source or {}),
+    )
+    log.info(
+        "Stored episode id=%d span=%.0f..%.0f (%d chars)",
+        row["id"], span_start, span_end, len(text),
+    )
+    return row["id"]
+
+
 async def touch_memory(memory_id: int):
     """Update access timestamp and count for a single memory."""
     pool = await get_pool()
