@@ -206,10 +206,15 @@ def _coalesce_by_speaker(items: list[dict]) -> list[dict]:
             "assistant_text": "\n".join(g["assistant_text"] for g in group),
             "speaker_id": speaker_id,
             "speaker_name": speaker_name,
-            # newest turn in the coalesced group gates the recency check: the
-            # extraction may overwrite a tool-written fact only if its freshest
-            # source turn post-dates the explicit write.
-            "ts": max(g["ts"] for g in group),
+            # OLDEST turn in the coalesced group gates the recency check. A
+            # buffer can STRADDLE an explicit correction (pre-correction stale
+            # mentions + a newer turn). Gating on the oldest turn means the
+            # extractor may overwrite a tool-written fact only if the ENTIRE
+            # evidence window post-dates the correction -- otherwise the stale
+            # mention is held back (AMBIGUITY: prior value retained, self-heals
+            # on the next clean pass) instead of clobbering it (FALSE). See
+            # ops/test_coalesced_correction_race.py and the 2026-06-21 race note.
+            "ts": min(g["ts"] for g in group),
             "retries": 0,
         })
     return out
