@@ -259,11 +259,13 @@ async def stream_conversation(
         "temperature": config.CONVERSATION_TEMPERATURE,
         "stream": True,
     }
-    # When routed to the Qwen3.6 brain, suppress thinking on conversation
-    # turns -- thinking-on adds 15-45 s of chain-of-thought before the first
-    # token. Llama 3B ignores the kwarg.
-    if _conversation_shares_brain():
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    # Suppress thinking on EVERY conversation turn -- thinking-on makes Qwen3.6
+    # stream chain-of-thought as reasoning_content and emit zero `content`
+    # tokens, so the reply comes back empty (silent Timmy, llm_ft=0 / tts=0).
+    # Sent unconditionally: Llama 3B ignores the kwarg, Qwen3.6 honors it. This
+    # MUST NOT be gated on _conversation_shares_brain() -- that broke when memory
+    # moved to :8084 (2026-06-20), un-gating thinking and muting replies.
+    payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     conv_url = _current_conversation_url()
     try:
