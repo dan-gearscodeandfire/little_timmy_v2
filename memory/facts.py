@@ -31,6 +31,21 @@ async def store_fact(
     subject = subject.strip().lower()
     predicate = predicate.strip().lower()
 
+    # Redaction: never persist a fact containing a blocked term (e.g. Dan's last
+    # name) -- it does not belong in any stored memory. Terms are loaded from a
+    # gitignored file (config.REDACT_TERMS) so they stay out of source. Drop the
+    # whole fact (word-boundary, case-insensitive) and return a sentinel id.
+    import re as _re
+    import config as _cfg
+    _terms = getattr(_cfg, "REDACT_TERMS", ())
+    if _terms:
+        _hay = f"{subject} {predicate} {value}".lower()
+        for _t in _terms:
+            if _re.search(rf"\b{_re.escape(_t.lower())}\b", _hay):
+                log.warning("[REDACT] dropped fact containing blocked term %r: %s.%s",
+                            _t, subject, predicate)
+                return -1
+
     # Classify sensitivity at creation (PII gating). Both fact writers -- the
     # extraction pipeline and the :8092 tool-call classifier -- pass through
     # here, so this is the single chokepoint. Recomputed on every upsert so a

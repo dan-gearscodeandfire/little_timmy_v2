@@ -114,6 +114,25 @@ def _load_daughter_names():
 
 DAUGHTER_NAMES = _load_daughter_names()
 
+
+# REDACT_TERMS: terms that must NEVER be persisted in any memory (Dan's last
+# name, etc.). Kept OUT of source (gitignored data/redact_terms.json, a JSON
+# list of strings). Any fact whose subject/predicate/value contains one of
+# these (case-insensitive, word-boundary) is dropped at the store_fact
+# chokepoint; episode text is scrubbed. Missing file -> () (no-op).
+def _load_redact_terms():
+    import json
+    from pathlib import Path
+    try:
+        _p = Path(__file__).resolve().parent / "data" / "redact_terms.json"
+        _terms = json.loads(_p.read_text())
+        return tuple(str(t) for t in _terms if str(t).strip()) if isinstance(_terms, list) else ()
+    except Exception:
+        return ()
+
+
+REDACT_TERMS = _load_redact_terms()
+
 # --- Memory extraction queue (2026-06-03) ---
 # Per-exchange fact/memory extraction is fire-and-forget but shares the single
 # Qwen :8083 slot with conversation. The conversation-priority gate cancels an

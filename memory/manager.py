@@ -82,6 +82,14 @@ async def store_episode(
     almost-identical re-summaries. Returns the episode id — the NEW row's id, or
     the EXISTING row's id when the write was deduped.
     """
+    # Redaction: scrub any blocked term (e.g. Dan's last name) from episode text
+    # before hashing/embedding/storing -- it must not persist in any memory.
+    _terms = getattr(config, "REDACT_TERMS", ())
+    if _terms and text:
+        import re as _re
+        for _t in _terms:
+            text = _re.sub(rf"\b{_re.escape(_t)}\b", "[redacted]", text, flags=_re.IGNORECASE)
+
     pool = await get_pool()
     content_hash = _episode_content_hash(text)
     embedding = await embed(text) if config.EMBED_EPISODES else None
