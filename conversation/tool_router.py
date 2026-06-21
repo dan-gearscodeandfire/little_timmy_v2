@@ -189,6 +189,46 @@ def _value_grounded_in_utterance(utterance: str, value: str) -> bool:
     return any(t in u for t in toks)
 
 
+_SELF_NAMING_RE = re.compile(r"\b(my name|i am|i'm|call me|name's|name is)\b", re.I)
+_POSSESSED_ENTITY_RE = re.compile(r"\bmy ([a-z]+)(?:'s)?\b", re.I)
+
+
+def _speaker_name_overwrite_collapse(
+    utterance: str, subject: str, predicate: str, speaker_name: str | None
+) -> bool:
+    """Guard the SPEAKER'S OWN name against the subject-collapse corruption.
+
+    The Tier-2 args model sometimes drops a possessed entity and collapses the
+    subject onto the speaker: "remember my robot is named Sparky" -> it emits
+    subject="user", predicate="name", value="Sparky". After _normalize_subject
+    that becomes <speaker>.name = Sparky, silently OVERWRITING the speaker's real
+    name (store_fact's in-place ON CONFLICT upsert keeps no history -- root-caused
+    2026-06-20, it nuked dan.name -> "Sparky"). The value IS grounded (Sparky is
+    in the utterance) so _value_grounded_in_utterance can't catch it -- the
+    SUBJECT is what's wrong.
+
+    Block iff ALL hold: (a) the triple sets the speaker's own name
+    (subject==speaker, predicate in name/is/is called); (b) the utterance is NOT
+    actually self-naming ("my name is...", "call me...", "I'm..."); (c) it
+    references a possessed entity ("my <noun>", noun != name). Falls through to
+    the normal pipeline whose full-context extractor still stores the real fact,
+    so nothing legitimate is lost. Self-naming ("remember my name is Dan") is
+    unaffected -- (b) short-circuits."""
+    if (predicate or "").strip().lower() not in ("name", "is", "is called"):
+        return False
+    spk = (speaker_name or "").strip().lower()
+    if not spk or spk.startswith("unknown"):
+        return False  # no enrolled name to protect (guest)
+    if (subject or "").strip().lower() != spk:
+        return False  # attributed to an entity, not the speaker -> legitimate
+    u = utterance or ""
+    if _SELF_NAMING_RE.search(u):
+        return False  # genuine self-naming -> allow
+    entities = [w.lower() for w in _POSSESSED_ENTITY_RE.findall(u)
+                if w.lower() != "name"]
+    return bool(entities)
+
+
 async def extract_recall_phrase(user_text: str) -> str | None:
     """Tier-2 for recall_temporal. Returns the time phrase, or None on error."""
     content = await client.classify_constrained(
@@ -451,6 +491,19 @@ async def maybe_handle_tool_call(
     subject = _normalize_subject(args["subject"], speaker_name)
     predicate = (args.get("predicate") or "fact").strip()
     value = args["value"].strip()
+
+    if _speaker_name_overwrite_collapse(user_text, subject, predicate, speaker_name):
+        # Subject-collapse corruption: the args model dropped a possessed entity
+        # and aimed the speaker's own .name at a value from "my <thing> is named
+        # X". Refuse -- never let this overwrite the speaker's real name. The
+        # background extractor (full context) still records the real entity fact.
+        log.warning(
+            "[TOOL store_fact] BLOCKED speaker-name overwrite collapse: "
+            "%s.%s=%r from utterance %r; falling through",
+            subject, predicate, value, user_text[:80],
+        )
+        return _FALLTHROUGH
+
     try:
         await store_fact(subject, predicate, value, speaker_id=speaker_db_id)
     except Exception:

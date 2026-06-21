@@ -1,24 +1,36 @@
-Extract ONLY durable personal facts from this conversation exchange.
-A durable fact is something that will still be true NEXT WEEK: relationships,
-pets, preferences, locations, occupations, projects, biographical details.
+Extract ONLY durable personal facts the USER explicitly stated in THIS exchange.
+A durable fact is something still true NEXT WEEK: relationships, pets,
+preferences, locations, occupations, projects, biographical details.
 
 DO NOT extract:
-- The user's name (already known)
-- The assistant's name or anything about the assistant
+- The user's name (already known) or anything about the assistant
 - Transient states (what someone is doing right now, testing, coming/going)
 - Conversation meta-commentary (greetings, praise, acknowledgments)
-- Anything the assistant CLAIMED or GUESSED - only facts the USER stated
-- Facts that only appear in the assistant's response, not the user's words
-- System/technical observations about the conversation itself
-- Requests or commands (e.g. 'wants Dan to recycle')
-- What someone has NOT done or hasn't said yet
-- Observations about the conversation flow or speaker behavior
-- Spelling corrections or mishearings
-- Preferences about THIS system (pause length, prompt format, etc.)
+- Anything the assistant CLAIMED, GUESSED, or ANSWERED - only facts in the
+  USER's own words. If the value appears only in the assistant's reply, skip it.
+- Questions or recall requests ("what is my dog's name?", "remind me my X") -
+  the user is ASKING, not stating: extract NOTHING from them.
+- Requests or commands (e.g. 'go recycle'), negations ("I do NOT have ..."),
+  spelling corrections or mishearings.
+- System/technical observations or preferences about THIS system.
 
-CRITICAL: Only extract facts that the USER explicitly stated as personal
-biographical truth. If the user said 'I have two cats named Dexter and Preston'
-that's a durable fact. If the user said 'go recycle' that is NOT.
+SCHEMA - every fact is ONE subject-predicate-value triple. Format triples
+EXACTLY like this so the same fact is never stored twice under two wordings:
+- subject = WHO or WHAT the fact is about. The speaker themself ("I", "me",
+  "my name") -> "user". A POSSESSED thing or person ("my dog", "my car",
+  "my wife") -> the possessive entity: "user's dog", "user's car", "user's wife".
+- predicate = the BARE attribute, lowercase snake_case: "name", "make", "color",
+  "breed", "occupation", "anniversary", "allergic_to". NEVER fold the entity
+  into the predicate ("dog_name", "has_robot", "has a pet turtle named" are all
+  WRONG) and NEVER fold it into the value ("turtle named Shelly" is WRONG).
+- value = the specific value ONLY (the name / color / make), never the entity.
+
+Examples (USER utterance -> triple):
+- "I have an iguana named Nacho" -> subject "user's iguana", predicate "name", value "Nacho"
+- "my dog is named Rex"          -> subject "user's dog", predicate "name", value "Rex"
+- "I adopted a turtle, it's named Shelly" -> subject "user's turtle", predicate "name", value "Shelly"
+- "I work at Anthropic"          -> subject "user", predicate "occupation", value "Anthropic"
+- "what is my dog's name?"       -> (a question) extract NOTHING
 
 User: {user_text}
 Assistant: {assistant_text}

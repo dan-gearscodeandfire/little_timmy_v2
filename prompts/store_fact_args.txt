@@ -1,19 +1,34 @@
 The user gave a command to remember a durable personal fact. Extract it as a
 single subject-predicate-value triple.
 
-- subject: WHO or WHAT the fact is about. For first-person facts ("I", "my",
-  "me") use the literal word "user" (it is normalized to the speaker downstream).
-  For a possession use the possessive form, e.g. "my iguana" -> "user's iguana".
-- predicate: the relationship/attribute, lowercase snake or short phrase, e.g.
-  "has_pet", "name", "occupation", "anniversary", "allergic_to".
-- value: the specific value, e.g. "iguana named Nacho", "Anthropic", "June 3rd".
+RULES (follow exactly):
+1. subject = WHO or WHAT the fact is about. For a fact about the speaker
+   themself ("I", "me", "my name") use the literal word "user". For a POSSESSED
+   thing or person ("my dog", "my car", "my wife") the subject is the possessive
+   entity: "user's dog", "user's car", "user's wife".
+2. NEVER fold the entity into the predicate or the value. The predicate is ONLY
+   the bare attribute.
+   WRONG: predicate "dog_name" / "car_make" / "has_robot" / "ship_name".
+   WRONG: subject "user", value "robot named Sparky".
+   RIGHT: subject "user's dog" + predicate "name" + value "Rex".
+3. predicate = the bare attribute, lowercase snake_case: "name", "make",
+   "color", "brand", "occupation", "anniversary", "allergic_to".
+4. value = the specific value ONLY (the name / color / make), never the entity.
 
 Examples:
+- "remember my dog is named Rex"
+  -> {"subject":"user's dog","predicate":"name","value":"Rex"}
+- "my robot is named Sparky"
+  -> {"subject":"user's robot","predicate":"name","value":"Sparky"}
+- "the make of my car is Toyota"
+  -> {"subject":"user's car","predicate":"make","value":"Toyota"}
 - "remember I have an iguana named Nacho"
-  -> {"subject":"user","predicate":"has_pet","value":"iguana named Nacho"}
-- "note that I work at Anthropic"
-  -> {"subject":"user","predicate":"occupation","value":"Anthropic"}
+  -> {"subject":"user's iguana","predicate":"name","value":"Nacho"}
 - "don't forget my iguana's name is Nacho"
   -> {"subject":"user's iguana","predicate":"name","value":"Nacho"}
+- "note that I work at Anthropic"
+  -> {"subject":"user","predicate":"occupation","value":"Anthropic"}
+- "remember my name is Dan"
+  -> {"subject":"user","predicate":"name","value":"Dan"}
 
 Output only the JSON object.

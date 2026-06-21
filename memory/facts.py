@@ -38,6 +38,39 @@ async def store_fact(
     from memory.pii import classify_sensitivity
     sensitive, pii_category = classify_sensitivity(subject, predicate, value)
 
+    # Cross-predicate dedup. The (subject,predicate) unique index only collapses
+    # EXACT duplicates; the background extractor and the tool-call writer record
+    # the same fact under different free-text predicates ("has_robot" vs "has a
+    # robot named" vs "name"), which escapes the index (observed 2026-06-20:
+    # user/has_robot/Sparky + user/has_a_robot_named/Sparky). If writing this
+    # triple would INSERT a brand-new (subject,predicate) row AND an active row
+    # already states this exact VALUE about this SUBJECT under a DIFFERENT
+    # predicate, treat it as a duplicate phrasing and return the existing row.
+    #
+    # GUARD ON THE GUARD (2026-06-20, found live): only dedup an INSERT, never an
+    # UPDATE. If this exact (subject,predicate) already exists, the write is a
+    # correction to THAT attribute -- never a new duplicate -- so it must go
+    # through. Without this, a legit correction whose value coincides with a
+    # DIFFERENT predicate's value gets silently dropped (it skipped restoring
+    # dan.name="Dan" because dan."preferred name"="Dan" already existed).
+    target_exists = await pool.fetchval(
+        """SELECT 1 FROM facts
+           WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL""",
+        subject, predicate,
+    )
+    if not target_exists:
+        dup = await pool.fetchrow(
+            """SELECT id, predicate FROM facts
+               WHERE subject = $1 AND lower(value) = lower($2)
+                 AND predicate <> $3 AND superseded_by IS NULL
+               ORDER BY id LIMIT 1""",
+            subject, value, predicate,
+        )
+        if dup is not None:
+            log.info("Dedup fact: %s.%s = %s already stored as .%s (#%d); skipping",
+                     subject, predicate, value, dup["predicate"], dup["id"])
+            return dup["id"]
+
     row = await pool.fetchrow(
         """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
