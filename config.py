@@ -163,6 +163,17 @@ EXTRACTION_MAX_RETRIES = 5     # re-enqueue a cancelled extraction up to this ma
 EXTRACTION_DEBOUNCE_SECONDS = 8.0   # quiet gap after the last turn before extraction fires; each new turn resets it
 EXTRACTION_MAX_HOLD_SECONDS = 90.0  # flush anyway after this much continuous chatter, debounce notwithstanding
 
+# STT value-confidence gate (2026-06-21). When the classifier routes a
+# store_fact, we score the acoustic confidence of the VALUE word(s) against
+# whisper's per-word probabilities. Below this threshold the fact is stored but
+# tagged low-confidence: the ACK reads the value back for confirmation and
+# recall hedges instead of asserting it ("GROUND TRUTH" -> "HEARD BUT
+# UNCONFIRMED"). Trades a rare extra confirm turn for never committing a
+# misheard name as a confident fact (TRUE > AMBIGUITY > FALSE). Tune via
+# acoustic testing; whisper word probs ~0.65 for a soft-but-correct value, so
+# keep this conservative to avoid nagging on good captures.
+STT_VALUE_CONFIDENCE_THRESHOLD = 0.55
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking

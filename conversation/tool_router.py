@@ -371,6 +371,7 @@ async def maybe_handle_tool_call(
     conversation,
     tts,
     t_start: float | None = None,
+    stt_words: list | None = None,
 ) -> ToolOutcome:
     """Classify `user_text` and route it. Returns a ToolOutcome:
 
@@ -504,14 +505,34 @@ async def maybe_handle_tool_call(
         )
         return _FALLTHROUGH
 
+    # Value-level acoustic confidence: how sure was STT of the WORD(S) it heard
+    # as the fact's value? A misheard name (Bolt->Volt, Blaze->Blazed) is the
+    # dominant FALSE source (2026-06-21 acoustic testing). We store the fact
+    # regardless (never lose it) but tag it with this confidence so recall can
+    # hedge instead of asserting, and -- when we're genuinely unsure -- read the
+    # value back for confirmation instead of the breezy canned ACK. turn-level
+    # confidence isn't enough; we score the value span specifically.
+    from stt.client import value_confidence
+    import config as _cfg
+    vconf = value_confidence(stt_words, value) if stt_words else None
+    low_conf = vconf is not None and vconf < getattr(
+        _cfg, "STT_VALUE_CONFIDENCE_THRESHOLD", 0.55)
+
     try:
         await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
-                         source="tool")
+                         source="tool",
+                         confidence=vconf if vconf is not None else 1.0)
     except Exception:
         log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
         return _FALLTHROUGH
 
-    ack = random.choice(_load_acks())
+    if low_conf:
+        log.info("[TOOL store_fact] LOW value-confidence %.2f for %r -> read-back ACK",
+                 vconf, value)
+        ack = (f'I think you said "{value}" — I wasn\'t totally sure I heard that '
+               f'right. Tell me if I got it wrong.')
+    else:
+        ack = random.choice(_load_acks())
     # Inject the assistant ACK turn ONLY (user turn already added by caller).
     # No respond()/save() -> background extraction never fires on this turn.
     await conversation.add_assistant_turn(ack)

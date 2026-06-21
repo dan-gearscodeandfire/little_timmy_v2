@@ -2,8 +2,10 @@
 
 import io
 import re
+import math
 import wave
 import logging
+from dataclasses import dataclass, field
 import numpy as np
 import httpx
 import config
@@ -11,6 +13,73 @@ import config
 log = logging.getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
+
+
+@dataclass
+class Transcription:
+    """STT result carrying confidence, not just text. `confidence` is the
+    utterance-level acoustic confidence in [0,1] (exp of mean segment
+    avg_logprob). `words` is the per-word [(word, probability)] list from
+    whisper.cpp word timestamps — used to score the confidence of a SPECIFIC
+    extracted value (a misheard name) rather than the whole sentence. A bare
+    Transcription is falsy/truthy on its text and stringifies to it, so existing
+    `if not user_text` / logging call sites keep working."""
+    text: str = ""
+    confidence: float = 1.0
+    words: list = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.text)
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def _norm_word(w: str) -> str:
+    return re.sub(r"[^\w']", "", w).strip().lower()
+
+
+def value_confidence(words: list, value: str) -> float | None:
+    """Acoustic confidence of the specific VALUE string within an utterance.
+
+    Returns the WEAKEST probability among the whisper word-pieces that spell the
+    value (a value is only as trustworthy as its least-certain piece). This
+    targets the dominant FALSE source found 2026-06-21 acoustic testing: a
+    misheard fact value (Bolt->Volt, Blaze->Blazed) silently committing as a
+    confident "verified fact".
+
+    Whisper tokenizes uncommon proper nouns into SUB-WORD pieces -- "Onyx" ->
+    'On'+'yx', "Zoltan" -> 'Z'+'olt'+'an' -- which are exactly the names most
+    likely to be misheard. So we don't match whole words; we slide a window over
+    the word list, concatenate normalized pieces (letters only, punctuation
+    dropped), and find the contiguous run whose concatenation equals the value's
+    letters (spaces removed). Handles sub-word splits AND multi-word values.
+    Returns None only if the value's letters can't be assembled from any run
+    (caller falls back to utterance confidence).
+    """
+    if not words or not value:
+        return None
+    target = "".join(_norm_word(t) for t in value.split())
+    if not target:
+        return None
+    norm = [(_norm_word(w), p) for (w, p) in words]
+    n = len(norm)
+    for i in range(n):
+        if not norm[i][0]:
+            continue
+        acc = ""
+        probs = []
+        for j in range(i, n):
+            piece, p = norm[j]
+            if not piece:
+                continue  # punctuation token: spans across it, ignore its prob
+            acc += piece
+            probs.append(p)
+            if acc == target:
+                return min(probs)
+            if not target.startswith(acc):
+                break  # this run diverged; advance the window start
+    return None
 
 # Short phrases that whisper commonly hallucinates from noise/silence
 _HALLUCINATION_PATTERNS = {
@@ -100,10 +169,14 @@ def _audio_to_wav_bytes(audio: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-async def transcribe(audio: np.ndarray) -> str:
-    """Send audio to whisper.cpp /inference endpoint and return text.
+async def transcribe(audio: np.ndarray) -> "Transcription":
+    """Send audio to whisper.cpp /inference and return a Transcription
+    (text + acoustic confidence + per-word probabilities).
 
-    Uses verbose_json to get no_speech_prob for hallucination filtering.
+    Uses verbose_json to get no_speech_prob (hallucination filter), segment
+    avg_logprob (utterance confidence) and word probabilities (value-level
+    confidence). On any failure returns an empty Transcription (falsy), so the
+    capture pipeline skips the turn exactly as before.
     """
     wav_bytes = _audio_to_wav_bytes(audio)
     client = await _get_client()
@@ -122,25 +195,32 @@ async def transcribe(audio: np.ndarray) -> str:
         # hallucinations and empty transcripts — no crash-loop on LT
         # while whisper-server is stopped.
         log.warning("STT unavailable, dropping turn: %s", e)
-        return ""
+        return Transcription()
     result = resp.json()
 
     text = result.get("text", "").strip()
     if not text:
-        return ""
+        return Transcription()
 
     # Remove bracketed/parenthesized sound effects
     text = re.sub(r"\[.*?\]", "", text).strip()
     text = re.sub(r"\(.*?\)", "", text).strip()
     if not text:
-        return ""
+        return Transcription()
 
-    # Get no_speech_prob from segments (use max across segments)
     segments = result.get("segments", [])
+    # Get no_speech_prob from segments (use max across segments)
     no_speech_prob = max((s.get("no_speech_prob", 0.0) for s in segments), default=0.0)
 
     if _is_likely_hallucination(text, no_speech_prob):
-        return ""
+        return Transcription()
+
+    # Utterance confidence: exp(mean segment avg_logprob), clamped to [0,1].
+    logps = [s["avg_logprob"] for s in segments if s.get("avg_logprob") is not None]
+    confidence = max(0.0, min(1.0, math.exp(sum(logps) / len(logps)))) if logps else 1.0
+    # Per-word probabilities (flatten across segments) for value-level scoring.
+    words = [(w.get("word", ""), float(w.get("probability", 1.0)))
+             for s in segments for w in (s.get("words") or [])]
 
     # Apply known name corrections (e.g., Aaron → Erin)
     corrected = _apply_stt_corrections(text)
@@ -148,4 +228,4 @@ async def transcribe(audio: np.ndarray) -> str:
         log.info("STT correction: %r -> %r", text, corrected)
         text = corrected
 
-    return text
+    return Transcription(text=text, confidence=confidence, words=words)

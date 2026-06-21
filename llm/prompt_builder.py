@@ -210,13 +210,31 @@ def build_ephemeral_block(
             )
 
     if facts:
-        gt_lines = [
-            "GROUND TRUTH — these facts are verified and must NEVER be contradicted. "
-            "If asked about any of these topics, use ONLY the information below:"
-        ]
-        for f in facts:
-            gt_lines.append(f"- {f.subject} {f.predicate} {f.value}")
-        parts.append("\n".join(gt_lines))
+        # Split by acoustic confidence (set from STT value-confidence at store
+        # time; legacy facts default 1.0 -> verified). A misheard value must not
+        # be asserted as fact -- surface it as UNCONFIRMED so the reply hedges and
+        # offers to confirm (AMBIGUITY) instead of stating it (FALSE). 2026-06-21.
+        import config as _cfg
+        thr = getattr(_cfg, "STT_VALUE_CONFIDENCE_THRESHOLD", 0.55)
+        verified = [f for f in facts if getattr(f, "confidence", 1.0) >= thr]
+        unconfirmed = [f for f in facts if getattr(f, "confidence", 1.0) < thr]
+        if verified:
+            gt_lines = [
+                "GROUND TRUTH — these facts are verified and must NEVER be contradicted. "
+                "If asked about any of these topics, use ONLY the information below:"
+            ]
+            for f in verified:
+                gt_lines.append(f"- {f.subject} {f.predicate} {f.value}")
+            parts.append("\n".join(gt_lines))
+        if unconfirmed:
+            unc_lines = [
+                "HEARD BUT UNCONFIRMED — you weren't sure you heard these correctly. "
+                "If asked, you may share the value but HEDGE (say you're not certain) "
+                "and offer to confirm; do NOT state it as a verified fact:"
+            ]
+            for f in unconfirmed:
+                unc_lines.append(f"- {f.subject} {f.predicate} {f.value} (~unsure)")
+            parts.append("\n".join(unc_lines))
 
     if memories:
         mem_lines = ["Relevant memories:"]

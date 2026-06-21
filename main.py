@@ -422,7 +422,9 @@ class Orchestrator:
 
         # --- STT ---
         t0 = time.time()
-        user_text = await transcribe(audio)
+        transcription = await transcribe(audio)
+        user_text = transcription.text
+        stt_words = transcription.words           # per-word probs for value-confidence
         stt_ms = int((time.time() - t0) * 1000)
 
         if not user_text:
@@ -498,7 +500,7 @@ class Orchestrator:
         # normal pipeline unchanged. The user turn was already added/broadcast above.
         outcome = await tool_router.maybe_handle_tool_call(
                 user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
-                t_start=t_start)
+                t_start=t_start, stt_words=stt_words)
         if outcome.handled:
             return
 
