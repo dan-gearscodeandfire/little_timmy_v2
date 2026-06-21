@@ -102,27 +102,20 @@ def _memory_contended() -> bool:
 
 
 async def _wait_for_conversation_idle() -> None:
-    """Block until the conversation brain is free for background work: no
-    stream in flight AND at least conversation_idle_gate_seconds elapsed since
-    the last conversation activity. No-op when conversation and memory live on
-    separate servers. The widened window (vs. the bare in-flight check) keeps
-    memory extraction / rollup from firing into the micro-gaps between rapid
-    turns and then getting cancelled mid-decode -- which left the single shared
-    :8083 slot server-side busy and stalled the next reply (the 43s hang Dan
-    hit live 2026-06-20). Cancellable: callers run as registered slow tasks."""
+    """Block until no conversation stream is in flight. No-op when conversation
+    and memory live on separate servers (the default since extraction moved to
+    the :8084 vision server, 2026-06-20).
+
+    RETIRED 2026-06-20: the conversation_idle_gate_seconds WIDENING (wait an
+    extra N seconds of quiet before issuing) that used to keep extraction from
+    firing into inter-turn gaps. The :8083/:8084 split solves contention
+    physically, so the band-aid is dead weight on this path. The toggle lives on
+    as the mail-defer "conversation active" window (conversation_active() /
+    /api/active), NOT as an extraction gate."""
     if not _conversation_shares_brain():
         return
-    window = _idle_gate_seconds()
-    while True:
-        if _conversation_in_flight.is_set():
-            await asyncio.sleep(0.1)
-            continue
-        if window > 0.0:
-            elapsed = time.time() - _last_conversation_activity_ts
-            if elapsed < window:
-                await asyncio.sleep(min(0.5, window - elapsed))
-                continue
-        return
+    while _conversation_in_flight.is_set():
+        await asyncio.sleep(0.1)
 
 
 async def _wait_for_vision_idle() -> None:

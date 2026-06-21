@@ -348,6 +348,35 @@ async def get_active():
     }
 
 
+@app.get("/api/conversation/idle_gate")
+async def get_conversation_idle_gate():
+    """Read the conversation_idle_gate_seconds runtime toggle (the 'conversation
+    active' window the mail-ingest loop polls via /api/active to defer email
+    while Dan is talking). Live-tunable via the LT-OS slider; 0 = only defer
+    while a stream is literally in flight."""
+    from persistence import runtime_toggles
+    return {"conversation_idle_gate_seconds": float(
+        runtime_toggles.get("conversation_idle_gate_seconds") or 0.0)}
+
+
+@app.post("/api/conversation/idle_gate")
+async def set_conversation_idle_gate(payload: dict | None = None):
+    """Set conversation_idle_gate_seconds (clamped 0–300s, persisted by
+    runtime_toggles, read live -- no restart). Float to match the default's
+    type so the toggle-merge keeps it."""
+    from persistence import runtime_toggles
+    val = (payload or {}).get("conversation_idle_gate_seconds")
+    if val is None:
+        return {"ok": False, "error": "conversation_idle_gate_seconds required"}
+    try:
+        val = max(0.0, min(300.0, float(val)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "conversation_idle_gate_seconds must be a number"}
+    runtime_toggles.set("conversation_idle_gate_seconds", val)
+    return {"ok": True, "conversation_idle_gate_seconds": float(
+        runtime_toggles.get("conversation_idle_gate_seconds"))}
+
+
 @app.get("/api/mood")
 async def get_mood():
     """Current 2-axis mood state.
