@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 import httpx
 import config
+from llm import client as _llm
 
 log = logging.getLogger(__name__)
 
@@ -159,12 +160,16 @@ async def analyze_frame(jpeg_bytes: bytes, prompt: str | None = None) -> SceneRe
 
     try:
         t0 = time.monotonic()
-        resp = await client.post(
-            config.LLM_VISION_URL + "/v1/chat/completions",
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        # Vision wins on the shared :8084 slot: cancel any in-flight extraction/
+        # rollup and hold the slot for the duration of the scene call. No-op
+        # when memory runs on its own server (nothing to arbitrate).
+        async with _llm.vision_priority():
+            resp = await client.post(
+                config.LLM_VISION_URL + "/v1/chat/completions",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
         elapsed = time.monotonic() - t0
 
         content = data["choices"][0]["message"]["content"].strip()

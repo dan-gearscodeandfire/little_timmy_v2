@@ -1,6 +1,7 @@
 """LLM client for llama.cpp servers (conversation on 8081, memory on 8080)."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -22,6 +23,13 @@ _client: httpx.AsyncClient | None = None
 # call always takes preference over summarization.'
 _conversation_in_flight = asyncio.Event()
 _slow_call_tasks: set[asyncio.Task] = set()
+# Vision-priority gate (2026-06-20, Dan): memory/extraction now shares the
+# :8084 VISION server (own KV cache, off the :8083 conversation slot). On that
+# shared server a VLM scene call takes priority over a background extraction/
+# rollup the same way conversation does on :8083 — set while a vision call is
+# in flight so new slow calls wait, and a starting vision call cancels any
+# in-flight slow call. Only meaningful when LLM_MEMORY_URL == LLM_VISION_URL.
+_vision_in_flight = asyncio.Event()
 # Wall-clock of the last conversation-stream activity (stamped at stream start
 # AND end). Lets "idle" mean "the user has actually been quiet for a beat",
 # not just "no stream is in flight this microsecond" -- so background slow
@@ -79,6 +87,20 @@ def _conversation_shares_brain() -> bool:
     return _current_conversation_url() == config.LLM_MEMORY_URL
 
 
+def _memory_shares_vision() -> bool:
+    """True when memory/extraction routes to the same server as vision, so a
+    VLM scene call and a background extraction/rollup contend for one slot +
+    KV cache (the :8084 co-location, 2026-06-20). Vision wins on that slot."""
+    return config.LLM_MEMORY_URL == config.LLM_VISION_URL
+
+
+def _memory_contended() -> bool:
+    """True when some priority holder (conversation OR vision) shares the
+    memory server, so a slow call must register itself as cancellable and wait
+    its turn. False == memory has its own server; slow calls run unimpeded."""
+    return _conversation_shares_brain() or _memory_shares_vision()
+
+
 async def _wait_for_conversation_idle() -> None:
     """Block until the conversation brain is free for background work: no
     stream in flight AND at least conversation_idle_gate_seconds elapsed since
@@ -103,12 +125,41 @@ async def _wait_for_conversation_idle() -> None:
         return
 
 
+async def _wait_for_vision_idle() -> None:
+    """Block while a vision (VLM) call holds the shared memory server, so a
+    background extraction/rollup yields the :8084 slot to scene analysis.
+    No-op unless memory and vision share a server. Cancellable: callers run as
+    registered slow tasks, so a vision call mid-wait simply keeps us parked."""
+    if not _memory_shares_vision():
+        return
+    while _vision_in_flight.is_set():
+        await asyncio.sleep(0.05)
+
+
+@contextlib.asynccontextmanager
+async def vision_priority():
+    """Wrap a vision (VLM) call so it takes priority over background memory work
+    on the shared :8084 server: cancel any in-flight extraction/rollup to free
+    the slot, mark vision in-flight (new slow calls wait via _wait_for_vision_
+    idle), and clear on exit. No-op unless memory and vision share a server
+    (otherwise vision owns the server and there's nothing to arbitrate)."""
+    if not _memory_shares_vision():
+        yield
+        return
+    _cancel_in_flight_slow_calls("VISION-PRIORITY")
+    _vision_in_flight.set()
+    try:
+        yield
+    finally:
+        _vision_in_flight.clear()
+
+
 def _register_slow_call() -> asyncio.Task | None:
-    """Mark the current task as a slow call so stream_conversation can
-    cancel it if a user-facing reply needs the brain. Returns the task
-    so the caller can deregister in a finally block. No-op on separate
-    servers."""
-    if not _conversation_shares_brain():
+    """Mark the current task as a slow call so a priority holder (a user-facing
+    conversation reply on a shared brain, or a vision scene call on the shared
+    :8084 server) can cancel it. Returns the task so the caller can deregister
+    in a finally block. No-op when memory has its own uncontended server."""
+    if not _memory_contended():
         return None
     task = asyncio.current_task()
     if task is not None:
@@ -121,14 +172,15 @@ def _deregister_slow_call(task: asyncio.Task | None) -> None:
         _slow_call_tasks.discard(task)
 
 
-def _cancel_in_flight_slow_calls() -> None:
-    """Called at conversation-start to free the brain for low-latency
-    reply. Cancels any in-flight extract_and_store / rollup summary that
-    registered itself via _register_slow_call. The cancelled task's
-    httpx request raises CancelledError; calling code's try/finally
-    blocks fire to release locks / flags. No-op on separate servers."""
-    if not _conversation_shares_brain():
-        return
+def _cancel_in_flight_slow_calls(reason: str = "CONV-PRIORITY") -> None:
+    """Cancel any in-flight extract_and_store / rollup summary that registered
+    itself via _register_slow_call, to free the shared slot for a higher-
+    priority caller. The cancelled task's httpx request raises CancelledError;
+    calling code's try/finally blocks fire to release locks / flags. The CALLER
+    guards on whether it actually shares the slot (conversation guards on
+    _conversation_shares_brain; vision on _memory_shares_vision) — this is
+    unconditional so it can serve both priority holders. `reason` only labels
+    the log line."""
     cancelled = 0
     for task in list(_slow_call_tasks):
         if not task.done():
@@ -136,8 +188,8 @@ def _cancel_in_flight_slow_calls() -> None:
             cancelled += 1
     if cancelled:
         log.info(
-            "[CONV-PRIORITY] cancelled %d in-flight slow call(s) to free Qwen3.6",
-            cancelled,
+            "[%s] cancelled %d in-flight slow call(s) to free Qwen3.6",
+            reason, cancelled,
         )
     _slow_call_tasks.clear()
 
@@ -192,7 +244,12 @@ async def stream_conversation(
     in-flight so new slow calls wait.
     """
     global _last_conversation_activity_ts
-    _cancel_in_flight_slow_calls()
+    # Only cancel background slow calls when conversation actually shares the
+    # memory server (the :8083 case). With memory on its own :8084 slot, an
+    # extraction is NOT on the conversation slot, so a turn must NOT cancel it
+    # (that's vision's job now, via vision_priority()).
+    if _conversation_shares_brain():
+        _cancel_in_flight_slow_calls("CONV-PRIORITY")
     _conversation_in_flight.set()
     _last_conversation_activity_ts = time.time()
     client = await _get_client()
@@ -244,11 +301,13 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
     so a Qwen3.6-style server gates the thinking trace per-request. None preserves
     legacy behavior (no kwarg, server default applies).
 
-    Phase 1 priority gate: when conversation and memory share a server, this
-    call blocks until conversation is idle and registers itself so a future
-    conversation request can cancel it.
+    Priority gate: when conversation and memory share a server, this call
+    blocks until conversation is idle; when memory and vision share the :8084
+    server, it also blocks while a VLM scene call is in flight (vision wins).
+    Registers itself so the relevant priority holder can cancel it.
     """
     await _wait_for_conversation_idle()
+    await _wait_for_vision_idle()
     task = _register_slow_call()
     try:
         client = await _get_client()
@@ -369,11 +428,13 @@ async def generate_summary(turns_text: str) -> str:
     reasoning_content and content comes back empty (finish_reason=length) —
     every rollup was a silent no-op that still occupied the shared :8083 slot.
 
-    Phase 1 priority gate: when conversation and memory share a server, this
-    call blocks until conversation is idle and registers itself so a future
-    conversation request can cancel it.
+    Priority gate: when conversation and memory share a server, this call
+    blocks until conversation is idle; when memory and vision share the :8084
+    server, it also blocks while a VLM scene call is in flight (vision wins).
+    Registers itself so the relevant priority holder can cancel it.
     """
     await _wait_for_conversation_idle()
+    await _wait_for_vision_idle()
     task = _register_slow_call()
     try:
         client = await _get_client()

@@ -609,12 +609,17 @@ async def set_energy_floor(payload: dict | None = None):
 async def health_check():
     """Check connectivity to all backend services."""
     import httpx
+    from llm import client as _llm
     checks = {}
     async with httpx.AsyncClient(timeout=3.0) as client:
         for name, url in [
             ("whisper_cpp", f"{config.WHISPER_URL}/health"),
             ("llm_3b", f"{config.LLM_CONVERSATION_URL}/health"),
-            ("llm_brain", f"{config.LLM_MEMORY_URL}/health"),
+            # llm_brain = the live conversation brain (:8083 when qwen36 is
+            # selected via override), NOT LLM_MEMORY_URL — extraction moved to
+            # :8084 (2026-06-20), so check both separately or :8083 goes unseen.
+            ("llm_brain", f"{_llm._current_conversation_url()}/health"),
+            ("llm_memory", f"{config.LLM_MEMORY_URL}/health"),
             ("llm_classifier", f"{config.LLM_CLASSIFIER_URL}/health"),
             ("ollama", f"{config.OLLAMA_URL}/api/tags"),
         ]:

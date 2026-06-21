@@ -11,7 +11,16 @@ LLM_CONVERSATION_URL = os.getenv("TIMMY_CONVERSATION_URL", os.getenv("TIMMY_LLM_
 # L5 2026-05-14: TIMMY_MEMORY_URL is the canonical name (drops the
 # redundant "LLM" to match TIMMY_CONVERSATION_URL / TIMMY_VISION_URL).
 # Old TIMMY_MEMORY_LLM_URL kept as fallback.
-LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_URL", os.getenv("TIMMY_MEMORY_LLM_URL", "http://localhost:8083"))
+# 2026-06-20 (Dan): memory/extraction now defaults to the VISION server
+# (:8084 via TIMMY_VISION_URL), NOT the conversation brain (:8083). Both run
+# the same Qwen3.6-35B-A3B model, but :8084 has its OWN KV cache (it carries
+# the vision mmproj). Co-locating extraction with vision instead of
+# conversation means background extraction + rollup can never evict the
+# conversation prefix on :8083 — killing both the mid-turn contention hang AND
+# the post-lull cold-reprefill spike (2026-06-20). Extraction yields to vision
+# on :8084 via the vision-priority gate in llm/client.py. Set TIMMY_MEMORY_URL
+# to pin a dedicated memory server instead.
+LLM_MEMORY_URL = os.getenv("TIMMY_MEMORY_URL", os.getenv("TIMMY_MEMORY_LLM_URL", os.getenv("TIMMY_VISION_URL", "http://localhost:8084")))
 LLM_BRAIN_MODEL = os.getenv("TIMMY_BRAIN_MODEL", "qwen3.6")
 # First-pass tool-call classifier (Qwen3-4B-Q4 on its OWN llama-server, 2026-06-18).
 # Separate server with its own KV cache so routing prompts never evict the :8083
