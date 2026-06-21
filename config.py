@@ -169,10 +169,17 @@ EXTRACTION_MAX_HOLD_SECONDS = 90.0  # flush anyway after this much continuous ch
 # tagged low-confidence: the ACK reads the value back for confirmation and
 # recall hedges instead of asserting it ("GROUND TRUTH" -> "HEARD BUT
 # UNCONFIRMED"). Trades a rare extra confirm turn for never committing a
-# misheard name as a confident fact (TRUE > AMBIGUITY > FALSE). Tune via
-# acoustic testing; whisper word probs ~0.65 for a soft-but-correct value, so
-# keep this conservative to avoid nagging on good captures.
-STT_VALUE_CONFIDENCE_THRESHOLD = 0.55
+# misheard name as a confident fact (TRUE > AMBIGUITY > FALSE).
+#
+# TUNED on 119 live acoustic stores (92 correct / 27 mishear, 2026-06-21). The
+# cost-min (FALSE weighted >=5x nag) is 0.75; 0.72 is the efficient-frontier
+# knee -- catches 85% of mishears (23/27) at <30% read-back rate, just below
+# where nagging climbs steeply (0.75->0.80 doubles nag for one more catch). The
+# 4 mishears that still slip are confident near-homophones (Praxx->Prax 0.85,
+# Wren->Ren 0.81) that NO threshold catches without exploding nag -- they need
+# read-back-always-on-novel-noun (v2). Raise toward 0.75 to trade snappiness for
+# fewer FALSE; lower toward 0.65 for fewer read-backs.
+STT_VALUE_CONFIDENCE_THRESHOLD = 0.72
 
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5

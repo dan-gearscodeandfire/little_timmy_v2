@@ -517,6 +517,10 @@ async def maybe_handle_tool_call(
     vconf = value_confidence(stt_words, value) if stt_words else None
     low_conf = vconf is not None and vconf < getattr(
         _cfg, "STT_VALUE_CONFIDENCE_THRESHOLD", 0.55)
+    # Always-on telemetry: the value-confidence of every routed store (None =
+    # no audio / value not locatable). Lets threshold tuning join by turn order.
+    log.info("[VCONF] %.3f value=%r low=%s",
+             vconf if vconf is not None else -1.0, value, low_conf)
 
     try:
         await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
