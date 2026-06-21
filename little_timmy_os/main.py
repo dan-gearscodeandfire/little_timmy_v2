@@ -542,6 +542,31 @@ async def set_tts_mute(payload: dict | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+@app.get("/api/timmy/conversation/idle_gate")
+async def get_conversation_idle_gate():
+    """Proxy: read LT's conversation_idle_gate_seconds (mail-defer active window)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/conversation/idle_gate")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/conversation/idle_gate")
+async def set_conversation_idle_gate(payload: dict | None = None):
+    """Proxy: set conversation_idle_gate_seconds. LT clamps 0–300 + persists (live)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/conversation/idle_gate",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.post("/api/timmy/announce")
 async def timmy_announce(payload: dict | None = None):
     """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
@@ -1298,6 +1323,20 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <!-- Conversation-active / mail-defer window slider (conversation_idle_gate_seconds).
+             How long after Dan stops talking before email polling resumes. Live; no restart. -->
+        <div class="service-card" id="idle-gate-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="margin-bottom:6px;">
+            <div class="service-name">Mail-defer window (s)</div>
+            <div class="service-detail" id="idle-gate-detail">Loading…</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="range" id="idle-gate-slider" min="0" max="120" step="1" value="20"
+                   oninput="onIdleGateInput(this.value)" onchange="commitIdleGate(this.value)"
+                   style="flex:1; accent-color:#58a6ff; cursor:pointer;">
+            <span id="idle-gate-val" style="font-family:monospace; color:#58a6ff; min-width:42px; text-align:right;">20s</span>
+          </div>
+        </div>
         <!-- Mic VU meter (relocated out of streamerpi Controls 2026-06-18): it's
              LT's own mic level, not a Pi control. Data from /api/audio/diag. -->
         <div class="service-card" id="mic-vu-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
@@ -1656,6 +1695,25 @@ header .uptime {
           <tr><td colspan="5" style="color:#484f58; padding:4px;">no turns yet</td></tr>
         </tbody>
       </table>
+    </details>
+    <details class="panel" open style="margin-top:16px;">
+      <summary><h2>Latency Spike Monitor (PERF-AGG)</h2></summary>
+      <div id="perf-agg-status" style="font-size:11px; color:#8b949e; margin-bottom:6px;">initializing…</div>
+      <table style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead>
+          <tr style="color:#8b949e; text-align:right;">
+            <th style="text-align:left; font-weight:normal; padding:2px 4px;">metric</th>
+            <th style="font-weight:normal; padding:2px 4px;">p50</th>
+            <th style="font-weight:normal; padding:2px 4px;">p95</th>
+            <th style="font-weight:normal; padding:2px 4px;">max</th>
+            <th style="font-weight:normal; padding:2px 4px;">spike</th>
+          </tr>
+        </thead>
+        <tbody id="perf-agg-body">
+          <tr><td colspan="5" style="color:#484f58; padding:4px;">no turns yet</td></tr>
+        </tbody>
+      </table>
+      <div style="font-size:9px; color:#484f58; margin-top:4px;">spike = max exceeds an absolute ceiling or 2.5× p95 (a turn far above its own distribution — the 21s/43s class of event)</div>
     </details>
     <details class="panel" open style="margin-top:16px;">
       <summary><h2>Latency History</h2></summary>
@@ -2981,6 +3039,50 @@ pollMetrics();
 metricsInterval = setInterval(pollMetrics, 30000);
 pollLatencyStats();
 setInterval(pollLatencyStats, 15000);
+
+// --- PERF-AGG spike monitor: flag turns far above their own distribution ---
+// Catches the 21s/43s class of event (a max that dwarfs p95, or exceeds an
+// absolute ceiling) at a glance instead of needing a journal dig.
+const PERF_AGG_METRICS = [
+  ["conversation:llm_ft",    "LLM 1st token", 5000],
+  ["conversation:e2e",       "Conversation e2e", 7000],
+  ["conversation:llm_total", "LLM total", 6000],
+  ["conversation:tts",       "TTS", 5000],
+  ["stage:classifier_route", "Classifier route", 1500],
+  ["tool:e2e",               "Tool turn e2e", 5000],
+];
+async function pollPerfAggSpikes() {
+  try {
+    const d = await (await fetch("/api/timmy/latency_stats")).json();
+    const body = document.getElementById("perf-agg-body");
+    const status = document.getElementById("perf-agg-status");
+    if (!body || d.error || !d.series) return;
+    let html = "", spikes = [];
+    for (const [key, label, ceil] of PERF_AGG_METRICS) {
+      const s = d.series[key];
+      if (!s || !s.n) continue;
+      const isSpike = s.max > ceil || (s.p95 > 0 && s.max > 2.5 * s.p95);
+      if (isSpike) spikes.push(label);
+      html += '<tr style="text-align:right;">'
+        + '<td style="text-align:left; padding:2px 4px; color:#c9d1d9; font-weight:bold;">' + label + '</td>'
+        + '<td style="padding:2px 4px; color:#c9d1d9;">' + s.p50 + '</td>'
+        + '<td style="padding:2px 4px; color:#bc8cff;">' + s.p95 + '</td>'
+        + '<td style="padding:2px 4px; color:' + (isSpike ? '#f85149; font-weight:bold;' : '#484f58;') + '">' + s.max + '</td>'
+        + '<td style="padding:2px 4px; color:' + (isSpike ? '#f0883e;' : '#484f58;') + '">' + (isSpike ? '⚠' : '—') + '</td>'
+        + '</tr>';
+    }
+    body.innerHTML = html || '<tr><td colspan="5" style="color:#484f58; padding:4px;">no turns yet</td></tr>';
+    if (status) {
+      status.textContent = spikes.length
+        ? '🔴 spike in: ' + spikes.join(', ') + ' (window resets on restart)'
+        : '✅ nominal — no turn far above its distribution';
+      status.style.color = spikes.length ? '#f0883e' : '#8b949e';
+    }
+  } catch (e) {}
+}
+pollPerfAggSpikes();
+setInterval(pollPerfAggSpikes, 15000);
+
 pollFaceTracking();
 setInterval(pollFaceTracking, 10000);
 pollStreamerpiMain();
@@ -3165,6 +3267,52 @@ async function commitTtsMute(muted) {
 
 loadTtsMute();
 setInterval(loadTtsMute, 15000);
+
+// --- Conversation-active / mail-defer window slider (conversation_idle_gate_seconds) ---
+let idleGateHoldUntil = 0;  // suppress poll->slider sync for 2s after a user edit
+function onIdleGateInput(v) {
+  const val = Math.max(0, Math.min(120, Math.round(parseFloat(v) || 0)));
+  idleGateHoldUntil = Date.now() + 2000;
+  const lbl = document.getElementById('idle-gate-val');
+  if (lbl) lbl.textContent = val + 's';
+}
+async function loadIdleGate() {
+  const detail = document.getElementById('idle-gate-detail');
+  const slider = document.getElementById('idle-gate-slider');
+  const lbl = document.getElementById('idle-gate-val');
+  try {
+    const d = await (await fetch('/api/timmy/conversation/idle_gate')).json();
+    if (d.error) { if (detail) { detail.textContent = d.error; detail.style.color = '#f85149'; } return; }
+    const val = Math.round(d.conversation_idle_gate_seconds ?? 20);
+    if (Date.now() > idleGateHoldUntil) {
+      if (slider && document.activeElement !== slider) slider.value = val;
+      if (lbl) lbl.textContent = val + 's';
+    }
+    if (detail) {
+      detail.textContent = val === 0 ? 'email resumes immediately after a turn'
+                                     : 'email defers ' + val + 's after Dan stops talking';
+      detail.style.color = '#8b949e';
+    }
+  } catch (e) { if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; } }
+}
+async function commitIdleGate(v) {
+  const detail = document.getElementById('idle-gate-detail');
+  const value = Math.max(0, Math.min(120, Math.round(parseFloat(v) || 0)));
+  idleGateHoldUntil = Date.now() + 2000;
+  try {
+    const r = await fetch('/api/timmy/conversation/idle_gate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({conversation_idle_gate_seconds: value})
+    });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (detail) { detail.textContent = 'rejected: ' + (d.error || r.status); detail.style.color = '#f85149'; }
+    }
+  } catch (e) { if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; } }
+  loadIdleGate();  // re-sync
+}
+loadIdleGate();
+setInterval(loadIdleGate, 15000);
 
 async function pollHostMetrics() {
   try {
