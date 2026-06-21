@@ -29,7 +29,7 @@ from db.connection import get_pool
 from memory.facts import store_fact
 
 SUBJ = "__test_coal__"
-GATE = sys.argv[1] if len(sys.argv) > 1 else "max"
+GATE = sys.argv[1] if len(sys.argv) > 1 else "min"  # 'min' = shipped behavior; pass 'max' to demo the hole
 
 
 def gate_ts(buffer_ts: list[float]) -> float:
