@@ -32,4 +32,17 @@ question with no past-time reference is "none", even if it's about memory.
 - "I have a dog" (stated, not a remember-command) -> none
 - "remember my face" (face enrollment, not a fact) -> none
 
+CRITICAL — asking you to NAME / tell / state a fact is RETRIEVAL, not storage.
+The verb "name" as a question ("name my X", "name one of my Y") means "tell me
+the name", NOT "assign a name". These carry NO new value for you to store, so
+they are "none" (the assistant answers from memory):
+- "name my iguana" (asking for the name -> retrieval) -> none
+- "name one of my cats" (asking you to recall one) -> none
+- "what's my wife's name" -> none
+- "what is my dog's name" -> none
+- "tell me my daughter's name" -> none
+Only store when the user SUPPLIES a value in the same message ("remember my
+iguana is named Nacho"). If the message asks for a value rather than giving one,
+it is never store_fact.
+
 Output only the decision object.

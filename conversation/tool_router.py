@@ -25,6 +25,7 @@ classifier-server outage degrades gracefully and never drops a turn.
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -157,6 +158,35 @@ async def extract_store_fact_args(user_text: str) -> dict | None:
     if not isinstance(obj, dict):
         return None
     return obj
+
+
+_VALUE_STOPWORDS = {
+    "the", "a", "an", "my", "is", "are", "was", "named", "name", "called",
+    "of", "to", "and", "his", "her", "their", "your", "i", "me",
+}
+
+
+def _value_grounded_in_utterance(utterance: str, value: str) -> bool:
+    """True if the store_fact VALUE actually appears in the user's words.
+
+    Tier-2 sometimes fabricates/recalls a value the user never said — e.g. the
+    QUESTION "name my iguana" gets misrouted to store_fact and the extractor
+    fills the answer "Nacho" from injected memory, then writes it as a NEW fact
+    (data-corruption risk on a read-intent turn, 2026-06-20). Require at least
+    one significant value token (len>=2, not a stopword) to appear in the
+    utterance. Pure fabrications have zero overlap and fall through to the
+    normal pipeline — whose background extractor stores genuine facts WITH full
+    context, so nothing is lost (graceful: a false block just routes the store
+    through the slower, more careful path). Lenient by design: normalized
+    values (e.g. "June 3rd" from "june third") still share the "june" token."""
+    if not utterance or not value:
+        return False
+    u = utterance.lower()
+    toks = [t for t in re.findall(r"[a-z0-9]+", value.lower())
+            if len(t) >= 2 and t not in _VALUE_STOPWORDS]
+    if not toks:
+        return True  # nothing checkable (value all stopwords) -> don't block
+    return any(t in u for t in toks)
 
 
 async def extract_recall_phrase(user_text: str) -> str | None:
@@ -403,6 +433,19 @@ async def maybe_handle_tool_call(
         # Grammar guarantees shape, not sense -- a failed/empty extraction
         # degrades to a normal conversational reply rather than a junk fact.
         log.info("[TOOL store_fact] extraction empty/failed (%r); falling through", args)
+        return _FALLTHROUGH
+
+    if not _value_grounded_in_utterance(user_text, args["value"]):
+        # The extracted value isn't in what the user actually said -- almost
+        # always a recall QUESTION ("name my iguana") misrouted to store_fact
+        # with the answer hallucinated from memory. Never persist it; fall
+        # through so the normal pipeline answers (and its background extractor
+        # handles any genuine fact with full context).
+        log.warning(
+            "[TOOL store_fact] value %r not grounded in utterance %r; falling "
+            "through (likely a recall question misrouted to store)",
+            args["value"], user_text[:80],
+        )
         return _FALLTHROUGH
 
     subject = _normalize_subject(args["subject"], speaker_name)
