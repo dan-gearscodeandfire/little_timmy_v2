@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS facts (
     superseded_by INTEGER REFERENCES facts(id)
 );
 
+-- Provenance: which writer set the current value. 'tool' = explicit store_fact
+-- route (a user-directed correction); 'extraction' = async background extractor.
+-- Used by store_fact to stop the extractor from clobbering a newer explicit
+-- correction (recency-gated precedence). See lt-store-fact-correction-clobbered
+-- -by-extractor-race-2026-06-21. Existing rows backfill to 'extraction' (none of
+-- them were tool-tagged, so none gain protection -- status quo preserved).
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'extraction';
+
 -- Add unique constraint for latest-wins upsert
 -- (subject, predicate) where not yet superseded
 CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active

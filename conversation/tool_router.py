@@ -505,7 +505,8 @@ async def maybe_handle_tool_call(
         return _FALLTHROUGH
 
     try:
-        await store_fact(subject, predicate, value, speaker_id=speaker_db_id)
+        await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
+                         source="tool")
     except Exception:
         log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
         return _FALLTHROUGH

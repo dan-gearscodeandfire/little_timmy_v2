@@ -25,8 +25,18 @@ async def store_fact(
     source_memory_id: int | None = None,
     speaker_id: int | None = None,
     confidence: float = 1.0,
+    source: str = "extraction",
+    turn_ts: float | None = None,
 ) -> int:
-    """Upsert a fact. If (subject, predicate) exists and isn't superseded, supersede it."""
+    """Upsert a fact. If (subject, predicate) exists and isn't superseded, supersede it.
+
+    source: which writer is calling -- "tool" = explicit store_fact route (a
+    user-directed correction), "extraction" = async background extractor.
+    turn_ts: epoch seconds of the source turn (extraction only). Used for the
+    recency-gated precedence below: the extractor must not clobber an explicit
+    tool-written correction with a STALE earlier mention. See
+    lt-store-fact-correction-clobbered-by-extractor-race-2026-06-21.
+    """
     pool = await get_pool()
     subject = subject.strip().lower()
     predicate = predicate.strip().lower()
@@ -68,12 +78,34 @@ async def store_fact(
     # through. Without this, a legit correction whose value coincides with a
     # DIFFERENT predicate's value gets silently dropped (it skipped restoring
     # dan.name="Dan" because dan."preferred name"="Dan" already existed).
-    target_exists = await pool.fetchval(
-        """SELECT 1 FROM facts
+    target = await pool.fetchrow(
+        """SELECT id, source, learned_at FROM facts
            WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL""",
         subject, predicate,
     )
-    if not target_exists:
+
+    # Recency-gated source precedence (2026-06-21, found live under acoustic
+    # multi-turn load): the async extractor coalesces a debounce buffer and can
+    # flush a STALE earlier mention AFTER an explicit store_fact correction has
+    # already landed, overwriting the newer value via this same upsert key
+    # (observed: robot Rusty -> Sparky, then recall served the stale Sparky).
+    # An extraction write may overwrite a 'tool'-written (explicit) fact ONLY if
+    # its source turn is newer than when the tool wrote. Tool writes always pass
+    # (an explicit correction is the current user intent); extraction-over-
+    # extraction and tool-over-* are unaffected. turn_ts=None from extraction is
+    # treated as not-newer -> the explicit correction is protected.
+    if target is not None and source != "tool" and target["source"] == "tool":
+        la = target["learned_at"]
+        la_epoch = la.timestamp() if la is not None else 0.0
+        if turn_ts is None or turn_ts <= la_epoch:
+            log.info(
+                "Skip extraction overwrite of tool-written fact #%d (%s.%s = %s); "
+                "source turn_ts=%s not newer than tool learned_at=%.0f",
+                target["id"], subject, predicate, value, turn_ts, la_epoch,
+            )
+            return target["id"]
+
+    if target is None:
         dup = await pool.fetchrow(
             """SELECT id, predicate FROM facts
                WHERE subject = $1 AND lower(value) = lower($2)
@@ -87,8 +119,8 @@ async def store_fact(
             return dup["id"]
 
     row = await pool.fetchrow(
-        """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category, source)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL
            DO UPDATE SET value = EXCLUDED.value,
                          learned_at = now(),
@@ -96,10 +128,11 @@ async def store_fact(
                          source_memory_id = EXCLUDED.source_memory_id,
                          speaker_id = EXCLUDED.speaker_id,
                          sensitive = EXCLUDED.sensitive,
-                         pii_category = EXCLUDED.pii_category
+                         pii_category = EXCLUDED.pii_category,
+                         source = EXCLUDED.source
            RETURNING id, (xmax = 0) AS inserted""",
         subject, predicate, value, source_memory_id, speaker_id, confidence,
-        sensitive, pii_category,
+        sensitive, pii_category, source,
     )
     new_id = row["id"]
     if row["inserted"]:

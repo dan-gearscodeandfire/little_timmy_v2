@@ -9,6 +9,7 @@ produce empty arrays.
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from memory.manager import store_memory
 from memory.facts import store_fact
@@ -132,6 +133,7 @@ async def extract_and_store(
         "assistant_text": assistant_text,
         "speaker_id": speaker_id,
         "speaker_name": speaker_name,
+        "ts": time.time(),   # source-turn wall clock, for store_fact recency gate
         "retries": 0,
     })
     _arm_flush()
@@ -204,6 +206,10 @@ def _coalesce_by_speaker(items: list[dict]) -> list[dict]:
             "assistant_text": "\n".join(g["assistant_text"] for g in group),
             "speaker_id": speaker_id,
             "speaker_name": speaker_name,
+            # newest turn in the coalesced group gates the recency check: the
+            # extraction may overwrite a tool-written fact only if its freshest
+            # source turn post-dates the explicit write.
+            "ts": max(g["ts"] for g in group),
             "retries": 0,
         })
     return out
@@ -289,7 +295,8 @@ async def _do_extraction(item: dict):
                 # "the user said X"; normalizing at store time is more
                 # robust than tightening the prompt.
                 subj_canonical = _normalize_subject(subj, speaker_name)
-                await store_fact(subj_canonical, pred, val, speaker_id=speaker_id)
+                await store_fact(subj_canonical, pred, val, speaker_id=speaker_id,
+                                 source="extraction", turn_ts=item.get("ts"))
 
         # Vectorized memory creation is gated by config.PERSIST_EXTRACTED_MEMORIES
         # (default False since 2026-06-18, per Dan): the structured `facts` writer
