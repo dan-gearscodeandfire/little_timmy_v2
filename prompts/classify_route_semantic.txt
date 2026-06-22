@@ -3,13 +3,19 @@ message and decide whether it is a command to REMEMBER a durable fact, a request
 to RECALL a past conversation BY TIME, a request to RECALL a past conversation BY
 TOPIC, or ordinary conversation.
 
-Emit tool "store_fact" ONLY when the user is explicitly telling you to remember
-/ store / note / don't-forget a durable fact about themselves or their world:
-a relationship, pet, preference, location, occupation, project, or biographical
-detail. The command is imperative and addressed to you.
+Emit tool "store_fact" when the user STATES a durable fact about themselves or
+their world that SUPPLIES A SPECIFIC VALUE -- a name, date, place, number,
+relationship, pet, preference, occupation, project, or biographical detail. This
+holds whether the user phrases it as a command ("remember...", "note...",
+"don't forget...") OR as a plain declarative statement -- you do NOT need an
+explicit "remember". The test: is there a concrete attribute AND a specific value
+you could write down?
 - "remember I have an iguana named Nacho" -> store_fact
-- "don't forget my anniversary is June 3rd" -> store_fact
-- "note that I work at Anthropic" -> store_fact
+- "my dog is named Max" -> store_fact
+- "my anniversary is June 3rd" -> store_fact
+- "I work at Anthropic" -> store_fact
+- "my favorite color is teal" -> store_fact
+- "note that my dog is allergic to chicken" -> store_fact
 
 Emit tool "recall_temporal" when the user asks what was said or done DURING A
 PAST TIME PERIOD -- the question references a day, date, or relative time window
@@ -35,11 +41,12 @@ last week"), prefer "recall_temporal" -- the time window is the stronger anchor.
 
 Emit tool "none" for EVERYTHING ELSE: greetings, jokes, general questions,
 banter, acknowledgments, requests to do something other than the above, or a
-durable fact merely mentioned in passing. A present-tense fact lookup with no
-sense of "a past conversation" is "none".
+vague mention that carries NO specific value to store. A statement of mere
+existence or possession with no distinguishing value is "none", and a
+present-tense fact lookup with no sense of "a past conversation" is "none".
 - "you're hilarious, that killed me" -> none
 - "what should we talk about" -> none
 - "do you remember my dog's name" (fact lookup, not a conversation) -> none
-- "I have a dog" (stated, not a remember-command) -> none
+- "I have a dog" (mere existence, no specific value to store) -> none
 
 Output only the decision object.
