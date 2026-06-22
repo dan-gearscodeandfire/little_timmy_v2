@@ -13,6 +13,7 @@ import time
 from collections import deque
 from memory.manager import store_memory
 from memory.facts import store_fact
+from stt.client import value_confidence
 from llm.client import generate_memory
 import config
 
@@ -99,6 +100,7 @@ async def extract_and_store(
     assistant_text: str,
     speaker_id: int | None = None,
     speaker_name: str | None = None,
+    stt_words: list | None = None,
 ):
     """Buffer a conversation exchange for debounced, coalesced extraction.
 
@@ -133,6 +135,12 @@ async def extract_and_store(
         "assistant_text": assistant_text,
         "speaker_id": speaker_id,
         "speaker_name": speaker_name,
+        # whisper per-word probs for this turn -- lets the background extractor
+        # value-confidence-gate the facts it mines, the same way the synchronous
+        # store_fact tool path does (else extracted facts default to confidence
+        # 1.0 = verified, a silent FALSE for misheard values that router-missed
+        # the tool path; found 2026-06-21). None on the text path (nothing heard).
+        "stt_words": stt_words,
         "ts": time.time(),   # source-turn wall clock, for store_fact recency gate
         "retries": 0,
     })
@@ -201,11 +209,20 @@ def _coalesce_by_speaker(items: list[dict]) -> list[dict]:
     for key in order:
         group = groups[key]
         speaker_id, speaker_name = key
+        # Concatenate the group's per-turn whisper word-prob lists in order, so
+        # value_confidence can locate an extracted value's span regardless of
+        # which buffered turn it came from. (A value's letters live contiguously
+        # within one turn's words, so the join doesn't blur cross-turn scores.)
+        words: list = []
+        for g in group:
+            if g.get("stt_words"):
+                words.extend(g["stt_words"])
         out.append({
             "user_text": "\n".join(g["user_text"] for g in group),
             "assistant_text": "\n".join(g["assistant_text"] for g in group),
             "speaker_id": speaker_id,
             "speaker_name": speaker_name,
+            "stt_words": words or None,
             # OLDEST turn in the coalesced group gates the recency check. A
             # buffer can STRADDLE an explicit correction (pre-correction stale
             # mentions + a newer turn). Gating on the oldest turn means the
@@ -288,6 +305,7 @@ async def _do_extraction(item: dict):
 
         parsed = json.loads(result)
 
+        stt_words = item.get("stt_words")
         for fact_data in parsed.get("facts", []):
             subj = str(fact_data.get("subject", "")).strip()
             pred = str(fact_data.get("predicate", "")).strip()
@@ -300,8 +318,20 @@ async def _do_extraction(item: dict):
                 # "the user said X"; normalizing at store time is more
                 # robust than tightening the prompt.
                 subj_canonical = _normalize_subject(subj, speaker_name)
+                # Value-confidence gate (background twin of the store_fact tool
+                # path, 2026-06-21): score the extracted value against this
+                # exchange's whisper word-probs. A misheard value whisper was
+                # unsure of stores LOW -> recall HEDGES instead of asserting it
+                # as verified. No read-back here (extraction is background; there
+                # is no live turn to confirm into) -- the confidence tag is the
+                # whole intervention. Unlocatable/paraphrased value or text path
+                # (no words) -> None -> 1.0, matching prior behavior.
+                vconf = value_confidence(stt_words, val) if stt_words else None
+                if vconf is not None:
+                    log.info("[VCONF-EXT] %.3f value=%r", vconf, val)
                 await store_fact(subj_canonical, pred, val, speaker_id=speaker_id,
-                                 source="extraction", turn_ts=item.get("ts"))
+                                 source="extraction", turn_ts=item.get("ts"),
+                                 confidence=vconf if vconf is not None else 1.0)
 
         # Vectorized memory creation is gated by config.PERSIST_EXTRACTED_MEMORIES
         # (default False since 2026-06-18, per Dan): the structured `facts` writer

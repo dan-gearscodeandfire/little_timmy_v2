@@ -511,6 +511,7 @@ class Orchestrator:
             spk_ms=spk_ms,
             voice_confidence=speaker_result.confidence,
             recall_block=outcome.recall_block,
+            stt_words=stt_words,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -650,7 +651,8 @@ class Orchestrator:
                                   speaker_db_id: int | None = 1,
                                   spk_ms: int = 0,
                                   voice_confidence: float | None = None,
-                                  recall_block: str | None = None):
+                                  recall_block: str | None = None,
+                                  stt_words: list | None = None):
         """Core response pipeline: presence doorway → delegate to the turn."""
 
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
@@ -867,6 +869,7 @@ class Orchestrator:
                 situation_regime=runtime_toggles.get("situation_regime"),
                 recall_block=recall_block,
                 on_first_sentence=_on_first_sentence,
+                stt_words=stt_words,
             ),
         )
         full_response = result.text

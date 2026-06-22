@@ -171,6 +171,10 @@ class TurnContext:
     recall_block: Optional[str] = None
     on_first_token: Optional[Callable[[], Awaitable[None]]] = None
     on_first_sentence: Optional[Callable[[], Awaitable[None]]] = None
+    # whisper per-word probs for this utterance, threaded to the background
+    # extractor so it can value-confidence-gate the facts it mines (else they
+    # default to verified). None on the text path. 2026-06-21.
+    stt_words: Optional[list] = None
 
 
 @dataclass
@@ -211,7 +215,8 @@ class Memory(Protocol):
                      context_turns) -> Retrieved: ...
 
     async def save(self, *, user_text: str, response: str,
-                   speaker_id: int | None, speaker_name: str) -> None: ...
+                   speaker_id: int | None, speaker_name: str,
+                   stt_words: list | None = None) -> None: ...
 
 
 # Optional broadcast hook: (event_type, payload) -> awaitable. None = no-op.
@@ -299,7 +304,8 @@ class ConversationTurn:
         # Final real step of the turn: save what was learned. This is also the
         # slow call the priority gate (Candidate 2) pre-empts on the next turn.
         await self._memory.save(user_text=words, response=result.text,
-                                speaker_id=who.db_id, speaker_name=who.name)
+                                speaker_id=who.db_id, speaker_name=who.name,
+                                stt_words=ctx.stt_words)
 
         return self._finalize(result, messages, retrieval_ms, ephemeral)
 
@@ -543,7 +549,9 @@ class LiveMemory:
                      "prompt injection", gated)
         return Retrieved(memories=memories, facts=resolved)
 
-    async def save(self, *, user_text, response, speaker_id, speaker_name):
+    async def save(self, *, user_text, response, speaker_id, speaker_name,
+                   stt_words=None):
         from memory.extraction import extract_and_store
         await extract_and_store(user_text, response,
-                                speaker_id=speaker_id, speaker_name=speaker_name)
+                                speaker_id=speaker_id, speaker_name=speaker_name,
+                                stt_words=stt_words)
