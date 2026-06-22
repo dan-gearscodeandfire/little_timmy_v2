@@ -7,7 +7,12 @@ WHISPER_URL = os.getenv("TIMMY_WHISPER_URL", "http://localhost:8891")
 # L5 2026-05-14: TIMMY_CONVERSATION_URL is the canonical name; the
 # old TIMMY_LLM_URL is kept as a fallback for operators who have it set
 # in their shell rc / systemd override file already.
-LLM_CONVERSATION_URL = os.getenv("TIMMY_CONVERSATION_URL", os.getenv("TIMMY_LLM_URL", "http://localhost:8081"))
+# 2026-06-22 (Dan): default flipped :8081 -> :8083. The Llama-3.2-3B on :8081 is
+# ceased/disabled (no boot, no consumers); the qwen36 brain (:8083) is the live
+# conversation tier, normally pinned via runtime_toggles "conversation_url_override".
+# This default is the empty-override fallback -- it MUST point at a live server, or a
+# cleared toggle would route conversation to the dead :8081 and silence Timmy.
+LLM_CONVERSATION_URL = os.getenv("TIMMY_CONVERSATION_URL", os.getenv("TIMMY_LLM_URL", "http://localhost:8083"))
 # L5 2026-05-14: TIMMY_MEMORY_URL is the canonical name (drops the
 # redundant "LLM" to match TIMMY_CONVERSATION_URL / TIMMY_VISION_URL).
 # Old TIMMY_MEMORY_LLM_URL kept as fallback.
@@ -26,6 +31,13 @@ LLM_BRAIN_MODEL = os.getenv("TIMMY_BRAIN_MODEL", "qwen3.6")
 # Separate server with its own KV cache so routing prompts never evict the :8083
 # brain prefix. See Obsidian lt-tool-call-router-qwen3-4b-benchmark-2026-06-18.
 LLM_CLASSIFIER_URL = os.getenv("TIMMY_CLASSIFIER_URL", "http://localhost:8092")
+# Query-side coreference resolver (Qwen3-4B-Q4 on its OWN llama-server :8093, 2026-06-22).
+# Was co-located on the classifier (:8092), but the two distinct prompt prefixes
+# (static tool-call prompt vs. resolve prompt) ping-ponged on the single -np 1 slot
+# and mutually evicted each other's KV cache, forcing a full re-prefill of the
+# ~1K-token tool-call prompt every deixis turn. Dedicated server keeps each prefix
+# warm. A/B isolates the dedicated-slot effect (same model as :8092).
+LLM_RESOLVE_URL = os.getenv("TIMMY_RESOLVE_URL", "http://localhost:8093")
 OLLAMA_URL = os.getenv("TIMMY_OLLAMA_URL", "http://localhost:11434")
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8893

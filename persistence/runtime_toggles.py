@@ -26,13 +26,16 @@ _DEFAULTS: dict = {
     # non-empty URL, llm.client.stream_conversation routes there instead
     # of config.LLM_CONVERSATION_URL. LT-OS writes this when the operator
     # picks an external-service model from the dropdown (qwen36 today).
-    # Empty string == use the static default (Llama 3B :8081).
+    # Empty string == use the static default config.LLM_CONVERSATION_URL
+    # (now :8083 -- the qwen36 brain; the old Llama-3B :8081 was ceased 2026-06-22).
     "conversation_url_override": "",
     # Persisted dropdown choice. LT-OS reads on startup to restore the
     # last-selected conversation model and applies it: stops/starts the
     # llama-3b systemd unit + sets/clears conversation_url_override as
     # appropriate. Default matches the LT-OS config.py module default.
-    "conversation_model_id": "llama3.2-3b",
+    # 2026-06-22 (Dan): default flipped llama3.2-3b -> qwen36 so a fresh/reset
+    # toggle state never tries to spawn the disabled :8081 server.
+    "conversation_model_id": "qwen36",
     # Proactive (unprompted) speech (2026-06-03). Live kill/enable switch for
     # Timmy reacting verbally to high-urgency visual events without being
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the

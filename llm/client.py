@@ -1,4 +1,5 @@
-"""LLM client for llama.cpp servers (conversation on 8081, memory on 8080)."""
+"""LLM client for llama.cpp servers (conversation+memory on the qwen36 brain;
+classifier :8092; coref resolver :8093)."""
 
 import asyncio
 import contextlib
@@ -230,8 +231,9 @@ async def stream_conversation(
 ) -> AsyncIterator[str]:
     """Stream tokens from the conversation tier via /v1/chat/completions SSE.
 
-    Routes to config.LLM_CONVERSATION_URL (Llama 3.2 3B on :8081 by default;
-    Qwen3.6 brain on :8083 when the LT-OS dropdown is set to qwen36).
+    Routes to the runtime conversation_url_override (qwen36 brain on :8083 today),
+    falling back to config.LLM_CONVERSATION_URL (also :8083 since the Llama-3B :8081
+    was ceased 2026-06-22).
     Phase 1 priority gate: if conversation and memory share a server, cancel
     any in-flight slow call before starting and mark the conversation as
     in-flight so new slow calls wait.
@@ -384,17 +386,20 @@ _RESOLVE_SYS = (
 
 async def resolve_query(utterance: str, context_text: str) -> str | None:
     """Coreference-resolve an elliptical utterance into a standalone search query
-    via the :8092 classifier server (UNCONSTRAINED, thinking-OFF). `context_text`
+    via the dedicated :8093 resolver server (UNCONSTRAINED, thinking-OFF). `context_text`
     is the recent conversation transcript supplying antecedents. Returns the
     rewritten query, or None on ANY failure / empty output (callers fall back to
     the bare/blended query -- graceful degradation, same contract as
     classify_constrained). Extractive by design: the model resolves the REFERENCE
-    from context, it does not invent the answer (cf. the rejected HyDE arm)."""
+    from context, it does not invent the answer (cf. the rejected HyDE arm).
+    2026-06-22 (Dan): moved off the shared :8092 classifier server onto its own
+    :8093 (config.LLM_RESOLVE_URL) so the resolve prefix no longer evicts the
+    static tool-call prompt's KV cache on the single :8092 slot."""
     try:
         client = await _get_client()
         convo = f"{context_text}\nUser: {utterance}" if context_text else f"User: {utterance}"
         resp = await client.post(
-            f"{config.LLM_CLASSIFIER_URL}/v1/chat/completions",
+            f"{config.LLM_RESOLVE_URL}/v1/chat/completions",
             json={
                 "messages": [{"role": "system", "content": _RESOLVE_SYS},
                              {"role": "user", "content": convo}],
