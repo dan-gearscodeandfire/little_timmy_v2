@@ -512,15 +512,23 @@ async def maybe_handle_tool_call(
     # hedge instead of asserting, and -- when we're genuinely unsure -- read the
     # value back for confirmation instead of the breezy canned ACK. turn-level
     # confidence isn't enough; we score the value span specifically.
-    from stt.client import value_confidence
+    from stt.client import value_confidence, is_name_like_value
     import config as _cfg
     vconf = value_confidence(stt_words, value) if stt_words else None
     low_conf = vconf is not None and vconf < getattr(
         _cfg, "STT_VALUE_CONFIDENCE_THRESHOLD", 0.55)
+    # A *confident* homophone (Thorne->Thorn 0.721) clears the vconf gate but is
+    # still a misheard name. Read name/proper-noun values back regardless of
+    # vconf so the user can correct in the moment. Only on acoustic input (typed
+    # facts have nothing to mishear); flag-gated for reversibility.
+    name_forced = (bool(stt_words)
+                   and getattr(_cfg, "READBACK_PROPER_NOUNS", True)
+                   and is_name_like_value(predicate, value))
+    read_back = low_conf or name_forced
     # Always-on telemetry: the value-confidence of every routed store (None =
     # no audio / value not locatable). Lets threshold tuning join by turn order.
-    log.info("[VCONF] %.3f value=%r low=%s",
-             vconf if vconf is not None else -1.0, value, low_conf)
+    log.info("[VCONF] %.3f value=%r low=%s name=%s",
+             vconf if vconf is not None else -1.0, value, low_conf, name_forced)
 
     try:
         await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
@@ -530,11 +538,18 @@ async def maybe_handle_tool_call(
         log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
         return _FALLTHROUGH
 
-    if low_conf:
-        log.info("[TOOL store_fact] LOW value-confidence %.2f for %r -> read-back ACK",
-                 vconf, value)
-        ack = (f'I think you said "{value}" — I wasn\'t totally sure I heard that '
-               f'right. Tell me if I got it wrong.')
+    if read_back:
+        reason = "low_conf" if low_conf else "proper_noun"
+        log.info("[TOOL store_fact] read-back (%s) vconf=%s for %r",
+                 reason, f"{vconf:.2f}" if vconf is not None else "n/a", value)
+        if low_conf:
+            # Genuinely unsure we heard it -- say so.
+            ack = (f'I think you said "{value}" — I wasn\'t totally sure I heard '
+                   f'that right. Tell me if I got it wrong.')
+        else:
+            # Heard it clearly, but it's a name/proper noun a confident mishear
+            # could hide in -- confirm once without claiming we were unsure.
+            ack = f'Got it — "{value}". Tell me if I misheard.'
     else:
         ack = random.choice(_load_acks())
     # Inject the assistant ACK turn ONLY (user turn already added by caller).

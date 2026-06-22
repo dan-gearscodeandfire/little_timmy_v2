@@ -24,7 +24,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
-from stt.client import value_confidence
+from stt.client import value_confidence, is_name_like_value
 from memory.facts import store_fact, Fact
 from db.connection import get_pool
 from llm.prompt_builder import build_ephemeral_block
@@ -62,6 +62,35 @@ def layer1_value_confidence():
     zsplit = [("Z", 0.9), ("olt", 0.7), ("an", 0.98)]
     check("3-piece split (Z+olt+an=Zoltan) -> min piece",
           value_confidence(zsplit, "Zoltan") == 0.7)
+
+
+def layer1b_name_like():
+    # read-back-always-on-novel-noun (v2): a *confident* homophone (Thorne->Thorn
+    # 0.721) clears value_confidence but is still a misheard name. Names/proper
+    # nouns must be read back regardless of confidence. COMMON is injected so the
+    # proper-noun branch is hermetic (independent of /usr/share/dict/words).
+    print("Layer 1b — is_name_like_value (proper-noun read-back trigger):")
+    COMMON = frozenset({"blue", "teal", "pizza", "red", "thorn", "wren"})
+    # (a) name slot fires regardless of the value or whether it's a real word --
+    #     this is the whole point: Thorne->Thorn lands a real word ("thorn") but
+    #     the predicate marks it a name, so we still read it back.
+    check("name predicate -> True", is_name_like_value("name", "Thorn", COMMON))
+    check("dotted name predicate -> True", is_name_like_value("robot.name", "Prax", COMMON))
+    check("'first name' predicate -> True", is_name_like_value("first name", "Max", COMMON))
+    # (b) proper-noun value under a NON-name predicate
+    check("coined value under non-name pred -> True",
+          is_name_like_value("company", "Praxton", COMMON))
+    check("capitalized COMMON word under non-name pred -> False",
+          not is_name_like_value("color", "Blue", COMMON))
+    check("lowercase common value -> False",
+          not is_name_like_value("color", "teal", COMMON))
+    check("multi-word non-name value -> False (v1 single-token only)",
+          not is_name_like_value("favorite food", "deep dish", COMMON))
+    check("empty value -> False", not is_name_like_value("name", "", COMMON))
+    # no dictionary available -> proper-noun branch disabled, name slot still works
+    check("name slot works with empty dict", is_name_like_value("name", "Zephyr", frozenset()))
+    check("proper-noun branch off when dict empty",
+          not is_name_like_value("city", "Zephyr", frozenset()))
 
 
 async def layer2_persist():
@@ -105,6 +134,7 @@ def layer3_prompt_split():
 
 async def main():
     layer1_value_confidence()
+    layer1b_name_like()
     await layer2_persist()
     layer3_prompt_split()
     print()

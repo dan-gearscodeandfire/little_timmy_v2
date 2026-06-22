@@ -181,6 +181,16 @@ EXTRACTION_MAX_HOLD_SECONDS = 90.0  # flush anyway after this much continuous ch
 # fewer FALSE; lower toward 0.65 for fewer read-backs.
 STT_VALUE_CONFIDENCE_THRESHOLD = 0.72
 
+# read-back-always-on-novel-noun (v2, 2026-06-21): the confident-homophone
+# bypass above (Praxx->Prax 0.804, Thorne->Thorn 0.721 both stored VERIFIED in
+# the 6-21 acoustic battery) is unreachable by any threshold -- the correct
+# value Onyx scored 0.683, below both wrong ones. Fix: when the value is a
+# name/proper noun (acoustically unverifiable), read it back regardless of
+# value-confidence so the user can correct in the moment. Names get a one-time
+# "got it -- X?"; common-word values stay breezy. Only fires on acoustic input
+# (typed facts have nothing to mishear). Set False to revert to vconf-only.
+READBACK_PROPER_NOUNS = True
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking

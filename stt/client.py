@@ -81,6 +81,62 @@ def value_confidence(words: list, value: str) -> float | None:
                 break  # this run diverged; advance the window start
     return None
 
+
+# --- proper-noun read-back lever (2026-06-21) -------------------------------
+# value_confidence catches mishears whisper was UNSURE of, but a *confident*
+# homophone -- Thorne->Thorn (0.721), Praxx->Prax (0.804) -- clears the gate and
+# commits as a verified, never-hedged fact. Acoustic test 2026-06-21: both were
+# FALSE, while the CORRECT value Onyx scored 0.683 -- BELOW both -- so the scalar
+# gate cannot rank-order correctness at the boundary and no threshold fixes it.
+# Names are acoustically unverifiable; the fix is to read the VALUE back for
+# confirmation whenever it's a name/proper noun, regardless of confidence.
+# Confirming a name once is cheap UX; common-word values (teal, pizza) under
+# non-name predicates stay breezy.
+_DICT_PATH = "/usr/share/dict/words"
+_COMMON_WORDS = None  # lazy-loaded lowercased dictionary set (None until tried)
+
+
+def _common_words() -> frozenset:
+    """Lowercased system word list, loaded once. Empty set if unavailable, which
+    disables the proper-noun branch (the name-slot branch needs no dictionary)."""
+    global _COMMON_WORDS
+    if _COMMON_WORDS is None:
+        try:
+            with open(_DICT_PATH, encoding="utf-8", errors="ignore") as fh:
+                _COMMON_WORDS = frozenset(
+                    w.strip().lower() for w in fh if w.strip() and "'" not in w)
+        except OSError:
+            _COMMON_WORDS = frozenset()
+    return _COMMON_WORDS
+
+
+def is_name_like_value(predicate: str, value: str,
+                       common: "frozenset | None" = None) -> bool:
+    """True when a fact's VALUE should be read back for confirmation regardless
+    of acoustic confidence -- it's a name or an unfamiliar proper noun, the class
+    a *confident* homophone mishear hides in (see note above).
+
+    (a) name slot: predicate carries a "name" token ("name", "robot.name",
+        "first name") -- the user said "my X is NAMED Y".
+    (b) proper-noun value under a non-name predicate: a single capitalized token
+        that is NOT a common dictionary word (Acme, Praxton -- but not Blue).
+    """
+    if not value:
+        return False
+    pred_l = (predicate or "").lower()
+    if any(tok == "name" for tok in re.split(r"[^a-z]+", pred_l)):
+        return True
+    tokens = value.split()
+    if len(tokens) == 1:
+        core = tokens[0].strip(".,!?;:'\"")
+        if core[:1].isupper() and core.isalpha():
+            if common is None:
+                common = _common_words()
+            if common and core.lower() not in common:
+                return True
+    return False
+
+
 # Short phrases that whisper commonly hallucinates from noise/silence
 _HALLUCINATION_PATTERNS = {
     "yeah", "yes", "no", "oh", "okay", "ok", "uh", "um", "hmm", "huh",
