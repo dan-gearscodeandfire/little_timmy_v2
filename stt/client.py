@@ -137,6 +137,70 @@ def is_name_like_value(predicate: str, value: str,
     return False
 
 
+# --- query-side mishear guard (2026-06-22) ----------------------------------
+# The store-side gate (value_confidence/is_name_like_value) protects WRITES. But
+# a misheard word in a QUESTION corrupts RETRIEVAL: "what's my mail" -> "my male"
+# keys the lookup on the wrong term, so Timmy answers about the wrong thing or
+# wrongly says he doesn't know. We can't fix the retrieval blindly, but we can
+# detect that a CONTENT word came through unclearly and tell the brain to confirm
+# what was asked instead of guessing/denying. Function words ("my" routinely
+# ~0.5) carry no retrieval meaning -- their low prob is acoustic noise, not a
+# misheard query term -- so they're excluded; only a low-confidence content word
+# is a signal.
+_QUERY_STOPWORDS = frozenset({
+    "a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "this",
+    "that", "these", "those", "i", "me", "mine", "you", "we", "they", "he", "she",
+    "it", "is", "are", "was", "were", "be", "am", "been", "do", "does", "did",
+    "have", "has", "had", "what", "what's", "whats", "who", "who's", "whos",
+    "where", "when", "which", "whose", "how", "why", "of", "to", "in", "on", "at",
+    "and", "or", "but", "so", "if", "for", "with", "about", "tell", "say", "said",
+    "name", "named", "call", "called", "please", "can", "could", "would", "will",
+    "me", "us", "again", "just", "really", "do", "remember", "know",
+})
+
+
+def _group_into_words(words: list):
+    """Reassemble whisper sub-word PIECES into whitespace-delimited words.
+
+    Whisper splits uncommon nouns into pieces ("micro-santhemums" -> ' micro',
+    '-', 's', 'anth', 'emums'); a piece beginning with whitespace starts a new
+    word, pieces without a leading space (BPE continuations, punctuation) attach
+    to the current one. Without this, scoring per-piece flags a meaningless
+    fragment ('s') as the misheard "word". Yields (display_word, min_letter_prob)
+    -- a word is only as trustworthy as its weakest LETTER piece (punctuation
+    probs ignored), mirroring value_confidence."""
+    cur_text, cur_probs = "", []
+    for w, p in words:
+        starts_word = bool(w) and w[:1].isspace()
+        if starts_word and cur_text:
+            yield (cur_text.strip(), min(cur_probs) if cur_probs else 1.0)
+            cur_text, cur_probs = "", []
+        cur_text += w
+        if _norm_word(w):  # letter/digit piece -> counts toward the word's min
+            cur_probs.append(p)
+    if cur_text.strip():
+        yield (cur_text.strip(), min(cur_probs) if cur_probs else 1.0)
+
+
+def low_confidence_query_term(words: list, threshold: float) -> str | None:
+    """The lowest-confidence CONTENT word in an utterance heard below threshold,
+    or None. Reassembles sub-word pieces into whole words first, skips function/
+    stop words and short fragments (<3 letters). Query-side companion to
+    value_confidence: a misheard noun in a QUESTION corrupts retrieval, so surface
+    the whole heard word to the brain to CONFIRM rather than answer/deny. Returns
+    None when every content word cleared the threshold."""
+    if not words:
+        return None
+    worst, worst_p = None, threshold
+    for display, mp in _group_into_words(words):
+        norm = _norm_word(display)
+        if len(norm) < 3 or norm in _QUERY_STOPWORDS:
+            continue
+        if mp < worst_p:
+            worst_p, worst = mp, display.strip()
+    return worst
+
+
 # Short phrases that whisper commonly hallucinates from noise/silence
 _HALLUCINATION_PATTERNS = {
     "yeah", "yes", "no", "oh", "okay", "ok", "uh", "um", "hmm", "huh",

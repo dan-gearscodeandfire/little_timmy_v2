@@ -274,6 +274,20 @@ class ConversationTurn:
             ],
         })
 
+        # Query-side mishear guard: flag a low-confidence CONTENT word in the
+        # user's utterance so the brain confirms rather than answering a misheard
+        # question wrong (or denying knowledge it keyed on the wrong term).
+        uncertain_term = None
+        if ctx.stt_words:
+            import config as _config
+            from stt.client import low_confidence_query_term
+            thr = getattr(_config, "STT_QUERY_CONFIDENCE_THRESHOLD", 0.0)
+            if thr > 0:
+                uncertain_term = low_confidence_query_term(ctx.stt_words, thr)
+                if uncertain_term:
+                    log.info("[QUERY-VCONF] low-confidence content word heard as "
+                             "%r (<%.2f) -> confirm-input hint", uncertain_term, thr)
+
         ephemeral = build_ephemeral_block(
             memories=retrieved.memories,
             facts=retrieved.facts,
@@ -286,6 +300,7 @@ class ConversationTurn:
             face_hint_name=ctx.face_hint_name,
             situation_regime=ctx.situation_regime,
             recall_block=ctx.recall_block,
+            uncertain_query_term=uncertain_term,
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)

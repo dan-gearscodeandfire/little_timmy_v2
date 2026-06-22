@@ -191,6 +191,16 @@ STT_VALUE_CONFIDENCE_THRESHOLD = 0.72
 # (typed facts have nothing to mishear). Set False to revert to vconf-only.
 READBACK_PROPER_NOUNS = True
 
+# Query-side mishear guard (2026-06-22): the gate above protects WRITES; a
+# misheard word in a QUESTION corrupts RETRIEVAL ("what's my mail"->"my male").
+# When a CONTENT word in the user's utterance is heard below this threshold,
+# tell the brain to confirm what was asked instead of answering wrong or denying
+# knowledge. Deliberately LOWER than the store threshold (0.72): a query-side
+# false alarm interrupts EVERY modest-confidence question (more frequent, more
+# annoying) than a one-time store read-back, and real mishears cluster <0.55
+# (Brent .27, Renz .52, Thorn .37). Raise toward 0.65 to catch more; 0 disables.
+STT_QUERY_CONFIDENCE_THRESHOLD = 0.55
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking

@@ -136,6 +136,7 @@ def build_ephemeral_block(
     face_hint_name: str | None = None,
     situation_regime: str | None = None,
     recall_block: str | None = None,
+    uncertain_query_term: str | None = None,
 ) -> str:
     """Build the per-turn dynamic context block.
 
@@ -300,6 +301,22 @@ def build_ephemeral_block(
             "announce or imply that anyone has just walked in, arrived, or is in "
             "the room unless they appear there. Be as cutting as you like, but "
             "never invent guests, arrivals, or bystanders for effect."
+        )
+
+    # UNCERTAIN INPUT — a content word in the user's utterance came through STT
+    # below threshold (stt.client.low_confidence_query_term). The store-side gate
+    # protects writes; this protects the READ path -- a misheard question noun
+    # ("my mail"->"my male") silently keys retrieval on the wrong term, so the
+    # answer is confidently wrong or a false "I don't know". Tell the model to
+    # confirm what was asked rather than guess or deny. Placed just before WHO IS
+    # SPEAKING so it keeps high recency without displacing the addressee steer.
+    if uncertain_query_term:
+        parts.append(
+            f"[UNCERTAIN INPUT] You weren't sure you heard one word correctly — "
+            f"it came through as \"{uncertain_query_term}\". If your answer depends "
+            f"on that word, do NOT confidently answer or claim you don't know; "
+            f"instead briefly check you heard right (e.g. ask \"did you say "
+            f"{uncertain_query_term}?\"). If it doesn't matter, just answer normally."
         )
 
     # WHO IS SPEAKING — explicit per-turn addressee steering, deliberately
