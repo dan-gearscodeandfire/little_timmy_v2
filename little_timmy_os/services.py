@@ -705,7 +705,7 @@ async def toggle_query_resolution(enabled: bool) -> dict:
     """Enable/disable LT's elliptical-query coreference resolution. Persists the
     LT-side runtime toggle; read live per retrieve() by memory/retrieval.py (no
     restart, once the code is loaded). When ON, a deictic follow-up is rewritten
-    to a standalone query via :8092 before embedding. Safe to flip even if :8092
+    to a standalone query via :8093 before embedding. Safe to flip even if :8093
     is down -- retrieval degrades gracefully to the context blend."""
     import config as cfg
     await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} query resolution...")

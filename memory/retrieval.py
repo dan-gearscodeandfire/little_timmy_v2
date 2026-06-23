@@ -193,7 +193,7 @@ async def retrieve(
 
     # Semantic-query construction. Default: the role-tagged context blend
     # (_build_semantic_query). When query_resolution_enabled AND the utterance is
-    # deictic AND we have context, rewrite it into a standalone query via :8092
+    # deictic AND we have context, rewrite it into a standalone query via :8093
     # FIRST and embed THAT instead -- measured to beat the blend on elliptical
     # follow-ups (MRR 0.71->0.85). Resolver failure/empty -> fall back to the
     # blend (graceful). FTS/trigram below always use the bare `query`, unaffected.

@@ -753,7 +753,7 @@ async def toggle_classifier(data: dict):
 
 @app.post("/api/query_resolution/toggle")
 async def toggle_query_resolution(data: dict):
-    """Enable/disable LT's elliptical-query coreference resolution (:8092). Live;
+    """Enable/disable LT's elliptical-query coreference resolution (:8093). Live;
     no restart once the retrieval code is loaded."""
     return await services.toggle_query_resolution(bool(data.get("enabled", True)))
 
@@ -1396,13 +1396,13 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <!-- Elliptical-query coreference resolution (:8092, 2026-06-18). When ON,
-             a deictic follow-up ("what's its name again?") is rewritten to a
-             standalone query via :8092 before semantic retrieval; clean queries
-             skip it. Detail line shows whether :8092 is reachable. -->
+        <!-- Elliptical-query coreference resolution (:8093, moved off shared :8092
+             2026-06-22). When ON, a deictic follow-up ("what's its name again?")
+             is rewritten to a standalone query via :8093 before semantic
+             retrieval; clean queries skip it. Detail line shows reachability. -->
         <div class="service-card" id="query_resolution-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
-            <div class="service-name">Query Resolution (coref :8092)</div>
+            <div class="service-name">Query Resolution (coref :8093)</div>
             <div class="service-detail" id="query_resolution-detail">Checking...</div>
           </div>
           <label class="toggle" id="query_resolution-toggle">
