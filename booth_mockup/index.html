@@ -215,13 +215,23 @@
   /* bottom-right cogitator telemetry: tokens + latency, live /lt/api/metrics */
   .telemetry { position: absolute; right: 36px; bottom: 102px; width: 312px; z-index: 12; }
   .telemetry .ttag { font-family: var(--cop); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase;
-    color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 13px; text-align: right; }
+    color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 10px; text-align: right; }
   .telemetry .ttag::before { content: '\2720 '; color: var(--brass); }
-  .telemetry .trow { margin-bottom: 15px; }
+  .telemetry .trow { margin-bottom: 9px; }
   .telemetry .tk { display: flex; justify-content: space-between; align-items: baseline;
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase;
     color: var(--bone-mid); text-shadow: var(--shadow-light); margin-bottom: 6px; }
   .telemetry .tk b { font-weight: 400; color: var(--red-hot); font-size: 15px; letter-spacing: 0.04em; }
+  /* understanding-stage latencies: hear (stt) · filter (classifier) · resolve (coref :8093) · recall (memory)
+     2x2 grid (flex-basis ~46%) so the labels/values stay large and legible on the booth screen. */
+  .telemetry .perc { display: flex; flex-wrap: wrap; gap: 9px 6px;
+    margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px solid rgba(214,86,68,0.18); }
+  .telemetry .perc i { flex: 0 0 46%; font-style: normal; font-family: var(--mono);
+    display: flex; gap: 6px; align-items: baseline; justify-content: space-between;
+    color: var(--bone-strong); text-shadow: var(--shadow-light); }
+  .telemetry .perc .pl { text-transform: uppercase; letter-spacing: 0.10em; font-size: 12px; opacity: 0.92; }
+  .telemetry .perc b { font-weight: 400; color: var(--red-hot); font-size: 17px; letter-spacing: 0.03em; }
+  .telemetry .tps { color: var(--brass); }
   .bar { position: relative; height: 6px; background: rgba(214,86,68,0.16); border-radius: 3px; }
   .bar .fill { position: absolute; top: 0; left: 0; height: 100%; background: var(--red-hot);
     border-radius: 3px; box-shadow: 0 0 5px rgba(255,45,45,0.5); transition: width 0.9s ease, left 0.9s ease; }
@@ -422,8 +432,13 @@
       <!-- bottom-right cogitator telemetry (live LT /api/metrics) -->
       <div class="telemetry">
         <div class="ttag">cogitator telemetry</div>
-        <div class="trow">
-          <div class="tk"><span>tool filter → qwen3-4b</span><b id="tkClsMs">—</b></div>
+        <!-- understanding-stage latencies, in pipeline order:
+             hear (whisper STT) · filter (tool-call classifier :8092) · resolve (coref :8093) · recall (memory retrieval) -->
+        <div class="perc">
+          <i><span class="pl">hear</span><b id="tkStt">—</b></i>
+          <i><span class="pl">filter</span><b id="tkClsMs">—</b></i>
+          <i><span class="pl">resolve</span><b id="tkResolve">—</b></i>
+          <i><span class="pl">recall</span><b id="tkRecall">—</b></i>
         </div>
         <div class="trow">
           <div class="tk"><span>payload → llm</span><b id="tkPayload">—</b></div>
@@ -439,7 +454,7 @@
             <i class="k-tts">tts <span id="lTts">—</span></i>
           </div>
         </div>
-        <div class="tk"><span>completion tokens</span><b id="tkComp">—</b></div>
+        <div class="tk"><span>completion</span><b><span id="tkComp">—</span> · <span id="tkTps" class="tps">—</span></b></div>
       </div>
 
     </div>
@@ -1088,6 +1103,13 @@
         const clsMs = d.last_classifier_ms;
         document.getElementById('tkClsMs').textContent =
           (typeof clsMs === 'number') ? fmtMs(clsMs) : (d.classifier_enabled ? '—' : 'off');
+        // perception pipeline: hear (whisper STT) · resolve (coref :8093) · recall (memory retrieval)
+        const optMs = (v) => (typeof v === 'number') ? fmtMs(v) : '—';
+        document.getElementById('tkStt').textContent = optMs(d.last_stt_ms);
+        document.getElementById('tkResolve').textContent =
+          (typeof d.last_resolution_ms === 'number') ? fmtMs(d.last_resolution_ms)
+            : (d.query_resolution_enabled ? '—' : 'off');
+        document.getElementById('tkRecall').textContent = optMs(d.last_retrieval_ms);
         // payload tokens + observed min·max envelope
         const tok = d.last_est_prompt_tokens;
         if (typeof tok === 'number' && tok > 0) {
@@ -1118,8 +1140,11 @@
         document.getElementById('lTts').textContent = fmtMs(tts);
         document.getElementById('tkE2E').textContent = fmtMs(d.last_e2e_ms || sum);
         // throughput tok/s (completion / generation time)
-        if (tot > 0 && typeof comp === 'number')
-          document.getElementById('mTps').textContent = (comp / (tot / 1000)).toFixed(1) + ' t/s';
+        if (tot > 0 && typeof comp === 'number') {
+          const tps = (comp / (tot / 1000)).toFixed(1) + ' t/s';
+          document.getElementById('mTps').textContent = tps;
+          const tpsEl = document.getElementById('tkTps'); if (tpsEl) tpsEl.textContent = tps;
+        }
         // meta row
         if (d.started_at) document.getElementById('mUptime').textContent = fmtUptime(d.started_at);
         if (typeof d.turns === 'number') document.getElementById('mTurns').textContent = d.turns;
