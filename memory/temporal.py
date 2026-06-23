@@ -101,6 +101,119 @@ def _resolve_month_year(month: int, now: datetime) -> int:
     return now.year if month <= now.month else now.year - 1
 
 
+# Absolute calendar dates & explicit from–to ranges --------------------------
+# Reached BEFORE the named-month branch so "June 13" resolves to a single day
+# rather than being mistaken for the whole month. By the time these run the
+# caller has already stripped punctuation to spaces (see resolve_date_range),
+# so ISO "2025-04-01" arrives as "2025 04 01" and "June 10-13" as "june 10 13".
+_MONTH_ALT = "|".join(_MONTHS)
+_ORD = r"(?:st|nd|rd|th)?"  # optional ordinal suffix on a day number
+
+
+def _mk_day(year: int, month: int, day: int, now: datetime):
+    """Day-start datetime in `now`'s tz, or None if the date is invalid
+    (e.g. Feb 30, day 0). Lets callers reject impossible day numbers cheaply."""
+    try:
+        return now.replace(year=year, month=month, day=day,
+                           hour=0, minute=0, second=0, microsecond=0)
+    except ValueError:
+        return None
+
+
+def _infer_md_year(month: int, day: int, now: datetime):
+    """Most-recent past-or-today occurrence of month/day (recall looks back):
+    this year unless that date is still in the future, then last year."""
+    cand = _mk_day(now.year, month, day, now)
+    if cand is None:
+        return None
+    if cand > now:
+        cand = _mk_day(now.year - 1, month, day, now)
+    return cand
+
+
+def _find_full_dates(p: str, now: datetime):
+    """Every explicit calendar date in `p`, as (start_pos, day_start) pairs,
+    left-to-right and non-overlapping. Recognizes ISO `yyyy mm dd`,
+    `month day [year]`, and `day [of] month [year]`. A bare year (no day) is
+    NOT a full date — that stays the named-month branch's job."""
+    cands = []  # (start, end, day_start)
+    # ISO: 2025 04 01  (dashes already normalized to spaces upstream)
+    for m in re.finditer(r"\b(\d{4})\s+(\d{1,2})\s+(\d{1,2})\b", p):
+        d = _mk_day(int(m.group(1)), int(m.group(2)), int(m.group(3)), now)
+        if d is not None:
+            cands.append((m.start(), m.end(), d))
+    # month day [year]: "June 13", "June 13th", "June 13 2025"
+    for m in re.finditer(r"\b(" + _MONTH_ALT + r")\s+(\d{1,2})" + _ORD +
+                         r"(?:\s+(?:of\s+)?(\d{4}))?\b", p):
+        mon, day = _MONTHS[m.group(1)], int(m.group(2))
+        d = (_mk_day(int(m.group(3)), mon, day, now) if m.group(3)
+             else _infer_md_year(mon, day, now))
+        if d is not None:
+            cands.append((m.start(), m.end(), d))
+    # day [of] month [year]: "13 June", "13th of June 2025"
+    for m in re.finditer(r"\b(\d{1,2})" + _ORD + r"\s+(?:of\s+)?(" + _MONTH_ALT +
+                         r")\b(?:\s+(\d{4}))?", p):
+        mon, day = _MONTHS[m.group(2)], int(m.group(1))
+        d = (_mk_day(int(m.group(3)), mon, day, now) if m.group(3)
+             else _infer_md_year(mon, day, now))
+        if d is not None:
+            cands.append((m.start(), m.end(), d))
+    # Resolve overlaps: earliest start wins, longest match breaks ties.
+    cands.sort(key=lambda c: (c[0], -(c[1] - c[0])))
+    chosen, last_end = [], -1
+    for s, e, d in cands:
+        if s >= last_end:
+            chosen.append((s, d))
+            last_end = e
+    return chosen
+
+
+def _resolve_absolute(p: str, now: datetime):
+    """Resolve explicit calendar dates / from–to ranges to a half-open
+    `[start, end)` window (ranges are INCLUSIVE of both endpoint days), or
+    None if `p` carries no absolute date. Order matters: two full dates form a
+    range; a single month + two day numbers ("June 10 13", "June 10 to 13") is
+    a same-month range; one full date is a single day; a bare ordinal
+    ("the 13th") is the most recent month carrying that day."""
+    full = _find_full_dates(p, now)
+    # Two explicit dates -> span from the earliest day to the latest day inclusive.
+    if len(full) >= 2:
+        starts = [d for _, d in full]
+        return (min(starts), max(starts) + timedelta(days=1))
+    # Same-month numeric range with ONE month word: "June 10 13" (from
+    # "June 10-13"), "June 10 to 13", "March 3 through 9".
+    m = re.search(r"\b(" + _MONTH_ALT + r")\s+(\d{1,2})" + _ORD +
+                  r"\s+(?:to|through|thru|until|till|and)?\s*(\d{1,2})" + _ORD + r"\b", p)
+    if m:
+        mon, d1, d2 = _MONTHS[m.group(1)], int(m.group(2)), int(m.group(3))
+        a = _infer_md_year(mon, min(d1, d2), now)
+        b = _infer_md_year(mon, max(d1, d2), now)
+        if a is not None and b is not None:
+            return (a, b + timedelta(days=1))
+    # Single explicit date -> that day.
+    if len(full) == 1:
+        d = full[0][1]
+        return (d, d + timedelta(days=1))
+    # Day-of-month only: "the 13th", "on the 13th", bare ordinal "13th".
+    # Requires "the" or an ordinal suffix so a plain "13" (e.g. "13 days ago")
+    # is NOT mistaken for a date.
+    m = re.search(r"\b(?:on\s+)?the\s+(\d{1,2})" + _ORD + r"\b", p)
+    if not m:
+        m = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)\b", p)
+    if m:
+        day = int(m.group(1))
+        year, month = now.year, now.month
+        cand = _mk_day(year, month, day, now)
+        if cand is None or cand > now:  # not yet this month -> walk back one month
+            month -= 1
+            if month == 0:
+                month, year = 12, year - 1
+            cand = _mk_day(year, month, day, now)
+        if cand is not None:
+            return (cand, cand + timedelta(days=1))
+    return None
+
+
 def resolve_date_range(phrase: str, now: datetime):
     """Resolve an English time phrase to a half-open `[start, end)` window.
 
@@ -129,6 +242,15 @@ def resolve_date_range(phrase: str, now: datetime):
     # --- "day before yesterday" -------------------------------------------
     if re.search(r"\bday before yesterday\b", p):
         return (today0 - timedelta(days=2), today0 - timedelta(days=1))
+
+    # --- absolute dates & explicit ranges: "June 13", "between June 10 and
+    # June 13", "2025-04-01", "the 13th". Before day-parts so "June 13
+    # afternoon" lands on the date, not today; before named-month so "June 13"
+    # is a day, not the whole month. Returns None for bare months/years
+    # ("June 2025") so those fall through to the named-month branch.
+    abs_window = _resolve_absolute(p, now)
+    if abs_window is not None:
+        return abs_window
 
     # --- day parts: "this morning", "yesterday afternoon", "last night" ---
     if re.search(r"\blast night\b", p):

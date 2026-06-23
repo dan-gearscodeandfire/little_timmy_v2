@@ -3,7 +3,9 @@ natural-language time phrase from their message -- the part that names when.
 
 - phrase: the time expression exactly as a short phrase, e.g. "yesterday",
   "last Saturday", "this morning", "last week", "a couple weeks ago",
-  "three days ago". Strip the rest of the question.
+  "three days ago". Strip the rest of the question. Keep ABSOLUTE dates and
+  ranges verbatim too -- a specific day ("June 13", "the 13th", "2025-04-01")
+  or a span ("between June 10 and June 13", "June 10 to 13").
 
 Examples:
 - "what did we talk about last week" -> {"phrase":"last week"}
@@ -11,6 +13,9 @@ Examples:
 - "did we discuss the budget a couple weeks ago" -> {"phrase":"a couple weeks ago"}
 - "what was I telling you about last Saturday" -> {"phrase":"last Saturday"}
 - "what did we talk about yesterday" -> {"phrase":"yesterday"}
+- "what happened on June 13" -> {"phrase":"June 13"}
+- "what did we discuss on the 13th" -> {"phrase":"the 13th"}
+- "anything from between June 10 and June 13" -> {"phrase":"between June 10 and June 13"}
 
 If no explicit time phrase is present, return {"phrase":""}.
 

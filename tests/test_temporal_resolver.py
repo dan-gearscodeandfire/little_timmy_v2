@@ -223,6 +223,77 @@ def test_last_few_days():
 
 
 # --------------------------------------------------------------------------
+# absolute calendar dates + explicit from–to ranges  (NOW = Wed 2026-06-17)
+# --------------------------------------------------------------------------
+
+def test_bare_month_day_is_single_day():
+    assert resolve_date_range("June 13", NOW) == (_d(2026, 6, 13), _d(2026, 6, 14))
+
+
+def test_month_day_with_on_and_ordinal():
+    assert resolve_date_range("what happened on June 13th", NOW) == (
+        _d(2026, 6, 13), _d(2026, 6, 14))
+
+
+def test_month_day_future_this_year_resolves_to_last_year():
+    # June 18 is after NOW (June 17) -> most recent past occurrence is last year.
+    assert resolve_date_range("June 18", NOW) == (_d(2025, 6, 18), _d(2025, 6, 19))
+
+
+def test_month_day_explicit_year():
+    assert resolve_date_range("June 13 2025", NOW) == (_d(2025, 6, 13), _d(2025, 6, 14))
+
+
+def test_day_of_month_ordinal_only():
+    assert resolve_date_range("the 13th", NOW) == (_d(2026, 6, 13), _d(2026, 6, 14))
+
+
+def test_day_of_month_future_walks_back_a_month():
+    # The 18th is still ahead in June -> the most recent 18th is May 18.
+    assert resolve_date_range("on the 18th", NOW) == (_d(2026, 5, 18), _d(2026, 5, 19))
+
+
+def test_day_month_word_order():
+    assert resolve_date_range("13th of June", NOW) == (_d(2026, 6, 13), _d(2026, 6, 14))
+
+
+def test_iso_single_day():
+    assert resolve_date_range("2025-04-01", NOW) == (_d(2025, 4, 1), _d(2025, 4, 2))
+
+
+def test_between_two_dates_inclusive_range():
+    # Inclusive of June 13 -> half-open end is June 14.
+    assert resolve_date_range("between June 10 and June 13", NOW) == (
+        _d(2026, 6, 10), _d(2026, 6, 14))
+
+
+def test_from_to_range():
+    assert resolve_date_range("from June 10 to June 13", NOW) == (
+        _d(2026, 6, 10), _d(2026, 6, 14))
+
+
+def test_same_month_numeric_range():
+    # "June 10-13" -> punctuation stripped to "june 10 13".
+    assert resolve_date_range("June 10-13", NOW) == (_d(2026, 6, 10), _d(2026, 6, 14))
+
+
+def test_iso_range():
+    assert resolve_date_range("from 2025-04-01 to 2025-04-30", NOW) == (
+        _d(2025, 4, 1), _d(2025, 5, 1))
+
+
+def test_month_year_still_resolves_to_full_month():
+    # Absolute-date detection must NOT swallow a bare "<month> <year>": it has
+    # no day, so it falls through to the named-month branch (whole month).
+    assert resolve_date_range("June 2025", NOW) == (_d(2025, 6, 1), _d(2025, 7, 1))
+
+
+def test_n_days_ago_not_mistaken_for_day_of_month():
+    # "13 days ago" is a relative offset, NOT the 13th of the month.
+    assert resolve_date_range("13 days ago", NOW) == (_d(2026, 6, 4), _d(2026, 6, 5))
+
+
+# --------------------------------------------------------------------------
 # non-matches
 # --------------------------------------------------------------------------
 
