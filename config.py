@@ -252,6 +252,16 @@ CONTEXT_TURNS = int(os.getenv("TIMMY_CONTEXT_TURNS", "2"))        # prior turns 
 # prefill headroom for this; the blend stays at CONTEXT_TURNS (anti-dilution).
 RESOLVE_CONTEXT_TURNS = int(os.getenv("TIMMY_RESOLVE_CONTEXT_TURNS", "6"))  # prior turns fed to the coref resolver
 CONTEXT_TURN_CHAR_CAP = int(os.getenv("TIMMY_CONTEXT_TURN_CHAR_CAP", "200"))  # per prior-turn char cap (anti-dilution)
+# The :8093 resolver is decode-bound -- it regenerates ~the utterance, so cost
+# scales with utterance length (a 25-40 word banter turn decodes toward the
+# 64-token cap -> 500-800ms). It only earns that cost on SHORT, query-like
+# elliptical follow-ups ("what does he do?", "remind me about her"); a long
+# declarative that merely *contains* a pronoun gains nothing over the embedding
+# blend, which already carries its lexical signal. Gate to <= this many words
+# (the deixis + query-like check in memory/retrieval._needs_resolution does the
+# rest). Skipped turns fall back to the blend -- same fail-safe contract as a
+# resolver miss. Tune on the LIVE mic, not clean wavs.
+RESOLVE_MAX_WORDS = int(os.getenv("TIMMY_RESOLVE_MAX_WORDS", "16"))  # skip resolving utterances longer than this
 
 # --- Proactive (unprompted) speech (2026-06-03) ---
 # Hard master kill-switch for Timmy reacting verbally to a high-urgency visual

@@ -11,21 +11,50 @@ import config
 
 log = logging.getLogger(__name__)
 
-# Cheap deixis gate for query resolution. A turn only pays the ~170ms resolver
-# call (llm.client.resolve_query) when its utterance contains a pronoun/reference
-# that needs a conversational antecedent. Word-boundary, case-insensitive. Biased
-# toward recall (over-firing just resolves a near-clean query, which is ~idempotent;
-# under-firing silently keeps an unresolvable elliptical query). See the
-# query_resolution_enabled toggle. Measured 2026-06-18 (ops/elliptical_*.py).
+# Gate for query resolution. A turn pays the resolver call
+# (llm.client.resolve_query on :8093) ONLY when its utterance is a SHORT,
+# query-like elliptical follow-up carrying a deictic reference -- e.g.
+# "what does he do?", "remind me about her". Three conjoined conditions:
+#   1. deixis present (a pronoun/reference needing a conversational antecedent),
+#   2. within config.RESOLVE_MAX_WORDS, and
+#   3. query-like: ends with '?' or opens with a wh-/aux-/recall-verb.
+# The resolver is decode-bound (regenerates ~the utterance), so a long
+# declarative/banter turn that merely *contains* a pronoun ("That's why I made
+# you, because he has so much independence") costs 500-800ms while gaining
+# nothing over the embedding blend, which already carries its lexical signal.
+# Skipped turns fall back to the blend -- same fail-safe contract as a resolver
+# miss, so tightening this gate can never poison retrieval. Word-boundary,
+# case-insensitive. Measured 2026-06-18 (ops/elliptical_*.py); latency-gated
+# 2026-06-22 (supervisor_issues.md, long-declarative spikes).
 _DEIXIS_RE = re.compile(
     r"\b(it|its|it's|that|there|them|they|their|theirs|he|him|his|she|her|hers|those)\b",
+    re.IGNORECASE,
+)
+# Query-like opener: wh-words, auxiliaries/modals, or recall imperatives. Paired
+# with the trailing '?' check this keeps the resolver on follow-up *questions*
+# and off declarative statements that happen to contain a pronoun.
+_QUERY_LEAD_RE = re.compile(
+    r"^(what|whats|who|whom|whose|which|where|when|why|how|"
+    r"do|does|did|is|are|am|was|were|can|could|would|should|will|"
+    r"has|have|had|may|might|"
+    r"tell|remind|remember|name|list|show|give|find)\b",
     re.IGNORECASE,
 )
 
 
 def _needs_resolution(query: str) -> bool:
-    """True when the utterance has a deictic reference worth resolving."""
-    return bool(_DEIXIS_RE.search(query or ""))
+    """True only for short, query-like utterances with a deictic reference.
+
+    See the module comment above _DEIXIS_RE: the resolver is decode-bound, so
+    restricting it to elliptical follow-up *questions* (deixis + word cap +
+    query-like opener/'?') keeps the latency win without poisoning retrieval --
+    everything skipped falls back to the embedding blend."""
+    q = (query or "").strip()
+    if not _DEIXIS_RE.search(q):
+        return False
+    if len(q.split()) > config.RESOLVE_MAX_WORDS:
+        return False
+    return q.endswith("?") or bool(_QUERY_LEAD_RE.match(q))
 
 
 @dataclass
@@ -193,7 +222,8 @@ async def retrieve(
 
     # Semantic-query construction. Default: the role-tagged context blend
     # (_build_semantic_query). When query_resolution_enabled AND the utterance is
-    # deictic AND we have context, rewrite it into a standalone query via :8093
+    # a short query-like deictic follow-up (_needs_resolution) AND we have
+    # context, rewrite it into a standalone query via :8093
     # FIRST and embed THAT instead -- measured to beat the blend on elliptical
     # follow-ups (MRR 0.71->0.85). Resolver failure/empty -> fall back to the
     # blend (graceful). FTS/trigram below always use the bare `query`, unaffected.
