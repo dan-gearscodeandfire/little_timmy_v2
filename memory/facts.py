@@ -242,3 +242,66 @@ async def get_facts_about_speaker(
         limit,
     )
     return [Fact(**dict(r)) for r in rows]
+
+
+# Sortable columns for the read-only Memory Inspector. Whitelisted to keep the
+# ORDER BY clause off user input.
+_INSPECT_FACT_SORT = {
+    "learned_at": "learned_at DESC NULLS LAST",
+    "confidence": "confidence DESC NULLS LAST, learned_at DESC",
+    "subject": "subject ASC, predicate ASC",
+}
+
+
+async def list_facts(
+    q: str | None = None,
+    include_superseded: bool = False,
+    sort: str = "learned_at",
+    limit: int = 500,
+) -> list[dict]:
+    """Read-only listing for the Memory Inspector UI. Returns rich rows
+    (provenance + speaker name + supersession state), NOT the lean prompt-facing
+    Fact dataclass. Active-only by default (`superseded_by IS NULL`); pass
+    include_superseded=True to see the full audit trail. `q` does a
+    case-insensitive substring match across subject/predicate/value.
+    """
+    pool = await get_pool()
+    order = _INSPECT_FACT_SORT.get(sort, _INSPECT_FACT_SORT["learned_at"])
+    where = []
+    params: list = []
+    if not include_superseded:
+        where.append("f.superseded_by IS NULL")
+    if q and q.strip():
+        params.append(f"%{q.strip()}%")
+        where.append(
+            f"(f.subject ILIKE ${len(params)} OR f.predicate ILIKE ${len(params)}"
+            f" OR f.value ILIKE ${len(params)})"
+        )
+    params.append(int(limit))
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = await pool.fetch(
+        f"""SELECT f.id, f.subject, f.predicate, f.value, f.learned_at,
+                   f.confidence, f.sensitive, f.pii_category, f.source,
+                   f.superseded_by, s.name AS speaker
+            FROM facts f
+            LEFT JOIN speakers s ON s.id = f.speaker_id
+            {clause}
+            ORDER BY {order}
+            LIMIT ${len(params)}""",
+        *params,
+    )
+    return [dict(r) for r in rows]
+
+
+async def inspector_counts() -> dict:
+    """Summary counts for the inspector header bar."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT
+             (SELECT count(*) FROM facts) AS facts_total,
+             (SELECT count(*) FROM facts WHERE superseded_by IS NULL) AS facts_active,
+             (SELECT count(*) FROM facts WHERE superseded_by IS NULL AND sensitive) AS facts_sensitive,
+             (SELECT count(*) FROM episodes) AS episodes,
+             (SELECT count(*) FROM speakers) AS speakers"""
+    )
+    return dict(row)

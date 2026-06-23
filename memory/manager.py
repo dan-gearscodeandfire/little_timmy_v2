@@ -158,6 +158,36 @@ async def query_episodes_by_range(start, end, limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def list_episodes(start=None, end=None, limit: int = 200) -> list[dict]:
+    """Read-only episode listing for the Memory Inspector. With no bounds,
+    returns the whole timeline newest-first. With `start`/`end` (tz-aware
+    datetimes), filters to episodes whose [span_start, span_end] overlaps the
+    window — same overlap test as query_episodes_by_range — and orders
+    oldest-first to read as a timeline. Text returned untruncated. Read-only.
+    """
+    pool = await get_pool()
+    if start is not None and end is not None:
+        rows = await pool.fetch(
+            """SELECT id, span_start, span_end, created_at, text, token_count,
+                      source, access_count, accessed_at
+               FROM episodes
+               WHERE span_start < $2 AND span_end >= $1
+               ORDER BY span_start
+               LIMIT $3""",
+            start, end, limit,
+        )
+    else:
+        rows = await pool.fetch(
+            """SELECT id, span_start, span_end, created_at, text, token_count,
+                      source, access_count, accessed_at
+               FROM episodes
+               ORDER BY span_start DESC
+               LIMIT $1""",
+            limit,
+        )
+    return [dict(r) for r in rows]
+
+
 async def touch_memory(memory_id: int):
     """Update access timestamp and count for a single memory."""
     pool = await get_pool()

@@ -328,6 +328,76 @@ async def set_guest_mode(payload: dict | None = None):
     return {"ok": True, "guest_mode": bool(runtime_toggles.get("guest_mode"))}
 
 
+# --- Memory Inspector (read-only) -------------------------------------------
+# Backs the LT-OS /memory page. LT-OS proxies these exactly like /api/timmy/*.
+# Read-only by design: no write/supersede/delete endpoints. Sensitive facts ARE
+# returned (this is a local admin tool); the UI badges them. guest_mode gating
+# is a prompt-injection concern and intentionally does NOT apply here.
+
+@app.get("/api/memory/stats")
+async def get_memory_stats():
+    """Summary counts for the inspector header (facts active/total/sensitive,
+    episodes, speakers)."""
+    from fastapi.responses import JSONResponse
+    from memory import facts as _facts
+    try:
+        return await _facts.inspector_counts()
+    except Exception as e:
+        log.warning("memory_stats failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/memory/facts")
+async def get_memory_facts(q: str | None = None, include_superseded: bool = False,
+                           sort: str = "learned_at", limit: int = 500):
+    """List facts for the inspector. q=substring (subject/predicate/value),
+    include_superseded toggles the audit trail, sort in
+    {learned_at,confidence,subject}. learned_at serialized to ISO."""
+    from fastapi.responses import JSONResponse
+    from memory import facts as _facts
+    try:
+        rows = await _facts.list_facts(q=q, include_superseded=include_superseded,
+                                       sort=sort, limit=min(int(limit), 2000))
+        for r in rows:
+            la = r.get("learned_at")
+            if la is not None and hasattr(la, "isoformat"):
+                r["learned_at"] = la.isoformat()
+        return {"facts": rows, "count": len(rows)}
+    except Exception as e:
+        log.warning("memory_facts failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/memory/episodes")
+async def get_memory_episodes(start: str | None = None, end: str | None = None,
+                              limit: int = 200):
+    """List episodes for the inspector timeline. Optional start/end (ISO date or
+    datetime) filter to the overlapping window; otherwise the whole timeline,
+    newest-first. Timestamps serialized to ISO."""
+    from fastapi.responses import JSONResponse
+    from datetime import datetime, timezone
+    from memory import manager as _mgr
+    def _parse(s):
+        if not s:
+            return None
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    try:
+        s_dt, e_dt = _parse(start), _parse(end)
+        rows = await _mgr.list_episodes(start=s_dt, end=e_dt, limit=min(int(limit), 1000))
+        for r in rows:
+            for k in ("span_start", "span_end", "created_at", "accessed_at"):
+                v = r.get(k)
+                if v is not None and hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+        return {"episodes": rows, "count": len(rows)}
+    except Exception as e:
+        log.warning("memory_episodes failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/active")
 async def get_active():
     """Whether Dan is actively conversing with Timmy right now: a stream is in

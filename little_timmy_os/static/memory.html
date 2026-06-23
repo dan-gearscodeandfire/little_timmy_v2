@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Memory Inspector · Little Timmy OS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#11161d; --line:#21262d; --line2:#30363d;
+    --txt:#c9d1d9; --muted:#8b949e; --dim:#6e7681;
+    --accent:#e94560; --blue:#58a6ff; --green:#3fb950; --red:#f85149;
+    --orange:#f0883e; --cyan:#39c5cf; --purple:#bc8cff; --yellow:#d29922;
+    --mono:'Courier New',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scrollbar-color:#30363d #0d1117}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);min-height:100vh;
+       font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+
+  header{position:sticky;top:0;z-index:20;background:rgba(22,27,34,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line2);
+    padding:14px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+  header .brand{display:flex;align-items:baseline;gap:12px}
+  header h1{font-family:var(--mono);color:var(--accent);font-size:18px;letter-spacing:2px;font-weight:700}
+  header .sub{font-family:var(--mono);color:var(--dim);font-size:11px;letter-spacing:1px}
+  .back{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--blue);
+    text-decoration:none;border:1px solid var(--line2);border-radius:6px;padding:6px 12px;
+    transition:.15s;white-space:nowrap}
+  .back:hover{background:#1f2a3a;border-color:var(--blue)}
+
+  .stats{display:flex;gap:10px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:20px;padding:5px 12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .chip b{color:var(--txt);font-size:13px}
+  .chip.warn b{color:var(--orange)}
+
+  .wrap{max-width:1280px;margin:0 auto;padding:22px 24px 60px}
+
+  .tabs{display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--line);padding-bottom:0}
+  .tab{font-family:var(--mono);font-size:13px;letter-spacing:1px;color:var(--muted);
+    background:none;border:none;border-bottom:2px solid transparent;padding:9px 16px;cursor:pointer;
+    text-transform:uppercase;transition:.15s}
+  .tab:hover{color:var(--txt)}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+  .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  .search{flex:1;min-width:200px;position:relative}
+  .search input{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;
+    color:var(--txt);font-family:var(--mono);font-size:13px;padding:9px 12px 9px 32px}
+  .search input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 2px rgba(88,166,255,.15)}
+  .search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--dim)}
+  select,.ctl{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;color:var(--txt);
+    font-family:var(--mono);font-size:12px;padding:8px 10px;cursor:pointer}
+  select:focus{outline:none;border-color:var(--blue)}
+  label.check{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;
+    color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  label.check input{accent-color:var(--blue);width:15px;height:15px}
+  .count{font-family:var(--mono);font-size:11px;color:var(--dim);margin-left:auto;white-space:nowrap}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{font-family:var(--mono);font-size:10px;letter-spacing:.5px;text-transform:uppercase;
+    color:var(--dim);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2);
+    position:sticky;top:64px;background:var(--bg);z-index:5}
+  tbody tr{border-bottom:1px solid var(--line)}
+  tbody tr:hover{background:#161b22}
+  tbody tr.superseded{opacity:.5}
+  td{padding:9px 10px;vertical-align:middle}
+  td.subj{font-weight:600;color:#e6edf3}
+  td.pred{color:var(--cyan);font-family:var(--mono);font-size:12px}
+  td.val{color:var(--txt)}
+  td.id{font-family:var(--mono);color:var(--dim);font-size:11px}
+  td.spk{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  td.when{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap}
+
+  .badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;
+    padding:2px 7px;border-radius:10px;border:1px solid;display:inline-block;white-space:nowrap}
+  .b-sens{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.1)}
+  .b-extraction{color:var(--purple);border-color:#3a2f4a;background:rgba(188,140,255,.08)}
+  .b-tool{color:var(--green);border-color:#1f3a25;background:rgba(63,185,80,.08)}
+  .b-src{color:var(--muted);border-color:var(--line2);background:var(--panel2)}
+  .b-sup{color:var(--orange);border-color:var(--orange);background:rgba(240,136,62,.1)}
+  .b-none{color:var(--dim)}
+
+  .conf{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .conf .bar{width:42px;height:5px;border-radius:3px;background:var(--line2);overflow:hidden}
+  .conf .bar i{display:block;height:100%;border-radius:3px}
+
+  /* episodes */
+  .timeline{position:relative;padding-left:26px}
+  .timeline::before{content:'';position:absolute;left:7px;top:6px;bottom:6px;width:2px;background:var(--line2)}
+  .ep{position:relative;margin-bottom:16px;background:var(--panel);border:1px solid var(--line2);
+    border-radius:10px;padding:14px 16px}
+  .ep::before{content:'';position:absolute;left:-22.5px;top:18px;width:11px;height:11px;border-radius:50%;
+    background:var(--cyan);border:2px solid var(--bg);box-shadow:0 0 0 2px var(--cyan)}
+  .ep .ehead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .ep .span{font-family:var(--mono);font-size:12px;color:var(--cyan);font-weight:600}
+  .ep .dur{font-family:var(--mono);font-size:10px;color:var(--dim)}
+  .ep .epid{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:auto}
+  .ep .etext{color:#e6edf3;line-height:1.5}
+  .ep .emeta{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+  .daterange{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .daterange label{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  input[type=date]{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;
+    color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 10px;color-scheme:dark}
+  input[type=date]:focus{outline:none;border-color:var(--blue)}
+  .btn{font-family:var(--mono);font-size:12px;padding:8px 12px;background:#1f2a3a;color:var(--blue);
+    border:1px solid var(--blue);border-radius:8px;cursor:pointer;transition:.15s}
+  .btn:hover{background:#26344a}
+  .btn.ghost{background:var(--panel2);color:var(--muted);border-color:var(--line2)}
+  .btn.ghost:hover{color:var(--txt);border-color:var(--muted)}
+
+  .empty{text-align:center;padding:48px 20px;color:var(--dim);font-family:var(--mono);font-size:13px}
+  .empty svg{margin-bottom:12px;opacity:.5}
+  .loading{text-align:center;padding:40px;color:var(--muted);font-family:var(--mono);font-size:13px}
+  .hide{display:none}
+  .note{font-family:var(--mono);font-size:11px;color:var(--dim);margin:14px 2px 0}
+  th.sortable{cursor:pointer}
+  th.sortable:hover{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>MEMORY INSPECTOR</h1>
+    <span class="sub">little timmy · read-only</span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <a class="back" href="/">&larr; DASHBOARD</a>
+</header>
+
+<div class="wrap">
+  <div class="tabs">
+    <button class="tab active" data-view="facts">Facts</button>
+    <button class="tab" data-view="episodes">Episodes</button>
+  </div>
+
+  <!-- FACTS -->
+  <section id="view-facts">
+    <div class="toolbar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="q" type="text" placeholder="search subject · predicate · value" autocomplete="off">
+      </div>
+      <select id="sort">
+        <option value="learned_at">sort: newest</option>
+        <option value="confidence">sort: confidence</option>
+        <option value="subject">sort: subject A&ndash;Z</option>
+      </select>
+      <label class="check"><input type="checkbox" id="superseded"> show superseded</label>
+      <span class="count" id="facts-count"></span>
+    </div>
+    <div id="facts-body"><div class="loading">loading facts&hellip;</div></div>
+  </section>
+
+  <!-- EPISODES -->
+  <section id="view-episodes" class="hide">
+    <div class="toolbar">
+      <div class="daterange">
+        <label>from</label><input type="date" id="ep-start">
+        <label>to</label><input type="date" id="ep-end">
+        <button class="btn" id="ep-apply">Apply</button>
+        <button class="btn ghost" id="ep-clear">Clear</button>
+      </div>
+      <span class="count" id="ep-count"></span>
+    </div>
+    <div id="ep-body"><div class="loading">loading episodes&hellip;</div></div>
+    <p class="note">Date range matches episodes overlapping the window (interpreted in UTC). Timeline runs oldest&rarr;newest when filtered, newest-first otherwise.</p>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---- header stats ----
+async function loadStats(){
+  try{
+    const s = await (await fetch('/api/memory/stats')).json();
+    $('#stats').innerHTML =
+      chip(s.facts_active,'active facts') +
+      chip(s.facts_sensitive,'sensitive',true) +
+      chip(s.episodes,'episodes') +
+      chip(s.speakers,'speakers');
+  }catch(e){ $('#stats').innerHTML = '<span class="chip">stats unavailable</span>'; }
+}
+const chip = (n,label,warn) => `<span class="chip ${warn&&n>0?'warn':''}"><b>${n}</b>${label}</span>`;
+
+// ---- facts ----
+let factTimer;
+function confColor(c){ return c>=0.85?'var(--green)':c>=0.6?'var(--yellow)':'var(--orange)'; }
+
+async function loadFacts(){
+  const q = encodeURIComponent($('#q').value.trim());
+  const sort = $('#sort').value;
+  const sup = $('#superseded').checked;
+  const url = `/api/memory/facts?q=${q}&sort=${sort}&include_superseded=${sup}&limit=2000`;
+  try{
+    const r = await (await fetch(url)).json();
+    renderFacts(r.facts||[]);
+    $('#facts-count').textContent = `${r.count} fact${r.count===1?'':'s'}`;
+  }catch(e){ $('#facts-body').innerHTML = `<div class="empty">failed to load: ${esc(e.message)}</div>`; }
+}
+
+function renderFacts(facts){
+  if(!facts.length){ $('#facts-body').innerHTML = emptyState('no facts match'); return; }
+  let rows = facts.map(f=>{
+    const c = f.confidence==null?0:f.confidence;
+    const srcCls = f.source==='extraction'?'b-extraction':f.source==='tool'?'b-tool':'b-src';
+    const supersededRow = f.superseded_by?' class="superseded"':'';
+    const when = f.learned_at? new Date(f.learned_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}) : '&mdash;';
+    const badges = [];
+    if(f.sensitive) badges.push(`<span class="badge b-sens" title="${esc(f.pii_category||'sensitive')}">&#9888; ${esc(f.pii_category||'sensitive')}</span>`);
+    if(f.superseded_by) badges.push(`<span class="badge b-sup" title="superseded by #${f.superseded_by}">superseded</span>`);
+    return `<tr${supersededRow}>
+      <td class="id">#${f.id}</td>
+      <td class="subj">${esc(f.subject)}</td>
+      <td class="pred">${esc(f.predicate)}</td>
+      <td class="val">${esc(f.value)} ${badges.join(' ')}</td>
+      <td class="spk">${f.speaker?esc(f.speaker):'<span class="b-none">&mdash;</span>'}</td>
+      <td><span class="badge ${srcCls}">${esc(f.source||'?')}</span></td>
+      <td><span class="conf"><span class="bar"><i style="width:${Math.round(c*100)}%;background:${confColor(c)}"></i></span>${c.toFixed(2)}</span></td>
+      <td class="when">${when}</td>
+    </tr>`;
+  }).join('');
+  $('#facts-body').innerHTML = `<table>
+    <thead><tr>
+      <th>ID</th><th>Subject</th><th>Predicate</th><th>Value</th>
+      <th>Speaker</th><th>Source</th><th>Conf</th><th>Learned</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ---- episodes ----
+async function loadEpisodes(){
+  const s = $('#ep-start').value, e = $('#ep-end').value;
+  let url = '/api/memory/episodes?limit=1000';
+  if(s) url += `&start=${s}T00:00:00`;
+  // make the end date inclusive: extend to the following midnight
+  if(e){ const d=new Date(e+'T00:00:00'); d.setDate(d.getDate()+1);
+    url += `&end=${d.toISOString().slice(0,10)}T00:00:00`; }
+  try{
+    const r = await (await fetch(url)).json();
+    renderEpisodes(r.episodes||[]);
+    $('#ep-count').textContent = `${r.count} episode${r.count===1?'':'s'}`;
+  }catch(err){ $('#ep-body').innerHTML = `<div class="empty">failed to load: ${esc(err.message)}</div>`; }
+}
+
+function fmtDT(iso){ return new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+function fmtDur(a,b){ const m=Math.round((new Date(b)-new Date(a))/60000); if(m<60)return m+'m'; const h=Math.floor(m/60); return h+'h'+(m%60?(' '+(m%60)+'m'):''); }
+
+function renderEpisodes(eps){
+  if(!eps.length){ $('#ep-body').innerHTML = emptyState('no episodes in range'); return; }
+  const html = eps.map(ep=>{
+    let trig='';
+    try{ const src = typeof ep.source==='string'?JSON.parse(ep.source):ep.source;
+      if(src && (src.trigger||src.kind)) trig = `<span class="badge b-src">${esc(src.kind||src.trigger)}</span>`; }catch(_){}
+    const acc = ep.access_count? `<span class="badge b-src">recalled &times;${ep.access_count}</span>`:'';
+    return `<div class="ep">
+      <div class="ehead">
+        <span class="span">${fmtDT(ep.span_start)} &rarr; ${fmtDT(ep.span_end)}</span>
+        <span class="dur">(${fmtDur(ep.span_start,ep.span_end)})</span>
+        <span class="epid">#${ep.id}</span>
+      </div>
+      <div class="etext">${esc(ep.text)}</div>
+      <div class="emeta">${trig}${acc}<span class="dur">${ep.token_count||0} tok</span></div>
+    </div>`;
+  }).join('');
+  $('#ep-body').innerHTML = `<div class="timeline">${html}</div>`;
+}
+
+function emptyState(msg){
+  return `<div class="empty">
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h18M3 12h18M3 17h12"/></svg>
+    <div>${esc(msg)}</div></div>`;
+}
+
+// ---- tabs ----
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  const v = t.dataset.view;
+  $('#view-facts').classList.toggle('hide', v!=='facts');
+  $('#view-episodes').classList.toggle('hide', v!=='episodes');
+  if(v==='episodes' && !$('#ep-body').dataset.loaded){ $('#ep-body').dataset.loaded=1; loadEpisodes(); }
+}));
+
+// ---- wiring ----
+$('#q').addEventListener('input', ()=>{ clearTimeout(factTimer); factTimer=setTimeout(loadFacts,220); });
+$('#sort').addEventListener('change', loadFacts);
+$('#superseded').addEventListener('change', loadFacts);
+$('#ep-apply').addEventListener('click', loadEpisodes);
+$('#ep-clear').addEventListener('click', ()=>{ $('#ep-start').value=''; $('#ep-end').value=''; loadEpisodes(); });
+
+loadStats();
+loadFacts();
+</script>
+</body>
+</html>

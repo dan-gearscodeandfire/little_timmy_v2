@@ -300,6 +300,52 @@ async def get_models():
     }
 
 
+# --- Memory Inspector ------------------------------------------------------
+# A read-only browsable view of Little Timmy's persisted memory (Postgres facts
+# + episodes). The page is a self-contained static file; data comes from LT's
+# read-only /api/memory/* endpoints, proxied below exactly like /api/timmy/*.
+# Opened from the main dashboard via the "MEMORY" header button.
+
+@app.get("/memory", response_class=HTMLResponse)
+async def memory_inspector_page():
+    """Serve the Memory Inspector single-page app."""
+    page = _STATIC_DIR / "memory.html"
+    if not page.is_file():
+        return HTMLResponse("<h1>memory.html missing</h1>", status_code=500)
+    return HTMLResponse(page.read_text(encoding="utf-8"))
+
+
+async def _proxy_memory(path: str, params: dict):
+    """GET-proxy a read-only memory endpoint on LT (:8893)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + path,
+                                  params={k: v for k, v in params.items() if v is not None})
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/memory/stats")
+async def memory_stats():
+    return await _proxy_memory("/api/memory/stats", {})
+
+
+@app.get("/api/memory/facts")
+async def memory_facts(q: str | None = None, include_superseded: bool = False,
+                       sort: str = "learned_at", limit: int = 500):
+    return await _proxy_memory("/api/memory/facts", {
+        "q": q, "include_superseded": include_superseded, "sort": sort, "limit": limit})
+
+
+@app.get("/api/memory/episodes")
+async def memory_episodes(start: str | None = None, end: str | None = None,
+                          limit: int = 200):
+    return await _proxy_memory("/api/memory/episodes",
+                               {"start": start, "end": end, "limit": limit})
+
+
 @app.get("/api/timmy/metrics")
 async def get_timmy_metrics():
     """Proxy metrics from Little Timmy if it is running."""
@@ -1290,7 +1336,13 @@ header .uptime {
 
 <header>
   <h1>LITTLE TIMMY OS</h1>
-  <span class="uptime" id="uptime">Connecting...</span>
+  <span style="display:flex; align-items:center; gap:14px;">
+    <a href="/memory" title="Browse Little Timmy's persisted memory — facts &amp; episodes (read-only)"
+       style="font-family:'Courier New',monospace; font-size:12px; letter-spacing:1px; color:#39c5cf;
+              text-decoration:none; border:1px solid #39c5cf; border-radius:4px; padding:5px 11px;
+              background:#1f3a3a; white-space:nowrap;">&#129504; MEMORY</a>
+    <span class="uptime" id="uptime">Connecting...</span>
+  </span>
 </header>
 
 <!-- PARTY MODE: one-tap situation_regime=PARTY. Disables the risky matcher
