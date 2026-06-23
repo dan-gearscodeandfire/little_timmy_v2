@@ -156,6 +156,10 @@ def _build_semantic_query(query: str, context_turns: list | None) -> str:
     if not config.COREFERENCE_ENABLED or not context_turns:
         return query
     cap = config.CONTEXT_TURN_CHAR_CAP
+    # The caller passes the WIDER resolver window (RESOLVE_CONTEXT_TURNS); the
+    # embedding blend stays at CONTEXT_TURNS so the extra history can't dilute the
+    # averaged vector. Take the most-recent CONTEXT_TURNS only.
+    context_turns = context_turns[-config.CONTEXT_TURNS:]
     parts = []
     for t in context_turns:
         content = (getattr(t, "content", "") or "").strip()
@@ -198,8 +202,11 @@ async def retrieve(
     if (runtime_toggles.get("query_resolution_enabled")
             and context_turns and _needs_resolution(query)):
         from llm import client  # local import: avoid any import-time cycle
+        # Resolver sees the full (wider) window. Char-cap each turn so a long
+        # monologue across RESOLVE_CONTEXT_TURNS can't overflow :8093's -c 2048.
+        rcap = config.CONTEXT_TURN_CHAR_CAP
         context_text = "\n".join(
-            f"{getattr(t, 'role', 'user')}: {(getattr(t, 'content', '') or '').strip()}"
+            f"{getattr(t, 'role', 'user')}: {(getattr(t, 'content', '') or '').strip()[:rcap]}"
             for t in context_turns if (getattr(t, "content", "") or "").strip()
         )
         import time

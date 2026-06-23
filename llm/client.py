@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from typing import AsyncIterator
 import httpx
@@ -379,8 +380,14 @@ _RESOLVE_SYS = (
     "Rewrite the user's LAST message as a single standalone search query. Replace "
     "every pronoun or vague reference (it, its, that, there, them, they, he, him, "
     "she, her) with the specific thing it refers to, taken from the conversation. "
-    "Keep it a short question. If nothing needs resolving, repeat the message "
-    "unchanged. Output ONLY the rewritten query, nothing else."
+    "Edit ONLY the last message and keep its wording and intent; never copy or "
+    "repeat an earlier turn. NEVER replace I, me, my, you, or your -- they refer "
+    "to the speaker and to you, not to a remembered person. If the thing a "
+    "pronoun refers to is NOT clearly present in the conversation above, do NOT "
+    "guess a substitute -- repeat the last message unchanged. Likewise, if "
+    "nothing needs resolving, repeat it unchanged. Keep it a short question. "
+    "Output ONLY the rewritten query itself -- no speaker labels like 'User:' or "
+    "'Assistant:', nothing else."
 )
 
 
@@ -414,7 +421,19 @@ async def resolve_query(utterance: str, context_text: str) -> str | None:
         content = (resp.json()["choices"][0]["message"].get("content") or "").strip()
         if "</think>" in content:  # strip any stray thinking block
             content = content.split("</think>")[-1].strip()
-        return content.strip().strip('"') or None
+        content = content.strip().strip('"')
+        # Deterministic safety net -- the 4B resolver is prompt-steerable but not
+        # prompt-reliable; these guards make a bad rewrite degrade to the
+        # bare/blended query (None) rather than poison retrieval.
+        # 1) Strip any leaked transcript role label ("User:" / "Assistant:").
+        content = re.sub(r'^\s*(user|assistant|timmy)\s*:\s*', '', content, flags=re.I).strip()
+        # 2) Reject over-long rewrites: a true coref resolve is ~the utterance
+        #    length (pronoun -> proper noun). A large expansion means the model
+        #    merged/echoed earlier context turns -> fall back, don't embed it.
+        if content and len(content) > len(utterance) + 40:
+            log.info("[RESOLVE] rejected over-long rewrite (echo/merge), falling back: %r", content)
+            return None
+        return content or None
     except Exception as e:
         log.warning("[RESOLVE] query resolution failed (%s); using bare/blended query", e)
         return None

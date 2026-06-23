@@ -182,6 +182,7 @@ class TurnSettings:
     """Config captured once at construction (was 37 inline config reads)."""
     retrieval_top_k: int = 5
     context_turns: int = 4
+    resolve_context_turns: int = 6
     coreference_enabled: bool = True
     proactive_max_sentences: int = 2
 
@@ -191,6 +192,7 @@ class TurnSettings:
         return cls(
             retrieval_top_k=config.RETRIEVAL_TOP_K,
             context_turns=config.CONTEXT_TURNS,
+            resolve_context_turns=config.RESOLVE_CONTEXT_TURNS,
             coreference_enabled=config.COREFERENCE_ENABLED,
             proactive_max_sentences=config.PROACTIVE_MAX_SENTENCES,
         )
@@ -461,8 +463,12 @@ class ConversationTurn:
     # -- helpers -----------------------------------------------------------
     async def _gather(self, words: str, who: SpeakerIdentity) -> Retrieved:
         subjects = _extract_my_subjects(words)
+        # Fetch the WIDER of the two windows: the resolver needs more history to
+        # find an antecedent that has scrolled past the blend's CONTEXT_TURNS.
+        # retrieve() caps the embedding blend back to CONTEXT_TURNS internally.
         ctx_turns = (
-            self._history.recent_turns_excluding_current(self._settings.context_turns)
+            self._history.recent_turns_excluding_current(
+                max(self._settings.context_turns, self._settings.resolve_context_turns))
             if self._settings.coreference_enabled else None
         )
         return await self._memory.gather(

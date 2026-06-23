@@ -246,6 +246,11 @@ RRF_COSINE_BONUS = float(os.getenv("TIMMY_RRF_COSINE_BONUS", "0.02"))
 # embedding.
 COREFERENCE_ENABLED = os.getenv("TIMMY_COREFERENCE_ENABLED", "true").lower() == "true"
 CONTEXT_TURNS = int(os.getenv("TIMMY_CONTEXT_TURNS", "2"))        # prior turns blended into the semantic query
+# Coref resolver sees a WIDER window than the embedding blend: a proper-noun
+# antecedent (Voss, Erin) routinely scrolls past 2 turns behind banter /
+# corrections, leaving the pronoun unbindable. The dedicated :8093 server has the
+# prefill headroom for this; the blend stays at CONTEXT_TURNS (anti-dilution).
+RESOLVE_CONTEXT_TURNS = int(os.getenv("TIMMY_RESOLVE_CONTEXT_TURNS", "6"))  # prior turns fed to the coref resolver
 CONTEXT_TURN_CHAR_CAP = int(os.getenv("TIMMY_CONTEXT_TURN_CHAR_CAP", "200"))  # per prior-turn char cap (anti-dilution)
 
 # --- Proactive (unprompted) speech (2026-06-03) ---
