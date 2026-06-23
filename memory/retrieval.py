@@ -202,10 +202,65 @@ def _build_semantic_query(query: str, context_turns: list | None) -> str:
     return "\n".join(parts)
 
 
+def _build_resolver_context(context_turns: list) -> str:
+    """Role-tag and char-cap the window the resolver (:8093) sees. Each turn is
+    capped at CONTEXT_TURN_CHAR_CAP so a long monologue across
+    RESOLVE_CONTEXT_TURNS can't overflow :8093's -c 2048."""
+    rcap = config.CONTEXT_TURN_CHAR_CAP
+    return "\n".join(
+        f"{getattr(t, 'role', 'user')}: {(getattr(t, 'content', '') or '').strip()[:rcap]}"
+        for t in context_turns if (getattr(t, "content", "") or "").strip()
+    )
+
+
+async def resolve_for_retrieval(query: str, context_turns: list | None) -> str | None:
+    """Attempt to rewrite an elliptical follow-up into a standalone query via the
+    coref resolver (:8093), returning the resolved string or None.
+
+    Gated identically to the inline path it replaces: the query_resolution_enabled
+    toggle, a non-empty context window, AND a short query-like deictic follow-up
+    (_needs_resolution). Returns None when the gate declines OR the resolver
+    fails/returns empty -- callers fall back to the embedding blend (the same
+    fail-safe contract as before).
+
+    Factored out of retrieve() so the doorway can launch it speculatively in
+    PARALLEL with the tool-call classifier (:8092) and hand the result back in via
+    retrieve(resolved_query=..., query_pre_resolved=True) -- overlapping the two
+    Qwen3-4B servers instead of paying them back-to-back. See main.py doorway.
+    Publishing the per-turn latency metric lives here so there is exactly one
+    source whether the call fires at the doorway or inline."""
+    if not (runtime_toggles.get("query_resolution_enabled")
+            and context_turns and _needs_resolution(query)):
+        return None
+    from llm import client  # local import: avoid any import-time cycle
+    import time
+    context_text = _build_resolver_context(context_turns)
+    t0 = time.perf_counter()
+    resolved = await client.resolve_query(query, context_text)
+    resolution_ms = int((time.perf_counter() - t0) * 1000)
+    # Publish the per-turn resolve cost to the HUDs (LT-OS WS + Booth poll),
+    # mirroring the classifier-latency pip. Non-fatal if web.app isn't up.
+    try:
+        from web.app import broadcast_event, update_metrics, record_stage
+        update_metrics(last_resolution_ms=resolution_ms)
+        # Only logged when the deixis gate fires -> this series' sample count is
+        # the resolution-fired turn count (the "deictic turn" condition).
+        record_stage("stage:resolution", resolution_ms)
+        await broadcast_event("resolution_metric",
+                              {"ms": resolution_ms, "resolved": bool(resolved)})
+    except Exception:
+        log.debug("[RESOLVE] latency publish failed (non-fatal)", exc_info=True)
+    if resolved:
+        log.info("[RESOLVE] %r -> %r (%dms)", query, resolved, resolution_ms)
+    return resolved or None
+
+
 async def retrieve(
     query: str,
     top_k: int | None = None,
     context_turns: list | None = None,
+    resolved_query: str | None = None,
+    query_pre_resolved: bool = False,
 ) -> list[RetrievedMemory]:
     """Run hybrid retrieval: semantic + FTS + trigram, merge with weighted RRF.
 
@@ -213,6 +268,13 @@ async def retrieve(
     channels and is the trailing segment of the semantic query. `context_turns`
     (prior conversation Turns, oldest-first, current excluded) are blended into
     the semantic channel's embedding query only -- see _build_semantic_query.
+
+    `query_pre_resolved` / `resolved_query`: when True, the doorway already
+    attempted coref resolution (possibly in PARALLEL with the classifier) and
+    hands the result in -- retrieve() trusts it and does NOT call :8093 again
+    (`resolved_query` is None when the doorway's gate declined or the resolver
+    missed -> fall back to the blend). When False (default: text path, tests,
+    speculative-coref toggle OFF) retrieve() resolves inline, unchanged.
     """
     if top_k is None:
         top_k = config.RETRIEVAL_TOP_K
@@ -221,43 +283,24 @@ async def retrieve(
     pool = await get_pool()
 
     # Semantic-query construction. Default: the role-tagged context blend
-    # (_build_semantic_query). When query_resolution_enabled AND the utterance is
-    # a short query-like deictic follow-up (_needs_resolution) AND we have
-    # context, rewrite it into a standalone query via :8093
-    # FIRST and embed THAT instead -- measured to beat the blend on elliptical
-    # follow-ups (MRR 0.71->0.85). Resolver failure/empty -> fall back to the
-    # blend (graceful). FTS/trigram below always use the bare `query`, unaffected.
+    # (_build_semantic_query). For a short query-like deictic follow-up we instead
+    # embed a standalone query rewritten via :8093 -- measured to beat the blend
+    # on elliptical follow-ups (MRR 0.71->0.85). Resolver decline/failure/empty ->
+    # fall back to the blend (graceful). FTS/trigram below always use the bare
+    # `query`, unaffected. The resolution itself lives in resolve_for_retrieval();
+    # it runs EITHER at the doorway (in parallel with the classifier, handed in
+    # via query_pre_resolved) OR inline here.
     semantic_query = None
-    resolved = None
-    if (runtime_toggles.get("query_resolution_enabled")
-            and context_turns and _needs_resolution(query)):
-        from llm import client  # local import: avoid any import-time cycle
-        # Resolver sees the full (wider) window. Char-cap each turn so a long
-        # monologue across RESOLVE_CONTEXT_TURNS can't overflow :8093's -c 2048.
-        rcap = config.CONTEXT_TURN_CHAR_CAP
-        context_text = "\n".join(
-            f"{getattr(t, 'role', 'user')}: {(getattr(t, 'content', '') or '').strip()[:rcap]}"
-            for t in context_turns if (getattr(t, "content", "") or "").strip()
-        )
-        import time
-        t0 = time.perf_counter()
-        resolved = await client.resolve_query(query, context_text)
-        resolution_ms = int((time.perf_counter() - t0) * 1000)
-        # Publish the per-turn resolve cost to the HUDs (LT-OS WS + Booth poll),
-        # mirroring the classifier-latency pip. Non-fatal if web.app isn't up.
-        try:
-            from web.app import broadcast_event, update_metrics, record_stage
-            update_metrics(last_resolution_ms=resolution_ms)
-            # Only logged when the deixis gate fires -> this series' sample count
-            # is the resolution-fired turn count (the "deictic turn" condition).
-            record_stage("stage:resolution", resolution_ms)
-            await broadcast_event("resolution_metric",
-                                  {"ms": resolution_ms, "resolved": bool(resolved)})
-        except Exception:
-            log.debug("[RESOLVE] latency publish failed (non-fatal)", exc_info=True)
+    if query_pre_resolved:
+        # Doorway already attempted resolution (possibly parallel with :8092).
+        # Trust the handed-in result; do NOT call :8093 again. None -> blend.
+        if resolved_query:
+            semantic_query = resolved_query
+            log.debug("[RESOLVE] using doorway pre-resolved query %r", resolved_query)
+    else:
+        resolved = await resolve_for_retrieval(query, context_turns)
         if resolved:
             semantic_query = resolved
-            log.info("[RESOLVE] %r -> %r (%dms)", query, resolved, resolution_ms)
     if semantic_query is None:
         semantic_query = _build_semantic_query(query, context_turns)
     query_emb = await embed(semantic_query)

@@ -104,7 +104,8 @@ def _install_fakes(monkeypatch, *, gate: bool):
 
     calls = {"retrieve": 0}
 
-    async def fake_retrieve(user_text, top_k=5, context_turns=None):
+    async def fake_retrieve(user_text, top_k=5, context_turns=None,
+                            resolved_query=None, query_pre_resolved=False):
         calls["retrieve"] += 1
         return [_Mem()]
 

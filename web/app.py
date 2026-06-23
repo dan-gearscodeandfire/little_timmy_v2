@@ -192,7 +192,8 @@ async def get_metrics():
     from persistence import runtime_toggles
     return {**_metrics,
             "classifier_enabled": bool(runtime_toggles.get("classifier_enabled")),
-            "query_resolution_enabled": bool(runtime_toggles.get("query_resolution_enabled"))}
+            "query_resolution_enabled": bool(runtime_toggles.get("query_resolution_enabled")),
+            "speculative_coref_enabled": bool(runtime_toggles.get("speculative_coref_enabled"))}
 
 
 @app.get("/api/latency_stats")
@@ -888,6 +889,30 @@ async def set_query_resolution(payload: dict | None = None):
     runtime_toggles.set("query_resolution_enabled", enabled)
     return {"ok": True, "enabled": bool(runtime_toggles.get("query_resolution_enabled")),
             "up": await _classifier_up()}
+
+
+@app.get("/api/speculative_coref")
+async def get_speculative_coref():
+    """Read the speculative-coref gate: when ON, the doorway resolves the query
+    (:8093) in PARALLEL with the tool-call classifier (:8092) instead of inline
+    after it. Gated internally by query_resolution_enabled -- this only changes
+    WHEN the resolve runs, not WHETHER. Default ON (2026-06-22)."""
+    from persistence import runtime_toggles
+    return {"enabled": bool(runtime_toggles.get("speculative_coref_enabled"))}
+
+
+@app.post("/api/speculative_coref")
+async def set_speculative_coref(payload: dict | None = None):
+    """Enable/disable speculative coref. Persisted by runtime_toggles, read live
+    per turn by main.process_speech -- no restart to flip. OFF reverts to inline
+    resolution inside retrieve() (byte-identical to the pre-2026-06-22 path), so
+    flip OFF if the two Qwen3-4B servers contend on the single GPU and the overlap
+    fails to hide the resolver latency. POST {"enabled": bool}."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("speculative_coref_enabled", enabled)
+    return {"ok": True,
+            "enabled": bool(runtime_toggles.get("speculative_coref_enabled"))}
 
 
 # --- P4 face-flap debounce tuning (2026-06-11) -----------------------------

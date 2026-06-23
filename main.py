@@ -449,10 +449,10 @@ class Orchestrator:
         speaker_db_id = speaker_result.speaker_id
         self._last_speech_ts = time.time()  # any-voice engagement (test relax)
 
-        # Vision capture is now kicked at VAD speech-ONSET (see
-        # capture.set_speech_onset_callback wiring in main()), ~1-2s earlier
-        # than here, so the cached scene is fresher by the time the reply is
-        # built. No trigger_capture at STT-end anymore.
+        # No vision capture is kicked here (or at speech-onset anymore, removed
+        # 2026-06-23 for GPU contention -- see main()). The reply uses the
+        # cached scene from the gated periodic poll; visual questions force
+        # their own fresh capture downstream.
 
         # Notify behavioral supervisor of speech
         asyncio.create_task(self.supervisor.on_speech_detected(speaker_name))
@@ -492,6 +492,25 @@ class Orchestrator:
                 await self._introductions.ask_name(unknown_info)
                 return
 
+        # Speculative coref (2026-06-22, "speculative_coref_enabled", default OFF):
+        # kick the resolver (:8093) off NOW so it overlaps the classifier (:8092)
+        # below instead of running serially INSIDE retrieve() after the classifier
+        # returns -- hiding up to min(classifier, resolver) (~150ms measured) on
+        # deictic-brain-path turns. resolve_for_retrieval is self-gating
+        # (query_resolution_enabled + _needs_resolution), so it returns None
+        # cheaply on non-deictic turns; we launch the task regardless so even the
+        # gate check stays off the critical path. The window matches _gather's
+        # (the WIDER of the two). Cancelled on a classifier hit (a wasted :8093
+        # call on the minority tool-hit turns). Toggle OFF -> task is None and
+        # retrieve() resolves inline, byte-identical to the pre-2026-06-22 path.
+        coref_task = None
+        if runtime_toggles.get("speculative_coref_enabled"):
+            from memory.retrieval import resolve_for_retrieval
+            _resolve_ctx = self.conversation.recent_turns_excluding_current(
+                max(config.CONTEXT_TURNS, config.RESOLVE_CONTEXT_TURNS))
+            coref_task = asyncio.create_task(
+                resolve_for_retrieval(user_text, _resolve_ctx))
+
         # First-pass tool-call classifier (gated by runtime_toggles
         # "classifier_enabled", default OFF). On a recognized intent it executes
         # the tool, speaks the canned ACK, injects the assistant turn, and OWNS
@@ -502,7 +521,22 @@ class Orchestrator:
                 user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
                 t_start=t_start, stt_words=stt_words)
         if outcome.handled:
+            if coref_task is not None:
+                coref_task.cancel()  # tool turn owns the reply; resolved query unused
             return
+
+        # Collect the speculative resolution (already running concurrently with the
+        # classifier above). resolve_query swallows its own errors -> None, so this
+        # await is effectively non-throwing; the guard is belt-and-suspenders.
+        # query_pre_resolved=True tells retrieve() the doorway owns resolution --
+        # don't call :8093 again (None -> fall back to the embedding blend).
+        resolved_query, query_pre_resolved = None, False
+        if coref_task is not None:
+            try:
+                resolved_query = await coref_task
+            except Exception:
+                log.debug("[RESOLVE] speculative coref failed (non-fatal)", exc_info=True)
+            query_pre_resolved = True
 
         await self._generate_response(
             user_text, stt_ms, t_start,
@@ -512,6 +546,8 @@ class Orchestrator:
             voice_confidence=speaker_result.confidence,
             recall_block=outcome.recall_block,
             stt_words=stt_words,
+            resolved_query=resolved_query,
+            query_pre_resolved=query_pre_resolved,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -652,8 +688,14 @@ class Orchestrator:
                                   spk_ms: int = 0,
                                   voice_confidence: float | None = None,
                                   recall_block: str | None = None,
-                                  stt_words: list | None = None):
-        """Core response pipeline: presence doorway → delegate to the turn."""
+                                  stt_words: list | None = None,
+                                  resolved_query: str | None = None,
+                                  query_pre_resolved: bool = False):
+        """Core response pipeline: presence doorway → delegate to the turn.
+
+        `resolved_query`/`query_pre_resolved` carry the doorway's speculative coref
+        result (resolved in parallel with the classifier) into the turn's
+        retrieval. Both stay at their OFF defaults on the text path."""
 
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
         # If we're mid-introduction, this may speak a follow-up (handled=True ->
@@ -870,6 +912,8 @@ class Orchestrator:
                 recall_block=recall_block,
                 on_first_sentence=_on_first_sentence,
                 stt_words=stt_words,
+                resolved_query=resolved_query,
+                query_pre_resolved=query_pre_resolved,
             ),
         )
         full_response = result.text
@@ -1184,12 +1228,21 @@ async def main():
 
     orch.capture.set_live_transcribe(live_transcribe)
 
-    # Kick a fresh vision capture at speech onset (fires on the loop thread).
-    # Runs against the vision server :8084 (separate from the :8083 brain), so
-    # it never contends with the conversation tier.
-    def _on_speech_onset():
-        asyncio.create_task(orch.vision.trigger_capture("speech_onset"))
-    orch.capture.set_speech_onset_callback(_on_speech_onset)
+    # speech_onset vision trigger: REMOVED 2026-06-23 (latency).
+    # It used to kick a fresh VLM capture at VAD speech-onset on the premise
+    # that :8084 (vision) "never contends" with the :8083 brain because they
+    # are separate processes. That premise is FALSE: both 35B models share the
+    # one Strix Halo Vulkan GPU and the driver serializes their compute, so a
+    # concurrent VLM call roughly HALVES the brain (measured 71.6->35.9 tok/s
+    # decode, 972->694 tok/s prefill). The onset trigger bypassed the poll
+    # pause + scene-change gate + 10s cooldown, so it fired a full 35B VLM call
+    # right on the brain's prefill + first token -- the worst moment for
+    # first_token_ms. Direct A/B: pulling it cut median brain TTFT 6744->5352 ms
+    # (-1.4s, -21%) on a ~4800-tok context; bigger contexts saw bigger spikes.
+    # Ambient scene context still comes from the gated periodic poll (paused
+    # during the turn), and genuine visual questions still force their own
+    # fresh capture (trigger_capture("visual_question")). So no capability loss.
+    # If ever re-added, defer it to AFTER the turn completes, never concurrent.
 
     # Start web server
     import uvicorn

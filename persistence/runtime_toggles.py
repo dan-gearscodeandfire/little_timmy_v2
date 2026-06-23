@@ -135,6 +135,25 @@ _DEFAULTS: dict = {
     # blend on elliptical follow-ups; no effect on self-contained queries.
     # Default OFF (opt-in A/B). Read live per retrieve() -- no restart to flip.
     "query_resolution_enabled": False,
+    # --- Speculative coref: resolve in PARALLEL with the classifier (2026-06-22) -
+    # When True, the doorway (main.process_speech) launches the coref resolution
+    # (:8093, via memory.retrieval.resolve_for_retrieval) as a task BEFORE awaiting
+    # the tool-call classifier (:8092), then hands the result into retrieve()
+    # (query_pre_resolved=True) so the brain path doesn't pay :8093 serially AFTER
+    # the classifier returns. The intent was to overlap the two Qwen3-4B servers
+    # and hide ~min(classifier, resolver) on deictic-brain-path turns.
+    # ⚠️ DEFAULT OFF (live-mic A/B verdict 2026-06-23, Dan): it LOSES on this box.
+    # The single Strix Halo Vulkan GPU does NOT timeslice the two llama.cpp server
+    # processes cleanly -- running the resolver concurrently with the classifier
+    # TRIPLED its decode (serial 220ms -> parallel 612-778ms), so parallel is
+    # slower end-to-end than serial (classifier 200 + resolver 220 ~= 420ms vs
+    # 612-778ms). Cross-process extension of feedback_strix_halo_vulkan_np_no_parallel
+    # (originally an IN-server -np 2 finding). Kept behind the toggle (not ripped
+    # out) for future hardware -- a second GPU, or the resolver on separate compute,
+    # would change the verdict; re-A/B before re-enabling. OFF reverts to inline
+    # resolution inside retrieve() (byte-identical to the pre-2026-06-22 path).
+    # Read live per turn -- no restart to flip.
+    "speculative_coref_enabled": False,
     # --- Privacy / guest gate (2026-06-18, Dan) -------------------------------
     # When True, facts classified sensitive (memory/pii.py: contact, location,
     # financial, health/credentials, family_minor) are dropped from prompt

@@ -175,6 +175,15 @@ class TurnContext:
     # extractor so it can value-confidence-gate the facts it mines (else they
     # default to verified). None on the text path. 2026-06-21.
     stt_words: Optional[list] = None
+    # Coref/ellipsis resolution pre-computed at the doorway (in parallel with the
+    # tool-call classifier) and handed to retrieval, instead of retrieve() paying
+    # the :8093 call inline AFTER the classifier returns. query_pre_resolved=True
+    # means "the doorway owns resolution -- don't resolve again"; resolved_query is
+    # the standalone rewrite, or None when the doorway's gate declined or the
+    # resolver missed (-> retrieval falls back to the embedding blend). Both stay
+    # at their OFF defaults on the text path and in tests. 2026-06-22.
+    resolved_query: Optional[str] = None
+    query_pre_resolved: bool = False
 
 
 @dataclass
@@ -214,7 +223,8 @@ class TokenStreamer(Protocol):
 class Memory(Protocol):
     async def gather(self, *, user_text: str, speaker_name: str,
                      speaker_db_id: int | None, subjects: list[str],
-                     context_turns) -> Retrieved: ...
+                     context_turns, resolved_query: str | None = None,
+                     query_pre_resolved: bool = False) -> Retrieved: ...
 
     async def save(self, *, user_text: str, response: str,
                    speaker_id: int | None, speaker_name: str,
@@ -263,7 +273,11 @@ class ConversationTurn:
         # add_user_turn-in-process_speech, _generate_response-reads-history
         # ordering.)
         t_retrieval = time.time()
-        retrieved = await self._gather(words, who)
+        retrieved = await self._gather(
+            words, who,
+            resolved_query=ctx.resolved_query,
+            query_pre_resolved=ctx.query_pre_resolved,
+        )
         retrieval_ms = int((time.time() - t_retrieval) * 1000)
         await self._emit("retrieval", {
             "memories": [
@@ -461,7 +475,9 @@ class ConversationTurn:
         })
 
     # -- helpers -----------------------------------------------------------
-    async def _gather(self, words: str, who: SpeakerIdentity) -> Retrieved:
+    async def _gather(self, words: str, who: SpeakerIdentity,
+                      *, resolved_query: str | None = None,
+                      query_pre_resolved: bool = False) -> Retrieved:
         subjects = _extract_my_subjects(words)
         # Fetch the WIDER of the two windows: the resolver needs more history to
         # find an antecedent that has scrolled past the blend's CONTEXT_TURNS.
@@ -474,6 +490,7 @@ class ConversationTurn:
         return await self._memory.gather(
             user_text=words, speaker_name=who.name, speaker_db_id=who.db_id,
             subjects=subjects, context_turns=ctx_turns,
+            resolved_query=resolved_query, query_pre_resolved=query_pre_resolved,
         )
 
     async def _emit(self, event_type: str, payload: dict) -> None:
@@ -527,7 +544,8 @@ class LiveMemory:
         self._top_k = top_k
 
     async def gather(self, *, user_text, speaker_name, speaker_db_id,
-                     subjects, context_turns) -> Retrieved:
+                     subjects, context_turns, resolved_query=None,
+                     query_pre_resolved=False) -> Retrieved:
         import asyncio
         from memory.retrieval import retrieve
         from memory.facts import get_all_facts_for_prompt, get_facts_about_speaker
@@ -545,7 +563,9 @@ class LiveMemory:
             log.debug("needs_retrieval gate: banter turn -> skipping vector retrieve()")
         gathered = await asyncio.gather(
             _empty() if skip_retrieval
-            else retrieve(user_text, top_k=self._top_k, context_turns=context_turns),
+            else retrieve(user_text, top_k=self._top_k, context_turns=context_turns,
+                          resolved_query=resolved_query,
+                          query_pre_resolved=query_pre_resolved),
             get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty(),
             get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         )
