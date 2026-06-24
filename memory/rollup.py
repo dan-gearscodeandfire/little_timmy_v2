@@ -67,8 +67,17 @@ async def maybe_rollup(conversation) -> bool:
     split = max(1, len(conversation.hot_turns) // 2)
     to_summarize = conversation.hot_turns[:split]
 
-    # Format turns for summarization
-    text = "\n".join(f"{t.role}: {t.content}" for t in to_summarize)
+    # Format turns for summarization. Label each line with the real participant
+    # name — the identified speaker for user turns (Turn.speaker, e.g. "Dan" or a
+    # named guest), "Timmy" for the assistant — instead of the generic
+    # "user:"/"assistant:" roles. This is what makes the summary read "Dan asked
+    # ... Timmy refused ..." rather than "The user ... The assistant ..."; the
+    # generate_summary prompt is told to carry these names through.
+    def _label(t):
+        if t.role == "assistant":
+            return "Timmy"
+        return (t.speaker or "User").strip().title() or "User"
+    text = "\n".join(f"{_label(t)}: {t.content}" for t in to_summarize)
     raw_summary = await generate_summary(text)
 
     summary = _clean_summary(raw_summary)
