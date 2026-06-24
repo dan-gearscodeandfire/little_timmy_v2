@@ -602,6 +602,15 @@ class Orchestrator:
             return
         if time.time() - self.capture.last_voice_ts < config.PROACTIVE_USER_SPEECH_GRACE_SEC:
             return
+        # A finalized user utterance is already waiting on the speech queue but
+        # the main loop hasn't dequeued + turn-locked it yet (the high-latency /
+        # busy handoff gap that the fixed last_voice_ts grace can outlast). The
+        # user HAS given verbal input; it's just unprocessed. Yield — never let a
+        # proactive vision remark grab the turn-lock ahead of a pending real turn
+        # and speak over / delay it. Root of the 2026-06-24 "vision overrode my
+        # long prompt" report: proactive must always defer to pending user input.
+        if self.capture.speech_queue.qsize() > 0:
+            return
         if record is None:
             return
 
