@@ -24,12 +24,27 @@ _REFUSAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Belt-and-suspenders for the summarizer's old habit of leading with a bold
+# title line — sometimes stamping a FABRICATED date ("**Summary of Conversation
+# on 2024-05-22: ...**"). The generate_summary prompt now forbids both a header
+# and any unspoken date, but strip a leading title/header line defensively so a
+# stray one never bloats the warm tier or, worse, misdates an episode that
+# inherits this text. Only fires when a body follows (trailing \n+), so a
+# legitimate single-line summary is never eaten.
+_TITLE_RE = re.compile(
+    r"^\s*\*{0,2}(?:summary\b|conversation\s+segment\b|discussion\s+regarding\b|"
+    r"topic\s*:)[^\n]*\n+",
+    re.IGNORECASE,
+)
+
 
 def _clean_summary(text: str) -> str | None:
-    """Strip preamble; return None if the summary is a refusal or empty."""
+    """Strip preamble + any leading title/header line; return None if the
+    summary is a refusal or empty."""
     if not text:
         return None
     cleaned = _PREAMBLE_RE.sub("", text).strip()
+    cleaned = _TITLE_RE.sub("", cleaned).strip()
     if not cleaned:
         return None
     if _REFUSAL_RE.match(cleaned):

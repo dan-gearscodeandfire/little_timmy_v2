@@ -460,21 +460,28 @@ async def generate_summary(turns_text: str) -> str:
         payload = {
             "messages": [
                 {"role": "user", "content": (
-                    "Summarize this conversation segment so it can be searched "
-                    "and recalled later by date. Write for a reader who wasn't "
-                    "there.\n\n"
-                    "Start with a one-line topic header. Then, in about 4-6 "
-                    "sentences, record the specifics: who said or did what, the "
-                    "exact proper nouns (people, places, products, projects), any "
-                    "dates, times, or numbers mentioned, and any decisions, plans, "
-                    "or open questions. Prefer concrete detail over generality — "
-                    "name names instead of saying 'someone', quote the actual "
-                    "figure instead of 'a number'. Do not add information that "
-                    "isn't in the segment, and do not editorialize.\n\n"
+                    "Summarize this conversation segment as durable notes for "
+                    "later recall. Write for a reader who wasn't there.\n\n"
+                    "Write 2-4 tight sentences capturing ONLY what actually "
+                    "happened: concrete facts, decisions, plans, open questions, "
+                    "and the exact proper nouns (people, places, products, "
+                    "projects) and any specific numbers involved. Name names "
+                    "instead of 'someone'; quote the actual figure instead of "
+                    "'a number'.\n\n"
+                    "Rules:\n"
+                    "- Do NOT add a title, header, or topic line. Start with the "
+                    "first substantive sentence.\n"
+                    "- Do NOT state a date unless an explicit date was actually "
+                    "spoken in the segment. Never invent, guess, or infer one.\n"
+                    "- Skip meta-description of the conversation itself: no "
+                    "'engaged in banter', 'discussed', 'talked about', 'the user "
+                    "and the assistant' framing. State the substance directly.\n"
+                    "- Do not add information that isn't in the segment, and do "
+                    "not editorialize.\n\n"
                     f"{turns_text}"
                 )},
             ],
-            "max_tokens": 800,
+            "max_tokens": 400,
             "temperature": 0.3,
             "stream": False,
             "chat_template_kwargs": {"enable_thinking": False},
