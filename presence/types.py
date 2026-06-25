@@ -7,9 +7,21 @@ from typing import Optional
 @dataclass(frozen=True)
 class FacePrediction:
     user_id: str  # canonical lowercase name
-    confidence: float  # 0..1 (higher = better)
+    confidence: float  # 0..1 (higher = better); = 1 - cosine_distance (lossless)
     bbox: tuple  # (x_min, y_min, x_max, y_max) in pixels
     embedding_hash: Optional[str] = None  # short hash for unknown-face continuity
+    # streamerpi's calibrated confidence band (camera.py:737): "high" = dist<0.30
+    # (conf>0.70), "medium" = 0.30-0.45 (conf 0.55-0.70). Carried as provenance so
+    # the fuse gate tracks streamerpi's own cutoff instead of re-deriving it; None
+    # for synthetic/test predictions (the gate then derives the band from
+    # confidence). See _convert_in_tree_results.
+    band: Optional[str] = None
+    # True when streamerpi's identity stabilizer is HOLDING a latched identity
+    # across an uncertain frame (face_identity_stabilizer.py): the face is
+    # confidently the held person even though this frame's raw distance drifted
+    # into the medium band. Lets the streak trust "medium + sticky" as a confident
+    # hold while still excluding fresh-uncertain mediums.
+    sticky: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +56,11 @@ class FusionVerdict:
     # real face). `stabilized` flags the two new synthesized/held paths.
     face_hint_source: str = "face"
     stabilized: bool = False
+    # True when a promoted face clears the STRICTER voiceprint-streak band
+    # ("high" OR "medium"+sticky) — i.e. confident enough to bind a voiceprint,
+    # not just to attribute the turn. Attribution promotes on high+medium; the
+    # streak only counts when this is set. Always False without promotion.
+    streak_eligible: bool = False
 
 
 @dataclass

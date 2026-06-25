@@ -126,15 +126,73 @@ class TestFuseIdentity:
         assert v.resolution_source == "voice"
         assert v.gates["head_steady"] is False
 
-    def test_face_below_threshold_blocks_promotion(self):
+    def test_low_band_face_blocks_promotion(self):
+        # conf 0.50 -> dist 0.50 -> "low" band (streamerpi drops these upstream;
+        # the pure fn defends anyway). Below the high+medium attribution floor.
         v = fuse_identity(
             voice_name="unknown_3",
             voice_is_unknown=True,
-            face=_face_obs([_pred("Robin", 0.70)], _good_behavior()),
+            face=_face_obs([_pred("Robin", 0.50)], _good_behavior()),
         )
         assert v.final_name == "unknown_3"
         assert v.resolution_source == "voice"
         assert v.gates["face_above_threshold"] is False
+        assert v.streak_eligible is False
+
+    def test_high_band_face_promotes_and_is_streak_eligible(self):
+        # The recalibration's core fix: a genuine "high" match (dist 0.259 ->
+        # conf 0.741) sat BELOW the old 0.85 gate and never promoted. Now it does.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs([_pred("Robin", 0.741)], _good_behavior()),
+        )
+        assert v.final_name == "robin"
+        assert v.resolution_source == "face_hint"
+        assert v.streak_eligible is True
+
+    def test_medium_nonsticky_attributes_but_not_streak_eligible(self):
+        # Medium band (conf 0.60) is a fresh-uncertain match: it names the
+        # speaker for the turn (reversible) but must NOT bind a voiceprint.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs([_pred("Robin", 0.60)], _good_behavior()),
+        )
+        assert v.final_name == "robin"
+        assert v.resolution_source == "face_hint"
+        assert v.gates["face_above_threshold"] is True
+        assert v.streak_eligible is False
+
+    def test_medium_sticky_is_streak_eligible(self):
+        # A medium the stabilizer is HOLDING (sticky) is a confident hold, not a
+        # fresh-uncertain match -> may bind.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs(
+                [FacePrediction(user_id="Robin", confidence=0.60,
+                                bbox=(100, 80, 220, 210), sticky=True)],
+                _good_behavior(),
+            ),
+        )
+        assert v.resolution_source == "face_hint"
+        assert v.streak_eligible is True
+
+    def test_band_string_overrides_confidence(self):
+        # Carried band string wins over the numeric: a "medium" string with a
+        # numerically-high conf is treated as medium (needs sticky for streak).
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs(
+                [FacePrediction(user_id="Robin", confidence=0.95,
+                                bbox=(100, 80, 220, 210), band="medium")],
+                _good_behavior(),
+            ),
+        )
+        assert v.resolution_source == "face_hint"   # medium still attributes
+        assert v.streak_eligible is False           # but not without sticky
 
     def test_missing_behavior_blocks_promotion(self):
         v = fuse_identity(
@@ -964,14 +1022,19 @@ class TestConvertInTreeResults:
         assert pred.confidence == pytest.approx(0.8)
         # bbox is converted xywh -> xyxy
         assert pred.bbox == (100, 80, 200, 200)
+        # band carried through (was dropped pre-recalibration)
+        assert pred.band == "high"
+        assert pred.sticky is False
 
     def test_keeps_medium_confidence(self):
         out = _convert_in_tree_results([
             {"name": "Sky", "distance": 0.35, "confidence": "medium",
-             "bbox": [10, 10, 100, 100]},
+             "bbox": [10, 10, 100, 100], "sticky": True},
         ])
         assert len(out) == 1
         assert out[0].user_id == "Sky"
+        assert out[0].band == "medium"
+        assert out[0].sticky is True  # stabilizer-held flag carried through
 
     def test_drops_low_confidence_even_if_named(self):
         out = _convert_in_tree_results([

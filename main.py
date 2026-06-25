@@ -746,17 +746,20 @@ class Orchestrator:
                 face=face_obs,
                 voice_confidence=voice_confidence,
                 face_conf_threshold=config.FACE_CONF_THRESHOLD,
+                streak_high_conf=config.FACE_STREAK_HIGH_CONF,
                 head_steady_min_ms=config.HEAD_STEADY_MS,
             )
             # Track face_hint streak for auto voice-enrollment.
             # Use pre-override speaker_name (the unknown_N temp_id).
             streak_temp_id = speaker_name if speaker_name.startswith("unknown_") else None
-            # Gate on face_hint_source=='face': a synthesized/held hint (Slice B
-            # 'voice'/'temporal') must NEVER train a voiceprint — that's the
-            # "calls everyone Dan" corruption vector.
+            # Gate on streak_eligible (stricter than attribution: high OR a
+            # sticky-held medium) AND face_hint_source=='face' (a synthesized/held
+            # Slice B 'voice'/'temporal' hint must NEVER train a voiceprint —
+            # the "calls everyone Dan" corruption vector). A medium-non-sticky
+            # face still attributes the turn (face_hint) but does not bind here.
             streak_face_name = (
                 verdict.face_hint_name
-                if (verdict.resolution_source == "face_hint"
+                if (verdict.streak_eligible
                     and verdict.face_hint_source == "face")
                 else None
             )
@@ -814,10 +817,25 @@ class Orchestrator:
                     )
             if verdict.resolution_source == "face_hint":
                 log.info(
-                    "[PRESENCE] face_hint promoted: voice=%s -> %s (face_conf=%.2f)",
+                    "[PRESENCE] face_hint promoted: voice=%s -> %s (face_conf=%.2f, streak_eligible=%s)",
                     speaker_name, verdict.face_hint_name, verdict.face_hint_confidence or 0.0,
+                    verdict.streak_eligible,
                 )
                 speaker_name = verdict.final_name
+            elif (
+                speaker_name.startswith("unknown_")
+                and verdict.gates.get("face_present")
+                and not verdict.gates.get("single_face")
+            ):
+                # No-silent-caps: an unknown voice with MULTIPLE faces in frame
+                # can't be attributed without a speaker-selection signal (the
+                # planned green-LED-on-mic). We abstain (respond as guest, bind
+                # nothing) rather than guess. Make that visible, not silent.
+                log.info(
+                    "[PRESENCE] attribution ABSTAINED: unknown voice %s + %d faces "
+                    "in frame, no LED speaker-select -> staying guest (no bind)",
+                    speaker_name, len(face_obs.predictions) if face_obs else 0,
+                )
             fusion_source = verdict.resolution_source
             face_hint_name = verdict.face_hint_name
             presence_state = self.room_ledger.current_state()

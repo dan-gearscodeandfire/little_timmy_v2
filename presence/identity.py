@@ -24,6 +24,42 @@ def canonicalize(name: Optional[str]) -> Optional[str]:
 # 0.30-distance known threshold (= 0.70 confidence).
 VOICE_STABILIZE_CONF_FLOOR = 0.70
 
+# Face band cutoffs, mirrored from streamerpi (camera.py:737, FACE_ID_MATCH_
+# THRESHOLD=0.45). confidence = 1 - cosine_distance (lossless), so:
+#   "high"   = dist < 0.30  -> conf >= 0.70
+#   "medium" = 0.30-0.45    -> conf 0.55-0.70
+# ATTRIBUTION (set speaker_name for the turn; ephemeral, reversible) trusts
+# streamerpi's full match decision: high OR medium. The STREAK (binds a
+# voiceprint that sticks for the session) trusts only a high match, or a medium
+# that the stabilizer is confidently HOLDING (sticky) -- which excludes
+# fresh-uncertain mediums while still firing through tracking holds.
+FACE_ATTRIBUTION_CONF = 0.55   # high+medium floor (dist < 0.45)
+FACE_STREAK_HIGH_CONF = 0.70   # high-band floor (dist < 0.30)
+
+
+def band_of(
+    pred,
+    high_conf: float = FACE_STREAK_HIGH_CONF,
+    med_conf: float = FACE_ATTRIBUTION_CONF,
+) -> str:
+    """streamerpi's confidence band for a prediction: prefer the carried band
+    string (tracks streamerpi's own cutoff if it retunes), else derive from the
+    lossless confidence using the given floors. Returns 'high'|'medium'|'low'.
+
+    This is the SINGLE source of truth for banding — both the attribution and
+    streak gates classify through here, so a band string can never contradict a
+    parallel numeric check."""
+    b = getattr(pred, "band", None)
+    if b in ("high", "medium", "low"):
+        return b
+    c = float(pred.confidence)
+    if c >= high_conf:
+        return "high"
+    if c >= med_conf:
+        return "medium"
+    return "low"
+
+
 _PARTY_REGIMES = frozenset({"party", "expo"})
 
 
@@ -32,7 +68,8 @@ def fuse_identity(
     voice_name: str,
     voice_is_unknown: bool,
     face: Optional[FaceObservation],
-    face_conf_threshold: float = 0.85,
+    face_conf_threshold: float = FACE_ATTRIBUTION_CONF,
+    streak_high_conf: float = FACE_STREAK_HIGH_CONF,
     head_steady_min_ms: int = 2000,
     # --- Slice B (2026-06-12), all default to today's exact behavior ----------
     voice_confidence: Optional[float] = None,
@@ -47,9 +84,13 @@ def fuse_identity(
     Voice always wins for confident matches. Face only contributes a name when:
       - voice is unknown_N (below voiceprint threshold)
       - face returned exactly one prediction
-      - face confidence >= face_conf_threshold
+      - face band is high or medium (attribution floor face_conf_threshold)
       - behavior status reports tracking mode + face_visible
       - head has been steady on the face for >= head_steady_min_ms
+
+    Promotion here is ATTRIBUTION (sets speaker_name for the turn, reversible).
+    Binding a voiceprint is stricter: verdict.streak_eligible gates the streak on
+    a high match, or a sticky-held medium (streak_high_conf).
 
     Otherwise face is recorded as a presence hint but not promoted to speaker.
 
@@ -79,13 +120,19 @@ def fuse_identity(
         "head_steady": False,
     }
 
+    top_band = "low"
+    top_sticky = False
     if face is not None and face.predictions:
         gates["face_present"] = True
         gates["single_face"] = len(face.predictions) == 1
         top = face.predictions[0]
         face_hint_name = canonicalize(top.user_id)
         face_hint_confidence = float(top.confidence)
-        gates["face_above_threshold"] = face_hint_confidence >= face_conf_threshold
+        # Single classification (band string wins; else derived from the floors).
+        top_band = band_of(top, high_conf=streak_high_conf, med_conf=face_conf_threshold)
+        top_sticky = bool(getattr(top, "sticky", False))
+        # Attribution gate: trust streamerpi's match decision (high OR medium).
+        gates["face_above_threshold"] = top_band in ("high", "medium")
 
         beh = face.behavior
         if beh is not None:
@@ -112,6 +159,14 @@ def fuse_identity(
     else:
         final_name = voice_name
         resolution_source = "voice"
+
+    # Streak eligibility (stricter than attribution): a promoted face may bind a
+    # voiceprint only on a "high" match, or a "medium" the stabilizer is holding
+    # (sticky). Always requires promotion first, so it's a strict subset of the
+    # face_hint path. Classified through the same band_of() as attribution.
+    streak_eligible = bool(
+        promote and (top_band == "high" or (top_band == "medium" and top_sticky))
+    )
 
     # face_hint_source provenance: a real face prediction is 'face' (the only
     # source auto-enroll may train from). Default preserves today's behavior.
@@ -152,6 +207,7 @@ def fuse_identity(
         gates=gates,
         face_hint_source=face_hint_source,
         stabilized=stabilized,
+        streak_eligible=streak_eligible,
     )
 
 
@@ -187,7 +243,8 @@ class IdentityFusion:
         voice_is_unknown: bool,
         face: Optional[FaceObservation],
         voice_confidence: Optional[float] = None,
-        face_conf_threshold: float = 0.85,
+        face_conf_threshold: float = FACE_ATTRIBUTION_CONF,
+        streak_high_conf: float = FACE_STREAK_HIGH_CONF,
         head_steady_min_ms: int = 2000,
         now: Optional[float] = None,
     ) -> FusionVerdict:
@@ -213,6 +270,7 @@ class IdentityFusion:
             voice_is_unknown=voice_is_unknown,
             face=face,
             face_conf_threshold=face_conf_threshold,
+            streak_high_conf=streak_high_conf,
             head_steady_min_ms=head_steady_min_ms,
             voice_confidence=voice_confidence,
             symmetric_enabled=symmetric,

@@ -435,7 +435,15 @@ STREAMERPI_BEHAVIOR_MODE_URL = os.getenv(
     # Payload {mode,priority,timeout_ms} already matches handle_behavior_command.
     "TIMMY_BEHAVIOR_MODE_URL", "https://192.168.1.110:8080/behavior"
 )
-FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.85"))
+# Face fusion gate (recalibrated 2026-06-24, was 0.85). 0.85 = cosine dist 0.15,
+# buried deep inside streamerpi's "high" band (dist<0.30) -- it blocked genuine
+# high matches from promoting (PARTY-2 fact-surfacing + voiceprint auto-bind).
+# Now two-tier, mirroring streamerpi's own cutoffs (camera.py:737):
+#   ATTRIBUTION (speaker_name for the turn, reversible): high+medium, conf>=0.55.
+#   STREAK (binds a voiceprint for the session):         high OR medium+sticky.
+# See presence/identity.py band_of()/streak_eligible.
+FACE_CONF_THRESHOLD = float(os.getenv("TIMMY_FACE_CONF_THRESHOLD", "0.55"))
+FACE_STREAK_HIGH_CONF = float(os.getenv("TIMMY_FACE_STREAK_HIGH_CONF", "0.70"))
 HEAD_STEADY_MS = int(os.getenv("TIMMY_HEAD_STEADY_MS", "2000"))
 PRESENCE_TTL_SEC = int(os.getenv("TIMMY_PRESENCE_TTL_SEC", "900"))
 UNKNOWN_VOICE_TTL_SEC = int(os.getenv("TIMMY_UNKNOWN_VOICE_TTL_SEC", "120"))

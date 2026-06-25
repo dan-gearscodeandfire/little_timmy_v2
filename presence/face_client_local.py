@@ -62,6 +62,11 @@ def _convert_in_tree_results(results) -> tuple:
             confidence=conf_float,
             bbox=bbox_xyxy,
             embedding_hash=None,
+            # Carry streamerpi's calibrated band + stabilizer hold flag through to
+            # fuse_identity's two-tier gate (was dropped here, forcing a re-derived
+            # 0.85 numeric gate buried deep inside the "high" band).
+            band=conf_label,
+            sticky=bool(r.get("sticky", False)),
         ))
     return tuple(out)
 
