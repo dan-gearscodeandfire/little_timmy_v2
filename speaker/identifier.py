@@ -339,6 +339,20 @@ class SpeakerIdentifier:
             os.fsync(f.fileno())
         tmp.replace(path)
 
+    def enrolled_speaker_ids(self) -> dict:
+        """Return ``name -> speaker_id`` for every registered speaker WITHOUT
+        loading the encoder or any voiceprint.
+
+        Reserved ids (dan=1, timmy=2) are always present; the ``_next_id``
+        bookkeeping key is excluded. This is the source of truth the postgres
+        ``speakers`` table is reconciled against (see ``db/speakers.py``) so an
+        enrolled voiceprint can never FK-fail a facts/memories insert.
+        """
+        mapping = {n: i for n, i in self._read_id_map().items()
+                   if n != "_next_id" and isinstance(i, int)}
+        mapping.update(self._RESERVED_IDS)
+        return mapping
+
     def load_voiceprints(self):
         """Load every ``*_wespeaker.npy`` in VOICEPRINT_DIR.
 

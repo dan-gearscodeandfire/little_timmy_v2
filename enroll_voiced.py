@@ -201,6 +201,17 @@ def main() -> int:
 
     out = SpeakerIdentifier().persist_voiceprint(name, protos)
     print(f"saved {protos.shape[0]} prototype(s) -> {out}")
+
+    # Auto-create the postgres speakers row so this voiceprint can't FK-fail a
+    # facts/memories insert before the next restart (db/speakers.py).
+    try:
+        from db.speakers import ensure_rows_for_enrolled
+        n = ensure_rows_for_enrolled()
+        print(f"synced speakers table ({n} new row(s))")
+    except Exception as e:
+        print(f"WARNING: could not sync speakers table ({e}); "
+              "a restart will reconcile it.")
+
     print(f"RESULT misses={misses}/{len(raw_embs)} k={protos.shape[0]}")
     return 0
 

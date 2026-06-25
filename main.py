@@ -1187,6 +1187,12 @@ async def main():
 
     # Load speaker voiceprints
     await asyncio.to_thread(orch.speaker_id_module.load_voiceprints)
+    # Reconcile the postgres speakers table with the freshly loaded id-map so a
+    # newly enrolled voiceprint can never FK-fail a facts/memories insert. Runs
+    # on every boot, which is also when a new voiceprint goes live. See
+    # db/speakers.py.
+    from db.speakers import sync_speakers_from_id_map
+    await sync_speakers_from_id_map()
     log.info("Speaker identification ready")
 
     # Start vision pipeline

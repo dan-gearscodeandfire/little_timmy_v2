@@ -123,6 +123,17 @@ def main() -> int:
     si = SpeakerIdentifier()
     out = si.persist_voiceprint(name, protos)
     print(f"\nSaved {protos.shape[0]} prototype(s) -> {out}")
+
+    # Auto-create the postgres speakers row so this voiceprint can't FK-fail a
+    # facts/memories insert before the next restart (db/speakers.py).
+    try:
+        from db.speakers import ensure_rows_for_enrolled
+        n = ensure_rows_for_enrolled()
+        print(f"Synced speakers table ({n} new row(s)).")
+    except Exception as e:
+        print(f"WARNING: could not sync speakers table ({e}); "
+              "a restart will reconcile it.")
+
     print("Restart Little Timmy to load the new voiceprint "
           "(`systemctl --user restart <lt-service>` or per startup notes).")
     return 0

@@ -186,6 +186,17 @@ def main():
     print("\n  enrolled after write:")
     for ks in si2._known_speakers:
         print(f"    - {ks.name}  speaker_id={ks.speaker_id}")
+
+    # Auto-create the postgres speakers row so this voiceprint can't FK-fail a
+    # facts/memories insert before the next restart (db/speakers.py).
+    try:
+        from db.speakers import ensure_rows_for_enrolled
+        n = ensure_rows_for_enrolled()
+        print(f"  synced speakers table ({n} new row(s))")
+    except Exception as e:
+        print(f"  WARNING: could not sync speakers table ({e}); "
+              "a restart will reconcile it.")
+
     print("\n  Restart little-timmy.service to pick up the new voiceprint.")
     return 0
 

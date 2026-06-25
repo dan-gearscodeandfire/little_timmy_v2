@@ -9,8 +9,11 @@ CREATE TABLE IF NOT EXISTS speakers (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-INSERT INTO speakers (name) VALUES ('dan') ON CONFLICT DO NOTHING;
-INSERT INTO speakers (name) VALUES ('timmy') ON CONFLICT DO NOTHING;
+-- Seed reserved speakers at FIXED ids matching speaker.identifier._RESERVED_IDS
+-- (dan=1, timmy=2). Explicit ids, not SERIAL, so the two sources of truth can't
+-- diverge -- db/speakers.py reconciles facts.speaker_id FKs against those ids.
+INSERT INTO speakers (id, name) VALUES (1, 'dan'), (2, 'timmy')
+ON CONFLICT (id) DO NOTHING;
 
 -- Memory types
 DO $$ BEGIN
