@@ -3,7 +3,8 @@
 Pure logic, no I/O. Unit-testable in isolation.
 """
 
-from typing import Optional
+import difflib
+from typing import Iterable, Optional
 
 from .types import FaceObservation, FusionVerdict
 
@@ -17,6 +18,76 @@ def canonicalize(name: Optional[str]) -> Optional[str]:
         return None
     s = name.strip().lower()
     return s or None
+
+
+# --- Near-homophone name de-duplication --------------------------------------
+# Devon's FACE got enrolled as the homophone "devin" while her VOICE identity is
+# "devon", splitting one person into two records (2026-06-24). canonicalize()
+# only lowercases, so "devin" and "devon" stay distinct keys. resolve_alias()
+# snaps a fuzzy/STT/face-derived name onto an ALREADY-KNOWN name when they are
+# phonetic near-duplicates, so a new identity is never minted next to an existing
+# one. Deliberately scoped to a SMALL known set (the few enrolled speakers /
+# ledger records), where high precision is easy; this is NOT a general English
+# homonym resolver. Pure stdlib (no phonetic dependency to install).
+
+_SOUNDEX_MAP = {}
+for _digit, _letters in (("1", "BFPV"), ("2", "CGJKQSXZ"), ("3", "DT"),
+                         ("4", "L"), ("5", "MN"), ("6", "R")):
+    for _L in _letters:
+        _SOUNDEX_MAP[_L] = _digit
+
+
+def soundex(name: str) -> str:
+    """Classic Soundex code (e.g. 'devon' and 'devin' both -> 'D150').
+
+    Vowels (and y) separate consonant codes; h/w do not. Returns '' for a name
+    with no alphabetic characters.
+    """
+    letters = [c for c in (name or "").upper() if c.isalpha()]
+    if not letters:
+        return ""
+    first = letters[0]
+    code = first
+    prev = _SOUNDEX_MAP.get(first, "0")
+    for ch in letters[1:]:
+        if ch in "HW":
+            continue  # ignored, and does NOT reset the previous code
+        digit = _SOUNDEX_MAP.get(ch, "0")
+        if digit != "0" and digit != prev:
+            code += digit
+        prev = digit  # vowels (digit '0') reset prev, acting as a separator
+    return (code + "000")[:4]
+
+
+def resolve_alias(name: Optional[str], known_names: Iterable[str],
+                  *, min_ratio: float = 0.6) -> Optional[str]:
+    """Return the existing known name a fuzzy ``name`` should snap to, else None.
+
+    A snap requires BOTH the same Soundex key AND a string-similarity ratio
+    >= ``min_ratio``, so near-homophones (devon/devin) collapse while genuinely
+    different names (dan/devon) never do. If ``name`` canonicalizes to a name
+    already in ``known_names`` it returns that name unchanged (a no-op snap).
+    Names beginning with ``unknown`` and empty names never match. Inputs are
+    canonicalized, so casing/whitespace don't matter.
+    """
+    canon = canonicalize(name)
+    if not canon or canon.startswith("unknown"):
+        return None
+    known = {c for c in (canonicalize(k) for k in known_names)
+             if c and not c.startswith("unknown")}
+    if canon in known:
+        return canon
+    key = soundex(canon)
+    if not key:
+        return None
+    best, best_ratio = None, 0.0
+    for other in known:
+        if soundex(other) != key:
+            continue
+        ratio = difflib.SequenceMatcher(None, canon, other).ratio()
+        if ratio >= min_ratio and ratio > best_ratio:
+            best, best_ratio = other, ratio
+    return best
 
 
 # Slice B: a confident voice (1 - distance) at or above this stabilizes an
