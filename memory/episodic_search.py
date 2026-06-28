@@ -66,18 +66,25 @@ async def _trigram(pool, query, limit):
 
 
 async def search_episodes(query_text: str, now: datetime, *,
-                          top_k: int | None = None) -> list[dict]:
+                          top_k: int | None = None,
+                          embed_query: str | None = None) -> list[dict]:
     """Return up to `top_k` episodes most relevant to `query_text`, recency-
     decayed. Each dict: id, text, span_start, span_end, access_count, score
     (post-decay), base_score (pre-decay fusion). `now` is the tz-aware query
     instant used for decay. Empty list when nothing clears the distance floor /
-    no embedded episodes exist yet."""
+    no embedded episodes exist yet.
+
+    `embed_query` (optional): the string to embed for the SEMANTIC channel when
+    it should differ from the lexical `query_text` used by FTS/trigram. Mirrors
+    memory.retrieval.retrieve(): the caller can pass a coref-blended context
+    string so elliptical follow-ups embed near their antecedent, while FTS/
+    trigram keep the bare utterance. Defaults to `query_text`."""
     if top_k is None:
         top_k = config.EPISODE_SEMANTIC_TOP_K
     candidates = config.RETRIEVAL_CANDIDATES
     pool = await get_pool()
 
-    query_emb = await embed(query_text)
+    query_emb = await embed(embed_query or query_text)
     semantic = await _semantic(pool, query_emb, candidates)
     fts = await _fts(pool, query_text, candidates)
     trigram = await _trigram(pool, query_text, candidates)

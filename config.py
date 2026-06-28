@@ -95,6 +95,17 @@ RECALL_SEMANTIC_ENABLED = False  # `recall_semantic` router intent: vector+FTS+t
 EPISODE_DECAY_HALFLIFE_S = float(os.getenv("TIMMY_EPISODE_DECAY_HALFLIFE_S", str(30 * 24 * 3600)))
 EPISODE_ACCESS_BOOST = float(os.getenv("TIMMY_EPISODE_ACCESS_BOOST", "0.05"))  # mild saturating log-boost from the free access_count signal
 EPISODE_SEMANTIC_TOP_K = int(os.getenv("TIMMY_EPISODE_SEMANTIC_TOP_K", "5"))
+# 2026-06-28 (Dan, approved): make the ALWAYS-ON per-turn retrieval channel
+# (the prompt's "Relevant memories:" block — also mirrored on the booth
+# RETRIEVED MEMORIES panel) read the LIVE `episodes` table (recency-decayed via
+# memory.decay) instead of the FROZEN `memories` tier. The `memories` table has
+# had no writes since the 6-18 kill-switches (PERSIST_EXTRACTED_MEMORIES /
+# PERSIST_COLD_SUMMARIES = False) and retrieve() has no recency term, so the
+# channel surfaced March/June-11 memories forever — into both the panel AND
+# Timmy's actual reply context. This repoints it at the warm-rollup episodes
+# (EMBED_EPISODES write-through). recall_temporal/recall_semantic router intents
+# are unaffected. Default ON = this is the fix; set "0" to roll back.
+EPISODIC_ALWAYS_ON_RETRIEVAL = os.getenv("TIMMY_EPISODIC_ALWAYS_ON", "1") == "1"
 # Optional near-dupe dedup LAYER on top of the content-hash floor (catches
 # re-summaries that aren't byte-identical). OFF: needs embeddings + a threshold
 # that can only be calibrated against a real corpus, and a mistuned threshold

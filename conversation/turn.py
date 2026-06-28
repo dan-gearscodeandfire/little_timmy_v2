@@ -536,6 +536,32 @@ class LiveLLM:
         return stream_conversation(messages, max_tokens=max_tokens)
 
 
+async def _retrieve_episodes_as_memories(user_text, top_k, context_turns):
+    """Always-on retrieval over the LIVE `episodes` table (recency-decayed),
+    adapted to the RetrievedMemory shape llm.prompt_builder expects
+    (.content/.created_at/.type/.score). This is what replaces the frozen
+    `memories`-tier retrieve() when config.EPISODIC_ALWAYS_ON_RETRIEVAL is set
+    (the default) — fixing the "Relevant memories" block (and the booth panel
+    that mirrors it) surfacing stale months-old memories into Timmy's context.
+
+    Mirrors retrieve()'s query construction: the SEMANTIC channel embeds the
+    coref-blended context (_build_semantic_query) so elliptical follow-ups land
+    near their antecedent, while FTS/trigram use the bare utterance."""
+    from datetime import datetime, timezone
+    from memory.episodic_search import search_episodes
+    from memory.retrieval import RetrievedMemory, _build_semantic_query
+    embed_query = _build_semantic_query(user_text, context_turns)
+    eps = await search_episodes(
+        user_text, datetime.now(timezone.utc),
+        top_k=top_k, embed_query=embed_query,
+    )
+    return [
+        RetrievedMemory(id=e["id"], type="episode", content=e["text"],
+                        score=e["score"], created_at=e["span_end"])
+        for e in eps
+    ]
+
+
 class LiveMemory:
     """Retrieval + fact fusion + extraction against the real stores. Note:
     face/presence fetch is deliberately NOT here — that is a doorway concern
@@ -554,18 +580,30 @@ class LiveMemory:
             return []
 
         speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
-        # S4 read-path gate: skip the vector retrieve() on confidently-banter
+        import config as _cfg
+        _use_episodes = getattr(_cfg, "EPISODIC_ALWAYS_ON_RETRIEVAL", False)
+        # S4 read-path gate: skip the vector retrieval on confidently-banter
         # turns (gate ON + heuristic says no recall intent). The facts lookups
-        # always run -- only the (currently frozen, near-empty) `memories` store
-        # query is elided. _empty() keeps the gather arity/shape identical.
+        # always run -- only the memory-store query is elided. _empty() keeps the
+        # gather arity/shape identical.
         skip_retrieval = _retrieval_gate_active() and not _needs_retrieval(user_text)
         if skip_retrieval:
             log.debug("needs_retrieval gate: banter turn -> skipping vector retrieve()")
+        # Always-on memory channel: the LIVE `episodes` tier (recency-decayed,
+        # default) or the legacy frozen `memories` tier (rollback). See
+        # _retrieve_episodes_as_memories / config.EPISODIC_ALWAYS_ON_RETRIEVAL.
+        if skip_retrieval:
+            _mem_coro = _empty()
+        elif _use_episodes:
+            _mem_coro = _retrieve_episodes_as_memories(
+                user_text, self._top_k, context_turns)
+        else:
+            _mem_coro = retrieve(user_text, top_k=self._top_k,
+                                 context_turns=context_turns,
+                                 resolved_query=resolved_query,
+                                 query_pre_resolved=query_pre_resolved)
         gathered = await asyncio.gather(
-            _empty() if skip_retrieval
-            else retrieve(user_text, top_k=self._top_k, context_turns=context_turns,
-                          resolved_query=resolved_query,
-                          query_pre_resolved=query_pre_resolved),
+            _mem_coro,
             get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty(),
             get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
         )
