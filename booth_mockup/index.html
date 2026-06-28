@@ -104,7 +104,7 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 88px; right: 36px; bottom: 300px; } /* edited 2026-06-16: raised from 200px so the memories panel clears the .telemetry block (top:~277px) below it */
+  .context-panel.tr { top: 88px; right: 36px; bottom: 506px; } /* edited 2026-06-28: clears the .telemetry block (bottom:102px, width:372px, ~364px tall after the larger-font readability pass + tightened rows → top ~466px from viewport bottom); 506px keeps a ~40px gap below the memories list. Re-raise if telemetry gains rows or fonts grow. */
   .context-panel.tl { top: 88px; left: 36px;  bottom: 52%; }
   .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
@@ -210,25 +210,46 @@
     color: var(--bone-faint); text-shadow: var(--shadow-light); margin-top: 1px; }
 
   /* bottom-right cogitator telemetry: tokens + latency, live /lt/api/metrics */
-  .telemetry { position: absolute; right: 36px; bottom: 102px; width: 312px; z-index: 12; }
+  .telemetry { position: absolute; right: 36px; bottom: 102px; width: 372px; z-index: 12; } /* 2026-06-28: widened 312->372 so the larger telemetry numbers fit on one line (Dan) */
   .telemetry .ttag { font-family: var(--cop); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase;
-    color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 10px; text-align: right; }
+    color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 6px; text-align: right; }
   .telemetry .ttag::before { content: '\2720 '; color: var(--brass); }
-  .telemetry .trow { margin-bottom: 9px; }
+  .telemetry .trow { margin-bottom: 3px; } /* 2026-06-28: tightened row spacing (Dan) */
   .telemetry .tk { display: flex; justify-content: space-between; align-items: baseline;
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase;
-    color: var(--bone-mid); text-shadow: var(--shadow-light); margin-bottom: 6px; }
+    color: var(--bone-mid); text-shadow: var(--shadow-light); margin-bottom: 2px; }
   .telemetry .tk b { font-weight: 400; color: var(--red-hot); font-size: 15px; letter-spacing: 0.04em; }
   /* understanding-stage latencies: hear (stt) · filter (classifier) · resolve (coref :8093) · recall (memory)
      2x2 grid (flex-basis ~46%) so the labels/values stay large and legible on the booth screen. */
-  .telemetry .perc { display: flex; flex-wrap: wrap; gap: 9px 6px;
-    margin-bottom: 12px; padding-bottom: 11px; border-bottom: 1px solid rgba(214,86,68,0.18); }
+  .telemetry .perc { display: flex; flex-wrap: wrap; gap: 4px 6px;
+    margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(214,86,68,0.18); }
   .telemetry .perc i { flex: 0 0 46%; font-style: normal; font-family: var(--mono);
     display: flex; gap: 6px; align-items: baseline; justify-content: space-between;
     color: var(--bone-strong); text-shadow: var(--shadow-light); }
   .telemetry .perc .pl { text-transform: uppercase; letter-spacing: 0.10em; font-size: 12px; opacity: 0.92; }
   .telemetry .perc b { font-weight: 400; color: var(--red-hot); font-size: 17px; letter-spacing: 0.03em; }
   .telemetry .tps { color: var(--brass); }
+  /* reply-lag hero row: the headline responsiveness number, larger than the
+     stage rows so it reads first. */
+  .telemetry .tk.hero { margin-bottom: 0px; }
+  .telemetry .tk.hero b { font-size: 22px; color: var(--bone-strong); }
+  .telemetry .herosub { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    text-align: right; color: var(--bone-faint); text-shadow: var(--shadow-light);
+    margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(214,86,68,0.18); }
+  /* vox · mic VU meter — booth-palette twin of the LT-OS green/orange/red bar:
+     brass→red-hot fill, bone peak-hold tick, brass energy-floor tick. */
+  .telemetry .vox { margin-bottom: 6px; padding-bottom: 6px;
+    border-bottom: 1px solid rgba(214,86,68,0.18); }
+  .vumeter { position: relative; height: 10px; background: rgba(214,86,68,0.16); border-radius: 3px; }
+  .vumeter .vufill { position: absolute; top: 0; left: 0; height: 100%; width: 0%; max-width: 100%;
+    background: linear-gradient(90deg, var(--brass), var(--red-hot));
+    border-radius: 3px; box-shadow: 0 0 5px rgba(255,45,45,0.5); transition: width 90ms linear; }
+  .vumeter .vupeak { position: absolute; top: 0; bottom: 0; width: 2px; left: 0%;
+    background: var(--bone-strong); box-shadow: 0 0 4px rgba(255,142,122,0.9); transition: left 120ms linear; }
+  .vumeter .vufloor { position: absolute; top: -2px; bottom: -2px; width: 2px; left: 0%;
+    background: var(--brass); box-shadow: 0 0 4px var(--brass); opacity: 0.85; }
+  .vox.suppressed .vufill { opacity: 0.35; }
+  .vox.suppressed .tk b { color: var(--bone-ghost); }
   .bar { position: relative; height: 6px; background: rgba(214,86,68,0.16); border-radius: 3px; }
   .bar .fill { position: absolute; top: 0; left: 0; height: 100%; background: var(--red-hot);
     border-radius: 3px; box-shadow: 0 0 5px rgba(255,45,45,0.5); transition: width 0.9s ease, left 0.9s ease; }
@@ -277,6 +298,51 @@
   .meta .health i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; box-shadow: 0 0 5px currentColor; }
   .meta .health i[data-ok="1"] { color: var(--signal); background: var(--signal); }
   .meta .health i[data-ok="0"] { color: var(--red);    background: var(--red); }
+
+  /* ===== 2026-06-28 (Dan): booth readability pass ======================
+     Larger type, brighter contrast, heavier key numbers + reduced label
+     tracking, for the attendee booth panel viewed at 4-10 ft on the
+     2560x1440 / 27" display. Mechanicus palette/fonts/shadows kept — just
+     brighter bone-* tones and bigger glyphs so it reads at distance.
+     NOTE: the telemetry block grows with these sizes; it was widened to
+     372px (above) to avoid wrapping, and .context-panel.tr `bottom` set to
+     506px to clear it. Re-check both if you bump these further. ========= */
+  :root {
+    --bone-strong: rgba(255,176,158,1);
+    --bone-mid:    rgba(255,146,128,1);
+    --bone-faint:  rgba(240,156,138,0.98);
+    --bone-ghost:  rgba(208,124,108,0.92);
+  }
+  .litany { font-size: 20px; }
+  .caption .label { font-size: 20px; }
+  .caption .desc { font-size: 30px; }
+  .context-panel .panel-tag { font-size: 24px; letter-spacing: 0.16em; }
+  .context-panel li { font-size: 24px; line-height: 1.25; margin-bottom: 8px; }
+  .stamp .pl { font-size: 22px; }
+  .stamp .when { font-size: 17px; }
+  .corner-id { font-size: 22px; }
+  .corner-state { font-size: 18px; }
+  .meta { font-size: 20px; }
+  .mood .mlabel { font-size: 15px; }
+  .gauge .gv { font-size: 28px; }
+  .gauge .gl { font-size: 15px; }
+  .gauge .gsub { font-size: 14px; }
+  .telemetry .ttag { font-size: 20px; letter-spacing: 0.16em; }
+  /* labels sized to match the metric they display (Dan 2026-06-28): tk label
+     = tk value (22), perc label = perc value (23), hero label = hero value (30). */
+  .telemetry .tk { font-size: 22px; }
+  .telemetry .tk b { font-size: 22px; font-weight: 600; }
+  .telemetry .perc .pl { font-size: 23px; }
+  .telemetry .perc b { font-size: 23px; font-weight: 600; }
+  .telemetry .tk.hero { font-size: 30px; }
+  .telemetry .tk.hero b { font-size: 30px; font-weight: 600; }
+  .telemetry .herosub { font-size: 14px; }
+  .barlbl { font-size: 14px; }
+  .seglbl { font-size: 14px; }
+  .faceid .tag .nm { font-size: 22px; }
+  .faceid.secondary .tag .nm { font-size: 18px; }
+  .faceid .tag .mt { font-size: 16px; }
+  .faceid .tag .demo { font-size: 13px; }
 
 </style>
 </head>
@@ -429,6 +495,21 @@
       <!-- bottom-right cogitator telemetry (live LT /api/metrics) -->
       <div class="telemetry">
         <div class="ttag">cogitator telemetry</div>
+        <!-- reply lag: from when the speaker stops talking (incl. endpointing
+             delay) to Timmy's first reply audio. The headline responsiveness
+             number. last_reply_lag_ms / last_speech_to_reply_ms from LT. -->
+        <div class="tk hero"><span>reply lag</span><b id="tkReplyLag">—</b></div>
+        <div class="herosub"><span id="tkReplySpan">&nbsp;</span></div>
+        <!-- vox · mic level (VU), mirrors the Little Timmy OS meter:
+             /lt/api/audio/diag last_peak with peak-hold + energy-floor tick. -->
+        <div class="vox">
+          <div class="tk"><span>vox · mic</span><b id="vuReadout">—</b></div>
+          <div class="vumeter" id="vuTrack">
+            <div class="vufill" id="vuFill"></div>
+            <div class="vufloor" id="vuFloor" title="energy floor (onset gate)"></div>
+            <div class="vupeak" id="vuPeak"></div>
+          </div>
+        </div>
         <!-- understanding-stage latencies, in pipeline order:
              hear (whisper STT) · filter (tool-call classifier :8092) · resolve (coref :8093) · recall (memory retrieval) -->
         <div class="perc">
@@ -824,13 +905,29 @@
         if (!r.ok) return;
         const d = await r.json();
         if (!d || !d.mode || !cornerState) return;
+        // face_visible (top-level bool) is the HONEST "is a face actually in
+        // frame right now" flag. The FSM lingers in track/engage for up to 5–8s
+        // after the face is gone (grace before scan), so keying the display off
+        // `mode` alone showed phantom "track · DAN" with nobody there. Split it:
+        // visible -> locked (bright), tracking-but-not-visible -> searching (dim).
+        const visible = !!d.face_visible;
+        const active = (d.mode === 'track' || d.mode === 'engage');
         const who = d.params && d.params.face_identity;
-        const locked = (d.mode === 'track' || d.mode === 'engage')
-            && who && !String(who).toLowerCase().startsWith('unknown');
-        lockedIdentity = locked ? String(who).toLowerCase() : '';
-        const txt = d.mode + (locked ? ' · ' + who : '');
+        const named = who && !String(who).toLowerCase().startsWith('unknown');
+        const locked = active && visible;
+        // Only claim a locked identity (drives the reticle name) when a face is
+        // genuinely visible — never off a stale mode.
+        lockedIdentity = (locked && named) ? String(who).toLowerCase() : '';
+        let txt;
+        if (locked)      txt = d.mode + (named ? ' · ' + who : '');   // real lock
+        else if (active) txt = d.mode + ' · searching';              // grace, no face
+        else             txt = d.mode;                                // idle/scan
         cornerState.textContent = txt;
-        cornerState.style.color = MODE_COLOUR[d.mode] || 'var(--bone-strong)';
+        // Dim whenever we're not actually seeing the face, so a phantom "track"
+        // never reads as a confident lock.
+        cornerState.style.color = locked
+            ? (MODE_COLOUR[d.mode] || 'var(--bone-strong)')
+            : 'var(--bone-faint)';
       } catch (_) { /* streamerpi unreachable; leave last mode shown */ }
     }
     setInterval(pollBehavior, 1500);
@@ -1136,6 +1233,13 @@
         document.getElementById('lGen').textContent = fmtMs(gen);
         document.getElementById('lTts').textContent = fmtMs(tts);
         document.getElementById('tkE2E').textContent = fmtMs(d.last_e2e_ms || sum);
+        // reply lag (you stop talking -> first reply audio, incl. endpointing
+        // delay) + full span from speech onset. Headline responsiveness number.
+        const rl = d.last_reply_lag_ms, rlEl = document.getElementById('tkReplyLag');
+        if (rlEl) rlEl.textContent = (typeof rl === 'number') ? fmtMs(rl) : '—';
+        const sr = d.last_speech_to_reply_ms, srEl = document.getElementById('tkReplySpan');
+        if (srEl) srEl.innerHTML = (typeof sr === 'number')
+            ? ('from speech onset ' + fmtMs(sr)) : '&nbsp;';
         // throughput tok/s (completion / generation time)
         if (tot > 0 && typeof comp === 'number') {
           const tps = (comp / (tot / 1000)).toFixed(1) + ' t/s';
@@ -1163,6 +1267,37 @@
     }
     setInterval(pollMetrics, 4000);
     pollMetrics();
+
+    // ----- vox · mic VU meter from /lt/api/audio/diag (LT :8893) -----
+    // Mirrors the Little Timmy OS meter: last_peak drives the fill, a peak-hold
+    // tick decays slowly, the energy-floor (onset gate) is marked, and the bar
+    // dims while TTS is suppressing the mic. Polled fast (~120ms) for liveness.
+    let vuPeakHold = 0;
+    const vuVox = document.querySelector('.telemetry .vox');
+    async function pollAudio() {
+      try {
+        const r = await fetch('/lt/api/audio/diag', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        const cur   = Math.max(0, Math.min(1, d.last_peak || 0));
+        const floor = Math.max(0, Math.min(1, d.energy_floor || 0));
+        const vad   = Math.max(0, Math.min(1, d.last_vad_prob || 0));
+        vuPeakHold = Math.max(cur, vuPeakHold - 0.035);
+        const fill = document.getElementById('vuFill');
+        const peak = document.getElementById('vuPeak');
+        const fl   = document.getElementById('vuFloor');
+        if (fill) fill.style.width = (cur * 100).toFixed(1) + '%';
+        if (peak) peak.style.left  = (Math.min(1, vuPeakHold) * 100).toFixed(1) + '%';
+        if (fl)   fl.style.left    = (floor * 100).toFixed(1) + '%';
+        const ro = document.getElementById('vuReadout');
+        if (ro) ro.textContent = d.suppressed
+            ? 'muted · tts'
+            : ('pk ' + cur.toFixed(2) + ' · vad ' + vad.toFixed(2));
+        if (vuVox) vuVox.classList.toggle('suppressed', !!d.suppressed);
+      } catch (_) { /* LT unreachable; keep last */ }
+    }
+    setInterval(pollAudio, 120);
+    pollAudio();
 
     // ----- mood matrix dot (engagement[x] / warmth[y]) from /lt/api/mood -----
     async function pollMood() {
@@ -1214,6 +1349,7 @@
       pollFaces();
       pollBehavior();
       pollMetrics();
+      pollAudio();
       pollMood();
       pollHealth();
       pollHost();

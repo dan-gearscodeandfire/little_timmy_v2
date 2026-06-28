@@ -6,8 +6,10 @@
 <style>
   :root {
     --bg: #07080a;
-    --fg: #d8d8da;
-    --dim: #5f6470;
+    --fg: #e3e4e8;
+    /* --dim lifted #5f6470 -> #8c93a3 (2026-06-28): secondary text was too
+       low-contrast to read on the 27" 1440p booth display at 4-10 ft. */
+    --dim: #8c93a3;
     --rule: #1a1c22;
     --label-vision: #5fd4b8;
     --label-speech: #e6c478;
@@ -31,12 +33,12 @@
 
   header { display: flex; align-items: baseline; justify-content: space-between;
     border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
-  header h1 { font-weight: 200; letter-spacing: 0.2em; font-size: 14px;
-    color: var(--dim); text-transform: uppercase; }
-  header .nav { font-size: 11px; color: var(--dim); }
+  header h1 { font-weight: 600; letter-spacing: 0.2em; font-size: 26px;
+    color: #c2c7d2; text-transform: uppercase; }
+  header .nav { font-size: 18px; color: var(--dim); }
   header .nav a { color: var(--label-memory); text-decoration: none; margin-left: 14px; }
-  header .pills { display: flex; gap: 8px; font: 10px ui-monospace, "SF Mono", Consolas, monospace; }
-  header .pill { padding: 2px 8px; border-radius: 8px; background: #11141b;
+  header .pills { display: flex; gap: 8px; font: 16px ui-monospace, "SF Mono", Consolas, monospace; }
+  header .pill { padding: 4px 12px; border-radius: 10px; background: #11141b;
     border: 1px solid var(--rule); color: var(--dim); }
   header .pill.up { color: #6f6; border-color: #2a4a2a; }
   header .pill.down { color: #f66; border-color: #4a2a2a; }
@@ -60,17 +62,17 @@
     vector-effect: non-scaling-stroke; }
   #overlay rect.face.candidate { stroke: #ddc070; stroke-dasharray: 6 3; }
   #overlay rect.face.unknown { stroke: #e94560; stroke-dasharray: 4 3; }
-  #overlay text.face-label { font: 14px ui-monospace, "SF Mono", Consolas, monospace;
+  #overlay text.face-label { font: 22px ui-monospace, "SF Mono", Consolas, monospace;
     fill: var(--label-face); paint-order: stroke; stroke: rgba(0,0,0,0.7);
     stroke-width: 3; stroke-linejoin: round; }
   #overlay text.face-label.candidate { fill: #ddc070; }
   #overlay text.face-label.unknown   { fill: #e94560; }
   #lookat { position: absolute; top: 12px; right: 14px;
-    font: 11px/1 ui-monospace, "SF Mono", Consolas, monospace;
-    letter-spacing: 0.05em; padding: 6px 10px; border-radius: 14px;
+    font: 18px/1 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.05em; padding: 8px 14px; border-radius: 14px;
     background: rgba(7,8,10,0.78); border: 1px solid var(--rule);
     color: var(--look-idle); display: flex; align-items: center; gap: 6px; }
-  #lookat .dot { width: 7px; height: 7px; border-radius: 50%;
+  #lookat .dot { width: 10px; height: 10px; border-radius: 50%;
     background: var(--look-idle); }
   #lookat.engage { color: var(--look-engage); border-color: #2a4a2a; }
   #lookat.engage .dot { background: var(--look-engage); box-shadow: 0 0 6px var(--look-engage); }
@@ -79,11 +81,11 @@
   #lookat.scan   { color: var(--look-scan); }
   #lookat.scan   .dot { background: var(--look-scan); }
   #cam-status { position: absolute; bottom: 10px; left: 12px;
-    font: 10px/1 ui-monospace, monospace; color: var(--dim);
-    background: rgba(7,8,10,0.78); padding: 4px 8px; border-radius: 10px; }
+    font: 15px/1 ui-monospace, monospace; color: var(--dim);
+    background: rgba(7,8,10,0.78); padding: 6px 11px; border-radius: 10px; }
   #rec-indicator { position: absolute; top: 12px; left: 14px;
     display: flex; align-items: center; gap: 6px;
-    font: bold 11px/1 ui-monospace, monospace; color: #f85149;
+    font: bold 18px/1 ui-monospace, monospace; color: #f85149;
     background: rgba(7,8,10,0.78); padding: 5px 9px; border-radius: 10px;
     letter-spacing: 0.08em; }
   #rec-indicator.hidden { display: none; }
@@ -97,7 +99,7 @@
      Operational bridge so the silent-failure case (visitors interact, video
      fine, but no face data) is impossible to miss. */
   #face-tracking-off { position: absolute; top: 12px; right: 14px;
-    font: bold 11px/1 ui-monospace, monospace; color: #fff;
+    font: bold 20px/1 ui-monospace, monospace; color: #fff;
     background: #b03030; padding: 5px 10px; border-radius: 10px;
     letter-spacing: 0.08em;
     box-shadow: 0 0 0 1px #f85149, 0 0 14px rgba(248,81,73,0.45); }
@@ -105,26 +107,26 @@
 
   /* Scene caption: persistent, top-left under the camera */
   #scene { padding: 4px 0 4px 0; }
-  #scene .label { font: 10px/1 ui-monospace, "SF Mono", Consolas, monospace;
-    letter-spacing: 0.1em; color: var(--label-vision); margin-bottom: 6px; }
-  #scene .text { font-size: 22px; line-height: 1.3; font-weight: 250;
+  #scene .label { font: 600 20px/1 ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: 0.1em; color: var(--label-vision); margin-bottom: 10px; }
+  #scene .text { font-size: 40px; line-height: 1.3; font-weight: 400;
     letter-spacing: -0.005em; color: var(--fg); min-height: 56px; }
-  #scene .text.empty { color: var(--dim); font-style: italic; font-weight: 300; }
+  #scene .text.empty { color: var(--dim); font-style: italic; font-weight: 400; }
 
   /* Ghost reasoning panel: low-contrast italic typewriter from Qwen3.6
      thinking-on (memory extraction + summary rollup). Aesthetic: visitor
      glimpses Timmy's actual thought process from real production work. */
   #ghost { padding: 6px 0; border-top: 1px solid var(--rule);
-    min-height: 64px; max-height: 110px; overflow: hidden; }
-  #ghost .label { font: 10px/1 ui-monospace, monospace; letter-spacing: 0.1em;
-    color: var(--label-ghost); margin-bottom: 6px; opacity: 0.85; }
-  #ghost .label .src { color: var(--dim); margin-left: 6px; font-size: 9px; }
-  #ghost .text { font: 300 13px/1.45 ui-monospace, "SF Mono", Consolas, monospace;
-    color: var(--label-ghost); opacity: 0.55; font-style: italic;
-    transition: opacity 1.2s ease-out; max-height: 80px; overflow: hidden; }
-  #ghost .text.idle { color: var(--dim); opacity: 0.45; }
-  #ghost .text.fading { opacity: 0.18; }
-  #ghost .cursor { display: inline-block; width: 5px; height: 12px;
+    min-height: 64px; max-height: 150px; overflow: hidden; }
+  #ghost .label { font: 600 18px/1 ui-monospace, monospace; letter-spacing: 0.1em;
+    color: var(--label-ghost); margin-bottom: 8px; opacity: 0.9; }
+  #ghost .label .src { color: var(--dim); margin-left: 6px; font-size: 16px; }
+  #ghost .text { font: 400 26px/1.5 ui-monospace, "SF Mono", Consolas, monospace;
+    color: var(--label-ghost); opacity: 0.85; font-style: italic;
+    transition: opacity 1.2s ease-out; max-height: 120px; overflow: hidden; }
+  #ghost .text.idle { color: var(--dim); opacity: 0.62; }
+  #ghost .text.fading { opacity: 0.4; }
+  #ghost .cursor { display: inline-block; width: 7px; height: 22px;
     background: var(--label-ghost); margin-left: 3px; vertical-align: -2px;
     opacity: 0.6; animation: blink 1s steps(2) infinite; }
   #ghost .cursor.gone { display: none; }
@@ -132,25 +134,25 @@
   /* Live reply panel: anchored slot, typewriter */
   #reply { padding: 6px 0; border-top: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule); min-height: 80px; }
-  #reply .label { font: 10px/1 ui-monospace, monospace; letter-spacing: 0.1em;
-    color: var(--label-reply); margin-bottom: 6px; }
-  #reply .text { font-size: 18px; line-height: 1.4; color: var(--fg);
-    font-weight: 300; min-height: 50px; }
-  #reply .text.idle { color: var(--dim); font-style: italic; font-weight: 300; }
-  #reply .cursor { display: inline-block; width: 7px; height: 18px;
+  #reply .label { font: 600 20px/1 ui-monospace, monospace; letter-spacing: 0.1em;
+    color: var(--label-reply); margin-bottom: 10px; }
+  #reply .text { font-size: 36px; line-height: 1.4; color: var(--fg);
+    font-weight: 450; min-height: 50px; }
+  #reply .text.idle { color: var(--dim); font-style: italic; font-weight: 450; }
+  #reply .cursor { display: inline-block; width: 9px; height: 30px;
     background: var(--label-reply); margin-left: 4px; vertical-align: -3px;
     animation: blink 1s steps(2) infinite; }
   #reply .cursor.gone { display: none; }
   @keyframes blink { 50% { opacity: 0; } }
 
   /* Audit log: scrolling, newest on top */
-  #audit { flex: 1; overflow: hidden; font: 12px/1.55 ui-monospace,
+  #audit { flex: 1; overflow: hidden; font: 20px/1.5 ui-monospace,
     "SF Mono", Consolas, monospace; }
-  #audit .row { display: grid; grid-template-columns: 60px 200px 1fr;
-    column-gap: 12px; padding: 1px 0; align-items: baseline;
+  #audit .row { display: grid; grid-template-columns: 100px 320px 1fr;
+    column-gap: 16px; padding: 3px 0; align-items: baseline;
     animation: fadeIn 0.4s ease-out; }
-  #audit .ts { color: var(--dim); font-size: 10px; }
-  #audit .lbl { font-size: 10px; letter-spacing: 0.05em; }
+  #audit .ts { color: var(--dim); font-size: 15px; }
+  #audit .lbl { font-size: 16px; letter-spacing: 0.05em; }
   #audit .body { color: var(--fg); }
   #audit .lbl.vision   { color: var(--label-vision);  }
   #audit .lbl.speech   { color: var(--label-speech);  }
@@ -174,11 +176,11 @@
     gap: 18px; padding: 24px; text-align: center;
     color: #c9d1d9; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
   #takeover-overlay.hidden { display: none; }
-  #takeover-overlay h2 { margin: 0; font-size: 22px; font-weight: 400; color: #f0883e; letter-spacing: 0.02em; }
-  #takeover-overlay p  { margin: 0; max-width: 520px; font-size: 13px; line-height: 1.5; color: #8b949e; }
+  #takeover-overlay h2 { margin: 0; font-size: 34px; font-weight: 500; color: #f0883e; letter-spacing: 0.02em; }
+  #takeover-overlay p  { margin: 0; max-width: 640px; font-size: 20px; line-height: 1.5; color: #aab1bd; }
   #takeover-overlay code { color: #c9d1d9; background: #161b22; padding: 1px 5px; border-radius: 3px; }
   #takeover-overlay .actions { display: flex; gap: 12px; margin-top: 6px; }
-  #takeover-overlay button { font: 12px ui-monospace, monospace; padding: 10px 22px;
+  #takeover-overlay button { font: 18px ui-monospace, monospace; padding: 12px 28px;
     background: #1f6feb; color: #fff; border: 1px solid #1f6feb; border-radius: 4px; cursor: pointer; letter-spacing: 0.05em; }
   #takeover-overlay button:hover { background: #388bfd; border-color: #388bfd; }
   #takeover-overlay button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -227,7 +229,7 @@
 <div id="takeover-overlay" class="hidden" role="dialog" aria-live="polite">
   <h2>Another screen is already connected</h2>
   <p>The Little Timmy visitor stream is single-client; only one tab/screen on the LAN can hold the WebRTC video at a time. Close the other tab, or take this one over.</p>
-  <p id="takeover-detail" style="font-size: 11px;"></p>
+  <p id="takeover-detail" style="font-size: 16px;"></p>
   <div class="actions">
     <button id="takeover-btn" type="button">Take Over</button>
   </div>
