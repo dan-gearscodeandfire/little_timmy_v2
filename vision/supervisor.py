@@ -129,6 +129,19 @@ class BehaviorSupervisor:
 
         log.info("[SUPERVISOR] Speech from %s → engage", speaker_name)
 
+    async def on_thinking_start(self):
+        """Brain is composing a reply — the filler-word + eye-LED-pulse window.
+
+        Put the Pi into the gentle 'thinking' wobble so the body looks like it's
+        pondering, not frozen, while the LLM runs (Dan 2026-06-25). Bypasses the
+        command throttle because it fires moments after the engage command from
+        on_speech_detected (same turn) and would otherwise be rate-limited away.
+        Exited when the first reply sentence re-asserts engage (on_tts_start) or
+        the turn ends (on_tts_end -> track); a 12s Pi-side timeout is the safety
+        net. No-op if the supervisor isn't running (no client)."""
+        await self._send_command("thinking", priority="high", timeout_ms=12000,
+                                 bypass_throttle=True)
+
     async def on_tts_start(self):
         """Timmy started speaking (TTS playing)."""
         # Keep engage mode while Timmy talks — re-assert the speaker target so
@@ -220,13 +233,17 @@ class BehaviorSupervisor:
     # --- Pi communication ---
 
     async def _send_command(self, mode: str, priority: str = "normal",
-                            timeout_ms: int = 0, params: dict = None):
+                            timeout_ms: int = 0, params: dict = None,
+                            bypass_throttle: bool = False):
         """Send a mode command to the Pi's behavioral state machine."""
         now = time.time()
         # Audit fix 2026-05-14: skip the rate-limiter for critical-priority
         # commands. Startup wake (idle) and shutdown sleep are both critical
         # and were being silently dropped if anything fired within 1s.
-        if (priority != "critical"
+        # bypass_throttle (2026-06-25): the per-turn 'thinking' command fires
+        # right after the engage command in the same turn, so it must skip the
+        # 1s limiter or it never lands.
+        if (priority != "critical" and not bypass_throttle
                 and now - self._last_command_time < self._min_command_interval):
             return  # throttle
 

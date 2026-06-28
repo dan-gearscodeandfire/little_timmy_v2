@@ -50,3 +50,6 @@ ops/*_captures/
 
 # DB dumps (conversation_summary backups, PII) — keep out of git
 backups/
+
+# live-session capture artifacts (transcripts/audio, may contain PII)
+recordings/

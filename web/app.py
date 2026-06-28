@@ -26,6 +26,12 @@ _metrics: dict = {
     "last_llm_total_ms": 0,
     "last_tts_ms": 0,
     "last_e2e_ms": 0,
+    # User-perceived reply latency (2026-06-25). reply_lag: from when the user
+    # stopped talking (incl. the endpointing-silence delay) to Timmy's first
+    # reply audio -- the "how responsive does it feel" number for the Booth.
+    # speech_to_reply: full span from speech onset (incl. utterance duration).
+    "last_reply_lag_ms": None,
+    "last_speech_to_reply_ms": None,
     "memories_stored": 0,
     "facts_stored": 0,
     "started_at": None,
@@ -262,14 +268,23 @@ async def announce(payload: dict | None = None):
     - Does NOT append a turn or broadcast a "turn" event, so it stays out of
       /api/chatlog, /api/conversation, and the supervisor WS feed.
     - tts.speak() queues PCM and sets capture.suppressed during playback, so
-      Timmy never hears it via STT (no loopback turn).
-    - Server-side prefix guarantees self-identification; reuses Timmy's voice.
+      Timmy never hears it via STT (no loopback turn) — regardless of voice.
 
-    Body: {"text": "<instruction for Dan>", "no_prefix": false}
-    - no_prefix/raw: skip the "This is Claude talking." prefix. For tool voice
-      (e.g. auto-calibrate prompts) that should just speak the output, not
-      announce Claude. Default false (supervisor speech still self-identifies).
+    Voice (2026-06-28, Dan): the supervisor/couples-therapist channel speaks in
+    its OWN voice (Piper en_US-kristin-medium, models/tts/personas/), audibly
+    NOT Timmy and NOT Dan. That persona voice is the DEFAULT here, since this
+    endpoint's purpose IS that channel. Mic-gating is unchanged (the engine
+    suppresses capture during any playback), so Timmy still never hears it.
+
+    Body: {"text": "...", "voice": "couples_therapist"|"timmy", "no_prefix": false}
+    - voice: "timmy"/"skeletor" → Timmy's conversational voice (for tool voice,
+      e.g. auto-calibrate prompts). Default/"couples_therapist"/"therapist" →
+      the persona voice.
+    - no_prefix/raw: skip the spoken self-identification prefix. Default false:
+      therapist voice prefixes "This is your couples therapist."; timmy voice
+      prefixes "This is Claude talking."
     """
+    import os
     from fastapi.responses import JSONResponse
     if _orchestrator is None or getattr(_orchestrator, "tts", None) is None:
         return JSONResponse({"spoken": False, "error": "tts_unavailable"}, status_code=503)
@@ -277,15 +292,50 @@ async def announce(payload: dict | None = None):
     text = (body.get("text") or "").strip()
     if not text:
         return JSONResponse({"spoken": False, "error": "empty_text"}, status_code=400)
+
+    voice = (body.get("voice") or "couples_therapist").strip().lower()
+    use_timmy = voice in ("timmy", "skeletor", "default")
+    if use_timmy:
+        voice_model = None  # engine falls back to Timmy's conversational voice
+        prefix, self_id = "This is Claude talking. ", "this is claude"
+    else:
+        voice_model = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "models", "tts", "personas", "couples_therapist.onnx")
+        prefix, self_id = "This is your couples therapist. ", "this is your couples therapist"
+
     no_prefix = bool(body.get("no_prefix") or body.get("raw"))
-    if no_prefix or text.lower().startswith("this is claude"):
+    if no_prefix or text.lower().startswith(self_id):
         spoken_text = text
     else:
-        spoken_text = f"This is Claude talking. {text}"
+        spoken_text = f"{prefix}{text}"
+    # inject (2026-06-28, Dan): direct turn-injection. When true AND the persona
+    # voice is used, the spoken text is ALSO injected into the conversation as a
+    # turn from speaker 'couples_therapist' (id 6) so Timmy PROCESSES and responds
+    # — bypassing the mic / VAD / close-talk addressee gate that otherwise drops
+    # the (too-quiet, off-mic) room-speaker persona. This is the reliable way to
+    # have the therapist address Timmy. Playback stays mic-gated (no acoustic
+    # loopback) so Dan hears the persona while injection drives the processing.
+    #
+    # DEFAULT (no inject): the therapist is gated — spoken for Dan's ears, NOT
+    # heard or processed by Timmy (Dan: "more just information for me").
+    #
+    # let_timmy_hear: legacy ACOUSTIC path (mic open); unreliable on this box
+    # because of the close-talk gate. Prefer `inject`.
+    inject = bool(body.get("inject")) and not use_timmy
+    let_timmy_hear = bool(body.get("let_timmy_hear") or body.get("hear"))
     # force=True: the supervisor channel bypasses the mouth-mute (tts_muted) so
     # Claude can still talk to Dan while Timmy's conversational voice is muted.
-    await _orchestrator.tts.speak(spoken_text, force=True)
-    return {"spoken": True, "text": spoken_text}
+    await _orchestrator.tts.speak(spoken_text, force=True, voice_model=voice_model,
+                                  suppress_mic=not let_timmy_hear)
+    if inject:
+        import asyncio as _asyncio
+        # Inject the bare text (no self-ID prefix) so Timmy sees the therapist's
+        # actual words. Fire-and-forget: queues behind the gated playback.
+        _asyncio.create_task(_orchestrator.inject_couples_therapist_turn(text))
+    return {"spoken": True, "text": spoken_text,
+            "voice": "timmy" if use_timmy else "couples_therapist",
+            "heard_by_timmy": let_timmy_hear, "injected": inject}
 
 
 @app.get("/api/tts_mute")

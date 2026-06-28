@@ -187,11 +187,16 @@ class AudioCapture:
         pre_speech_ring = collections.deque(maxlen=config.PRE_SPEECH_CHUNKS)
         last_transcription = ""  # for hybrid endpointing
         live_check_counter = 0
+        onset_ts = None  # wall-clock of this utterance's speech onset (latency metric)
 
-        def _put_segment(audio: np.ndarray):
-            """Thread-safe enqueue to asyncio."""
+        def _put_segment(audio: np.ndarray, onset_ts=None, offset_ts=None):
+            """Thread-safe enqueue to asyncio. Carries the utterance's speech
+            onset/offset wall-clock so the turn loop can report a true
+            speech-onset / speech-end -> first-reply-audio latency (the lag the
+            user actually feels, *including* the endpointing-silence delay)."""
             if self._loop and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(self.speech_queue.put_nowait, audio)
+                self._loop.call_soon_threadsafe(
+                    self.speech_queue.put_nowait, (audio, onset_ts, offset_ts))
 
         log.info("Starting audio capture (device=%s, native_sr=%d, target_sr=%d, chunk=%d)",
                  device_idx, native_sr, target_sr, native_chunk)
@@ -287,6 +292,7 @@ class AudioCapture:
                         recording = True
                         self.user_speaking = True
                         silence_count = 0
+                        onset_ts = time.time()  # latency-metric start point
                         audio_buffer = list(pre_speech_ring) + [audio]
                         log.debug("Speech onset detected (prob=%.2f, peak=%.4f)", vad_prob, self.diag_last_peak)
                         # Kick a fresh vision capture now (speech start), not at
@@ -309,7 +315,7 @@ class AudioCapture:
                         if looks_complete(last_transcription):
                             # Fast finalize — sentence is complete
                             segment = np.concatenate(audio_buffer)
-                            _put_segment(segment)
+                            _put_segment(segment, onset_ts, self.last_voice_ts)
                             log.info("Finalized speech (complete, %.1fs)",
                                      len(segment) / target_sr)
                             recording = False
@@ -322,7 +328,7 @@ class AudioCapture:
                     if silence_count >= incomplete_threshold:
                         # Timeout finalize — waited long enough
                         segment = np.concatenate(audio_buffer)
-                        _put_segment(segment)
+                        _put_segment(segment, onset_ts, self.last_voice_ts)
                         log.info("Finalized speech (timeout, %.1fs)",
                                  len(segment) / target_sr)
                         recording = False

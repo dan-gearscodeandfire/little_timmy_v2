@@ -7,7 +7,10 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-_piper_voice = None
+# Loaded Piper voices, cached per model_path. Timmy's conversational voice
+# (config.PIPER_MODEL) plus any persona voices (e.g. the couples-therapist voice
+# the supervisor/announce channel speaks in) coexist here, each loaded once.
+_piper_voices: dict[str, object] = {}
 
 
 def _tts_muted() -> bool:
@@ -22,16 +25,21 @@ def _tts_muted() -> bool:
 
 
 def _load_voice(model_path: str):
-    """Load Piper voice model (lazy, once)."""
-    global _piper_voice
-    if _piper_voice is not None:
-        return _piper_voice
+    """Load a Piper voice model (lazy, cached per model_path).
+
+    Keying the cache by path lets a second persona voice (the couples-therapist
+    voice) load alongside Timmy's conversational voice instead of the old
+    singleton returning whichever loaded first."""
+    voice = _piper_voices.get(model_path)
+    if voice is not None:
+        return voice
 
     from piper import PiperVoice
-    _piper_voice = PiperVoice.load(model_path)
+    voice = PiperVoice.load(model_path)
+    _piper_voices[model_path] = voice
     log.info("Loaded Piper voice from %s (sample_rate=%d)",
-             model_path, _piper_voice.config.sample_rate)
-    return _piper_voice
+             model_path, voice.config.sample_rate)
+    return voice
 
 
 def _synthesize_raw(text: str, model_path: str) -> tuple[np.ndarray, int]:
@@ -70,38 +78,74 @@ class TTSEngine:
         self._playback_task = asyncio.create_task(self._playback_loop())
         log.info("TTS engine started")
 
-    async def speak(self, text: str, force: bool = False):
+    async def speak(self, text: str, force: bool = False,
+                    voice_model: str | None = None,
+                    suppress_mic: bool = True):
         """Synthesize text and queue raw PCM for playback. Non-blocking.
 
         force=True bypasses the mouth-mute (tts_muted) — used by the supervisor
         /api/announce channel so Claude can still speak to Dan while Timmy's own
         conversational voice is muted. Muted speak() skips the enqueue entirely,
-        so capture.suppressed never fires and the mic stays open."""
+        so capture.suppressed never fires and the mic stays open.
+
+        voice_model: path to an alternate Piper voice to synthesize THIS
+        utterance in (default = Timmy's conversational voice, self.model_path).
+        Used by the supervisor/couples-therapist channel so it speaks in its own
+        distinct voice.
+
+        suppress_mic: when True (default) _playback_loop gates the mic
+        (capture.suppressed) for the duration, so Timmy never hears this via STT
+        (no loopback) — the normal, safe behavior for every voice. When False,
+        the mic stays OPEN during playback so Timmy DOES hear and transcribe it
+        as an incoming turn (e.g. a test where the couples-therapist speaks TO
+        Timmy). The persona voice comes in as an unknown speaker unless its
+        voiceprint is enrolled."""
         if not force and _tts_muted():
             return
         # Replace commas with em dashes for shorter TTS pauses
         text = text.replace(",", " —")
         if not text.strip():
             return
-        audio, sr = await asyncio.to_thread(_synthesize_raw, text, self.model_path)
+        audio, sr = await asyncio.to_thread(
+            _synthesize_raw, text, voice_model or self.model_path)
         if len(audio) > 0:
-            await self._playback_queue.put((audio, sr, 0.5))
+            await self._playback_queue.put((audio, sr, 0.5, suppress_mic))
 
     async def prewarm_fillers(self, texts) -> None:
-        """Synthesize each filler once and stash in _filler_cache.
+        """Load the frozen filler .wav assets into _filler_cache.
 
-        Run this at startup so the first conversational turn doesn't pay a
-        Piper-inference cost for the filler. ~10 calls * ~200 ms each on
-        boot; LT process is long-lived so it amortizes to zero across the
-        session.
+        Fillers are pre-rendered to committed .wav files (audio/fillers_wav,
+        produced by audio.render_fillers) rather than synthesized at startup,
+        so the clips are locked/curated and identical across boots and Piper
+        voice changes (Dan 2026-06-27). This just reads ~10 small WAVs off
+        disk into RAM — no Piper inference on the boot path.
+
+        A missing clip (e.g. the FILLERS tuple was edited but render_fillers
+        wasn't re-run) falls back to live synthesis for that one entry and
+        logs a warning, so a stale asset set degrades rather than going
+        silent.
         """
+        import soundfile as sf
+        from audio import fillers as _fillers
+
+        loaded = synthesized = 0
         for text in texts:
             if text in self._filler_cache:
                 continue
-            audio, sr = await asyncio.to_thread(_synthesize_raw, text, self.model_path)
-            if len(audio) > 0:
+            path = _fillers.wav_path(text)
+            if path.exists():
+                audio, sr = await asyncio.to_thread(sf.read, str(path), dtype="float32")
                 self._filler_cache[text] = (audio, sr)
-        log.info("TTS filler cache prewarmed (%d entries)", len(self._filler_cache))
+                loaded += 1
+            else:
+                log.warning("filler .wav missing for %r (%s); synthesizing live. "
+                            "Run: python -m audio.render_fillers", text, path.name)
+                audio, sr = await asyncio.to_thread(_synthesize_raw, text, self.model_path)
+                if len(audio) > 0:
+                    self._filler_cache[text] = (audio, sr)
+                    synthesized += 1
+        log.info("TTS filler cache ready (%d entries: %d from .wav, %d synthesized)",
+                 len(self._filler_cache), loaded, synthesized)
 
     async def speak_filler(self, text: str) -> None:
         """Queue a pre-rendered filler. Falls through to speak() on miss.
@@ -141,25 +185,31 @@ class TTSEngine:
             if item is None:
                 break
             try:
-                # Tuple shape evolved 2026-05-14 to include per-item cooldown.
-                # Tolerate any stragglers still using the 2-tuple form.
-                if len(item) == 3:
+                # Tuple shape evolved: +per-item cooldown (2026-05-14), then
+                # +per-item suppress_mic (2026-06-28). Tolerate older arities.
+                suppress_mic = True
+                if len(item) == 4:
+                    audio, sr, cooldown_s, suppress_mic = item
+                elif len(item) == 3:
                     audio, sr, cooldown_s = item
                 else:
                     audio, sr = item
                     cooldown_s = 0.5
-                if self._capture:
+                # suppress_mic=False leaves the mic OPEN so Timmy hears this
+                # playback as an incoming turn (test channel). Default True =
+                # gated (no loopback), the normal behavior for every voice.
+                if self._capture and suppress_mic:
                     self._capture.suppressed = True
                 await asyncio.to_thread(sd.play, audio, sr)
                 await asyncio.to_thread(sd.wait)
                 if cooldown_s > 0:
                     await asyncio.sleep(cooldown_s)
-                if self._capture:
+                if self._capture and suppress_mic:
                     self._capture.suppressed = False
             except Exception as e:
                 log.error("TTS playback error: %s", e)
             finally:
-                if self._capture:
+                if self._capture and suppress_mic:
                     self._capture.suppressed = False
 
     async def stop(self):

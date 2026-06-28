@@ -55,7 +55,7 @@ def _announce(text: str, wait_lead: bool = True) -> None:
     try:
         req = urllib.request.Request(
             f"{ORCH}/api/announce",
-            data=json.dumps({"text": text}).encode(),
+            data=json.dumps({"text": text, "voice": "timmy"}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=15) as r:
             r.read()

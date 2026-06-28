@@ -385,8 +385,15 @@ class Orchestrator:
         except Exception:
             log.exception("[AUTOENROLL] provenance write failed for %s", name)
 
-    async def process_speech(self, audio: np.ndarray):
-        """Process a speech segment through the full pipeline."""
+    async def process_speech(self, audio: np.ndarray,
+                             vad_onset_ts: float | None = None,
+                             vad_offset_ts: float | None = None):
+        """Process a speech segment through the full pipeline.
+
+        vad_onset_ts / vad_offset_ts are the wall-clock of this utterance's
+        speech onset and last-voiced-chunk (offset), carried from capture so we
+        can report a true speech-end -> first-reply-audio latency that includes
+        the endpointing-silence delay."""
         t_start = time.time()
 
         # --- Speaker Identification (runs on raw 16kHz audio) ---
@@ -548,6 +555,8 @@ class Orchestrator:
             stt_words=stt_words,
             resolved_query=resolved_query,
             query_pre_resolved=query_pre_resolved,
+            vad_onset_ts=vad_onset_ts,
+            vad_offset_ts=vad_offset_ts,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -573,6 +582,38 @@ class Orchestrator:
             await self._generate_response(text, stt_ms=0, t_start=t_start,
                                            speaker_name="dan", speaker_db_id=1, spk_ms=0,
                                            recall_block=outcome.recall_block)
+
+    async def inject_couples_therapist_turn(self, text: str):
+        """Inject a couples-therapist utterance DIRECTLY into the conversation as
+        a turn from speaker 'couples_therapist', bypassing the mic / VAD / close-
+        talk addressee gate entirely. Timmy processes it and responds.
+
+        This is the reliable path for the therapist to address Timmy: the room-
+        speaker→close-talk-mic level is too low to clear the close-talk gate, and
+        the service already knows it's emitting the persona, so we assert the
+        identity here instead of round-tripping through acoustics. The enrolled
+        voiceprint (speaker_id 6) stays the durable identity / FK target and the
+        fallback if the persona ever arrives via an external mic.
+
+        NOT the default: /api/announce only calls this when inject=true. By
+        default the therapist is gated (spoken for Dan, not processed by Timmy)."""
+        from speaker.identifier import SpeakerIdentifier
+        ct_id = SpeakerIdentifier().enrolled_speaker_ids().get("couples_therapist", 6)
+        async with self._turn_lock:
+            t_start = time.time()
+            log.info("[INJECT:couples_therapist] %s", text)
+            await broadcast_event("turn", {"role": "user", "content": text,
+                                           "speaker": "couples_therapist"})
+            await self.conversation.add_user_turn(text, speaker="couples_therapist")
+            outcome = await tool_router.maybe_handle_tool_call(
+                text, "couples_therapist", ct_id, self.conversation, self.tts,
+                t_start=t_start)
+            if outcome.handled:
+                return
+            await self._generate_response(
+                text, stt_ms=0, t_start=t_start,
+                speaker_name="couples_therapist", speaker_db_id=ct_id, spk_ms=0,
+                recall_block=outcome.recall_block)
 
     async def maybe_speak_proactively(self, record, is_new_arrival: bool) -> None:
         """Maybe emit a short unprompted remark in reaction to a visual event.
@@ -699,7 +740,9 @@ class Orchestrator:
                                   recall_block: str | None = None,
                                   stt_words: list | None = None,
                                   resolved_query: str | None = None,
-                                  query_pre_resolved: bool = False):
+                                  query_pre_resolved: bool = False,
+                                  vad_onset_ts: float | None = None,
+                                  vad_offset_ts: float | None = None):
         """Core response pipeline: presence doorway → delegate to the turn.
 
         `resolved_query`/`query_pre_resolved` carry the doorway's speculative coref
@@ -721,6 +764,24 @@ class Orchestrator:
         enroll_outcome = await self._face_enroller.handle(user_text, speaker_name)
         if enroll_outcome.handled:
             return
+
+        # --- THINKING window (filler + eye-pulse + body wobble) ---
+        # We've committed to a brain reply (past the Timmy-voice/empty/tool/
+        # intro/enroll drop-gates above). Fire the thinking cues HERE, as early
+        # as is safe, rather than after retrieval/vision:
+        #   - filler: queue a spoken thinking-beat so Timmy starts almost
+        #     instantly. Previously fired just before _turn.respond(), AFTER the
+        #     face fetch + presence fusion + the whole vision block (which can
+        #     even BLOCK on a fresh VLM capture), so the "instant" filler
+        #     actually trailed seconds of silence (Dan's "fire way earlier").
+        #     Gated 50% / curt-prompt; speak_filler() respects tts_muted.
+        #   - body: put the Pi into the gentle 'thinking' wobble so the head
+        #     looks like it's pondering during the LLM run (Dan 2026-06-25).
+        #     Fires every brain turn, matching the THINKING eye-LED (sent at STT
+        #     finalize above). Cleared when the first sentence re-asserts engage.
+        if audio_fillers.should_fire(user_text):
+            asyncio.create_task(self.tts.speak_filler(audio_fillers.pick()))
+        asyncio.create_task(self.supervisor.on_thinking_start())
 
         # --- Presence face fetch (doorway) ---
         # Memory retrieval (memories + facts, with coreference + "my X" subject
@@ -906,15 +967,19 @@ class Orchestrator:
                         await self.vision.trigger_capture("visual_question_recapture")
                     asyncio.create_task(_delayed_recapture())
 
-        # Filler-word gate: queue a short pre-rendered filler ahead of the real
-        # reply so the user hears Timmy start immediately. Fired before the turn
-        # streams so it queues naturally ahead of the first real sentence.
-        if audio_fillers.should_fire(user_text):
-            asyncio.create_task(self.tts.speak_filler(audio_fillers.pick()))
+        # Wall-clock of the first REAL reply sentence hitting TTS. Stamped in the
+        # callback below so the speech-onset/end -> first-reply latency is exact
+        # (the turn's own first_tts_ms is relative to the turn's local t_start, so
+        # it can't be combined with the capture timestamps). Measures the real
+        # answer, not the filler stall.
+        first_audio_wall: float | None = None
 
         async def _on_first_sentence():
             # Eye LED + supervisor cues fire the moment the first sentence is
             # about to hit TTS. Fire-and-forget so they don't delay speak().
+            nonlocal first_audio_wall
+            if first_audio_wall is None:
+                first_audio_wall = time.time()
             asyncio.create_task(self.supervisor.on_tts_start())
             asyncio.create_task(eye_led.notify("SPEAKING"))
 
@@ -957,9 +1022,26 @@ class Orchestrator:
         retrieval_ms = result.retrieval_ms
         e2e_ms = int((time.time() - t_start) * 1000)
 
+        # True user-perceived latency, computed from the capture timestamps and
+        # the wall-clock of the first real reply sentence. reply_lag_ms is the
+        # headline number Dan wants on the booth: from when the user STOPPED
+        # talking (incl. the endpointing-silence delay) to Timmy's first reply
+        # audio. speech_to_reply_ms is the full span from speech onset (incl. the
+        # user's own utterance duration). Both None on the text path / if no real
+        # sentence was spoken (e.g. a deflection with no TTS).
+        reply_lag_ms = None
+        speech_to_reply_ms = None
+        if first_audio_wall is not None:
+            if vad_offset_ts is not None:
+                reply_lag_ms = max(0, int((first_audio_wall - vad_offset_ts) * 1000))
+            if vad_onset_ts is not None:
+                speech_to_reply_ms = max(0, int((first_audio_wall - vad_onset_ts) * 1000))
+
         log.info("[TIMMY] %s", full_response)
-        log.info("[PERF] stt=%dms spk=%dms retrieval=%dms llm_ft=%dms llm=%dms tts=%dms e2e=%dms",
-                 stt_ms, spk_ms, retrieval_ms, llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms)
+        log.info("[PERF] stt=%dms spk=%dms retrieval=%dms llm_ft=%dms llm=%dms tts=%dms e2e=%dms "
+                 "reply_lag=%sms speech_to_reply=%sms",
+                 stt_ms, spk_ms, retrieval_ms, llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms,
+                 reply_lag_ms, speech_to_reply_ms)
 
         # The turn already broadcast the assistant "turn" event and persisted
         # the assistant turn; the doorway only assembles the metrics report.
@@ -975,12 +1057,16 @@ class Orchestrator:
             "llm_total_ms": llm_total_ms,
             "tts_ms": tts_ms,
             "e2e_ms": e2e_ms,
+            "reply_lag_ms": reply_lag_ms,
+            "speech_to_reply_ms": speech_to_reply_ms,
             "turns": self.conversation.turn_count,
             "speaker": speaker_name,
             "est_prompt_tokens": est_prompt_tokens,
             "est_completion_tokens": est_completion_tokens,
         })
         update_metrics(
+            last_reply_lag_ms=reply_lag_ms,
+            last_speech_to_reply_ms=speech_to_reply_ms,
             last_stt_ms=stt_ms,
             last_retrieval_ms=retrieval_ms,
             last_llm_first_token_ms=llm_first_token_ms,
@@ -1378,13 +1464,24 @@ async def main():
 
     try:
         while True:
-            audio_segment = await orch.capture.speech_queue.get()
+            item = await orch.capture.speech_queue.get()
+            # Queue items are (audio, onset_ts, offset_ts) since 2026-06-25 for
+            # the speech-onset->first-reply latency metric. Tolerate a bare
+            # ndarray (tests / any legacy producer) -> no timestamps.
+            if isinstance(item, tuple):
+                audio_segment, vad_onset_ts, vad_offset_ts = item
+            else:
+                audio_segment, vad_onset_ts, vad_offset_ts = item, None, None
             # Hold the turn lock so an in-flight proactive remark finishes (or
             # is excluded) before this reactive turn speaks -- never overlap.
             async with orch._turn_lock:
                 orch.vision.pause_polling()
                 try:
-                    await orch.process_speech(audio_segment)
+                    await orch.process_speech(
+                        audio_segment,
+                        vad_onset_ts=vad_onset_ts,
+                        vad_offset_ts=vad_offset_ts,
+                    )
                 finally:
                     orch.vision.resume_polling()
     except KeyboardInterrupt:

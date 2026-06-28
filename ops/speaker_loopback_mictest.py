@@ -53,7 +53,7 @@ def announce(text: str) -> bool:
     try:
         req = urllib.request.Request(
             f"{ORCH}/api/announce",
-            data=json.dumps({"text": text}).encode(),
+            data=json.dumps({"text": text, "voice": "timmy"}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

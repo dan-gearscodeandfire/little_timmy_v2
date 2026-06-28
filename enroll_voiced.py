@@ -72,7 +72,9 @@ def _post(path: str, body: dict) -> dict:
 
 def announce(text: str) -> None:
     try:
-        _post("/api/announce", {"text": text})
+        # voice=timmy: pose cues are Timmy talking to the enrollee, not the
+        # couples-therapist persona (which is now /api/announce's default voice).
+        _post("/api/announce", {"text": text, "voice": "timmy"})
     except Exception as e:
         print(f"  ! announce failed: {e}")
     # Wait out the spoken cue (incl. the server's "This is Claude talking." prefix)
