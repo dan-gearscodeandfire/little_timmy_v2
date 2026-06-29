@@ -104,9 +104,9 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 32px; right: 36px; bottom: 488px; } /* 2026-06-29: raised to the top (stamp/clock removed) so RETRIEVED MEMORIES tops the screen. bottom:488px still clears the ~346px telemetry block with a ~40px gap; re-measure if telemetry grows. */
-  .context-panel.tl { top: 32px; left: 36px;  bottom: 52%; } /* 2026-06-29: raised to top, aligned with .tr */
-  .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
+  .context-panel.tr { top: 16px; right: 36px; bottom: 488px; } /* 2026-06-29: top:16 aligns the RETRIEVED MEMORIES tag onto the litany's line (justified left/center/right with WHO IS PRESENT + FITTER HAPPIER). bottom:488px still clears the ~346px telemetry block with a ~40px gap; re-measure if telemetry grows. */
+  .context-panel.tl { top: 16px; left: 36px;  bottom: 52%; } /* 2026-06-29: top:16 aligns WHO IS PRESENT onto the litany's line, justified with .tr */
+  .context-panel.bl { top: 55%;  left: 36px;  bottom: 130px; } /* 2026-06-29: nudged down a little (Dan) */
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
@@ -344,7 +344,7 @@
     --bone-faint:  rgba(240,156,138,0.98);
     --bone-ghost:  rgba(208,124,108,0.92);
   }
-  .litany { font-size: 20px; }
+  .litany { font-size: 20px; top: 19px; } /* 2026-06-29: 20px keeps comfortable gaps to the WHO/MEMORIES tags (24px would collide, ~1px); top:19 drops its baseline to match the 24px tags so all three read as one justified line */
   .caption .label { font-size: 20px; }
   .caption .desc { font-size: 30px; }
   .context-panel .panel-tag { font-size: 24px; letter-spacing: 0.16em; }
@@ -352,7 +352,7 @@
   /* 2026-06-28 (Dan): @ground (.bl) carries short single-line facts that read
      airier than @mem's long wrapping memories at the shared 8px gap — tighten
      the inter-item margin for ground only so its rhythm resembles @mem. */
-  .context-panel.bl li { margin-bottom: 4px; }
+  .context-panel.bl li { margin-bottom: 4px; font-size: 21px; } /* 2026-06-29: slightly smaller than @mem's 24px (Dan) */
   .stamp .pl { font-size: 22px; }
   .stamp .when { font-size: 17px; }
   .corner-id { font-size: 22px; }
