@@ -200,15 +200,15 @@
 
   /* bottom-center system VITALS donut cluster (VRAM / SYS RAM / CPU) */
   .vitals { position: absolute; left: 50%; bottom: 102px; transform: translateX(-50%);
-    display: flex; gap: 34px; z-index: 12; }
-  .gauge { position: relative; width: 90px; text-align: center; }
-  .gauge svg { width: 90px; height: 90px; transform: rotate(-90deg); display: block; }
+    display: flex; gap: 26px; z-index: 12; } /* 2026-06-29: tighter cluster */
+  .gauge { position: relative; width: 60px; text-align: center; } /* 2026-06-29: smaller dials */
+  .gauge svg { width: 60px; height: 60px; transform: rotate(-90deg); display: block; }
   .gauge .track { fill: none; stroke: rgba(214,86,68,0.16); stroke-width: 5; }
-  .gauge .arc { fill: none; stroke: var(--red-hot); stroke-width: 5; stroke-linecap: round;
+  .gauge .arc { fill: none; stroke: var(--brass); stroke-width: 5; stroke-linecap: round;
     stroke-dasharray: 213.6; stroke-dashoffset: 213.6;
-    transition: stroke-dashoffset 0.9s cubic-bezier(0.4,0,0.2,1);
-    filter: drop-shadow(0 0 4px rgba(255,45,45,0.55)); }
-  .gauge .gv { position: absolute; top: 31px; left: 0; right: 0; font-family: var(--mono);
+    transition: stroke-dashoffset 0.9s cubic-bezier(0.4,0,0.2,1), stroke 0.9s ease;
+    filter: drop-shadow(0 0 3px rgba(0,0,0,0.55)); } /* 2026-06-29: load-ramp color set in JS; neutral soft glow */
+  .gauge .gv { position: absolute; top: 20px; left: 0; right: 0; font-family: var(--mono);
     font-size: 21px; font-feature-settings: 'tnum'; color: var(--bone-strong); text-shadow: var(--shadow-strong); }
   .gauge .gl { font-family: var(--cop); font-size: 11px; letter-spacing: 0.20em; text-transform: uppercase;
     color: var(--bone-mid); text-shadow: var(--shadow-light); margin-top: 3px; }
@@ -364,9 +364,9 @@
   .corner-state { font-size: 18px; }
   .meta { font-size: 20px; }
   .mood .mlabel { font-size: 15px; }
-  .gauge .gv { font-size: 28px; }
-  .gauge .gl { font-size: 15px; }
-  .gauge .gsub { font-size: 14px; }
+  .gauge .gv { font-size: 17px; } /* 2026-06-29: smaller dials */
+  .gauge .gl { font-size: 11px; }
+  .gauge .gsub { font-size: 10px; }
   .telemetry .ttag { font-size: 24px; letter-spacing: 0.16em; } /* 2026-06-28: match the other panel headers (was 20) */
   /* 2026-06-28 (Dan): keep the right-side headers on ONE row. They're
      right-aligned, so nowrap lets "RETRIEVED MEMORIES" / "COGITATOR TELEMETRY"
@@ -523,7 +523,7 @@
         </div>
         <div class="gauge" id="g-ram">
           <svg viewBox="0 0 90 90"><circle class="track" cx="45" cy="45" r="34"/><circle class="arc" cx="45" cy="45" r="34"/></svg>
-          <div class="gv">—</div><div class="gl">sys ram</div><div class="gsub"></div>
+          <div class="gv">—</div><div class="gl">ram</div><div class="gsub"></div>
         </div>
         <div class="gauge" id="g-cpu">
           <svg viewBox="0 0 90 90"><circle class="track" cx="45" cy="45" r="34"/><circle class="arc" cx="45" cy="45" r="34"/></svg>
@@ -531,7 +531,7 @@
         </div>
         <div class="gauge" id="g-gpu">
           <svg viewBox="0 0 90 90"><circle class="track" cx="45" cy="45" r="34"/><circle class="arc" cx="45" cy="45" r="34"/></svg>
-          <div class="gv">—</div><div class="gl">gpu load</div><div class="gsub"></div>
+          <div class="gv">—</div><div class="gl">gpu</div><div class="gsub"></div>
         </div>
       </div>
 
@@ -1214,29 +1214,37 @@
     // /ltos/api/host proxies LT-OS :8894 /api/host (ops/gpu_sysfs.py + psutil):
     // cpu/ram/vram percentages, gpu_busy_percent, temp_c, power_w, sclk, load.
     const GAUGE_C = 213.6; // 2*pi*r, r=34
+    // arc color ramps with load: brass (idle 199,154,74) -> red-hot (busy
+     // 255,59,59), so resource health reads by color, not by parsing numbers.
+    function loadColor(pct) {
+      const t = Math.max(0, Math.min(1, pct / 100));
+      const r = Math.round(199 + (255 - 199) * t);
+      const g = Math.round(154 + (59 - 154) * t);
+      const b = Math.round(74 + (59 - 74) * t);
+      return `rgb(${r},${g},${b})`;
+    }
     function setGauge(id, pct, subText) {
       const g = document.getElementById(id);
       if (!g || pct == null) return;
       pct = Math.max(0, Math.min(100, pct));
-      g.querySelector('.arc').style.strokeDashoffset = (GAUGE_C * (1 - pct / 100)).toFixed(1);
+      const arc = g.querySelector('.arc');
+      arc.style.strokeDashoffset = (GAUGE_C * (1 - pct / 100)).toFixed(1);
+      arc.style.stroke = loadColor(pct);
       g.querySelector('.gv').textContent = Math.round(pct) + '%';
       if (subText != null) g.querySelector('.gsub').textContent = subText;
     }
-    const gb = (v) => (typeof v === 'number') ? v.toFixed(1) : '—';
+    const r0 = (v) => (typeof v === 'number') ? Math.round(v) : '—';
     async function pollHost() {
       try {
         const r = await fetch('/ltos/api/host', { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
         if (!d || !d.available) return;
-        setGauge('g-vram', d.vram_percent, gb(d.vram_used_gb) + ' / ' + gb(d.vram_total_gb) + ' GB');
-        setGauge('g-ram',  d.ram_percent,  gb(d.ram_used_gb) + ' / ' + gb(d.ram_total_gb) + ' GB');
-        setGauge('g-cpu',  d.cpu_percent,  (d.cpu_count || '—') + ' cores · ' + (d.load_1m ?? '—') + ' load');
-        const gsub = [];
-        if (typeof d.temp_c === 'number')  gsub.push(Math.round(d.temp_c) + '°C');
-        if (typeof d.power_w === 'number') gsub.push(Math.round(d.power_w) + 'W');
-        if (typeof d.sclk_mhz === 'number') gsub.push((d.sclk_mhz / 1000).toFixed(1) + 'GHz');
-        setGauge('g-gpu', d.gpu_busy_percent, gsub.join(' · '));
+        // one faint micro-stat each: VRAM/RAM=used/total GB, CPU=1m loadavg, GPU=temp
+        setGauge('g-vram', d.vram_percent, r0(d.vram_used_gb) + '/' + r0(d.vram_total_gb) + 'G');
+        setGauge('g-ram',  d.ram_percent,  r0(d.ram_used_gb) + '/' + r0(d.ram_total_gb) + 'G');
+        setGauge('g-cpu',  d.cpu_percent,  (d.load_1m ?? '—') + ' ld');
+        setGauge('g-gpu',  d.gpu_busy_percent, (typeof d.temp_c === 'number') ? Math.round(d.temp_c) + '°C' : '—');
       } catch (_) { /* LT-OS unreachable; keep last */ }
     }
     setInterval(pollHost, 2000);
