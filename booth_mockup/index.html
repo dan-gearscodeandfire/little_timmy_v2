@@ -358,13 +358,6 @@
   .context-panel.bl li.gsubj { color: var(--bone-strong); font-size: 23px; letter-spacing: 0.05em; margin-top: 11px; margin-bottom: 5px; }
   .context-panel.bl li.gsubj:first-child { margin-top: 0; }
   .context-panel.bl li.gfact .g { color: var(--brass); }
-  /* Ground truth is a stable, subject-headed list — don't drift it (that would
-     scroll the subject header out of view) and don't fade its top. Anchor to
-     the top; fade only the bottom when it overflows. */
-  .context-panel.bl .panel-scroll.overflow ul { animation: none; transform: none; }
-  .context-panel.bl .panel-scroll.overflow {
-    mask-image: linear-gradient(180deg, #000 0%, #000 80%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 80%, transparent 100%); }
   .stamp .pl { font-size: 22px; }
   .stamp .when { font-size: 17px; }
   .corner-id { font-size: 22px; }
@@ -1017,8 +1010,11 @@
         const sp = t.indexOf(' ');
         const subj = sp === -1 ? t : t.slice(0, sp);
         const rest = sp === -1 ? '' : t.slice(sp + 1);
+        if (!rest) continue;
+        // the subject header already conveys the name -> drop the "name" fact
+        if (rest.split(' ', 1)[0].toLowerCase() === 'name') continue;
         if (!groups.has(subj)) groups.set(subj, []);
-        if (rest) groups.get(subj).push(rest);
+        groups.get(subj).push(rest);
       }
       for (const [subj, facts] of groups) {
         const head = document.createElement('li');
