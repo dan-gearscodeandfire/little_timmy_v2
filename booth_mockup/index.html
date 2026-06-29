@@ -110,7 +110,7 @@
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
-  .context-panel .panel-tag::before { content: '\2699\FE0E  '; color: var(--brass); font-family: var(--mono); } /* 2026-06-28: gear glyph (was \2720) */
+  .context-panel .panel-tag::before { content: ''; } /* 2026-06-29: gear removed (kept only on the litany) */
   .context-panel.tr .panel-tag { text-align: right; }
   .context-panel.tr .panel-tag::before { content: ''; }
   .context-panel.tl .panel-tag, .context-panel.bl .panel-tag { text-align: left; }
@@ -219,7 +219,7 @@
   .telemetry { position: absolute; right: 36px; bottom: 102px; width: 372px; z-index: 12; } /* 2026-06-28: widened 312->372 so the larger telemetry numbers fit on one line (Dan) */
   .telemetry .ttag { font-family: var(--cop); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase;
     color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 6px; text-align: right; }
-  .telemetry .ttag::before { content: '\2699\FE0E  '; color: var(--brass); font-family: var(--mono); } /* 2026-06-28: gear glyph (was \2720) */
+  .telemetry .ttag::before { content: ''; } /* 2026-06-29: gear removed (kept only on the litany) */
   .telemetry .trow { margin-bottom: 3px; } /* 2026-06-28: tightened row spacing (Dan) */
   .telemetry .tk { display: flex; justify-content: space-between; align-items: baseline;
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase;
@@ -1324,7 +1324,7 @@
     function flashTool(name) {
       const el = document.getElementById('toolFlash');
       if (!el) return;
-      el.textContent = '⚙ RITE ENACTED · ' + name;
+      el.textContent = 'RITE ENACTED · ' + name;
       el.style.display = 'block';
       if (_toolFlashTimer) clearTimeout(_toolFlashTimer);
       _toolFlashTimer = setTimeout(() => { el.style.display = 'none'; }, 4500);
