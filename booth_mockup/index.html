@@ -74,7 +74,7 @@
     display: flex; gap: 14px; align-items: center; white-space: nowrap;
     font-family: var(--cop); font-weight: 400; font-size: 13px; letter-spacing: 0.16em;
     color: var(--brass); text-shadow: 0 0 7px rgba(199,154,74,0.45), var(--shadow-light); }
-  .litany::before, .litany::after { content: '\2720'; color: var(--red); font-family: var(--mono); }
+  .litany::before, .litany::after { content: '\2699\FE0E'; color: var(--red); font-family: var(--mono); } /* 2026-06-28: gear glyph (was Maltese cross \2720) */
 
   svg.overlay-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   svg.overlay-svg .leader { stroke: var(--bone-mid); stroke-width: 1.5; fill: none; stroke-linecap: round;
@@ -104,13 +104,13 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 88px; right: 36px; bottom: 506px; } /* edited 2026-06-28: clears the .telemetry block (bottom:102px, width:372px, ~364px tall after the larger-font readability pass + tightened rows → top ~466px from viewport bottom); 506px keeps a ~40px gap below the memories list. Re-raise if telemetry gains rows or fonts grow. */
+  .context-panel.tr { top: 88px; right: 36px; bottom: 497px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry de-clutter pass (compact labels, tightened section spacing, single-line "reply out") the block measures ~355px tall → its top sits ~263px from the viewport top at 1280x720 logical; bottom:497px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
   .context-panel.tl { top: 88px; left: 36px;  bottom: 52%; }
   .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
-  .context-panel .panel-tag::before { content: '\2720 '; color: var(--brass); font-family: var(--mono); }
+  .context-panel .panel-tag::before { content: '\2699\FE0E  '; color: var(--brass); font-family: var(--mono); } /* 2026-06-28: gear glyph (was \2720) */
   .context-panel.tr .panel-tag { text-align: right; }
   .context-panel.tr .panel-tag::before { content: ''; }
   .context-panel.tl .panel-tag, .context-panel.bl .panel-tag { text-align: left; }
@@ -213,7 +213,7 @@
   .telemetry { position: absolute; right: 36px; bottom: 102px; width: 372px; z-index: 12; } /* 2026-06-28: widened 312->372 so the larger telemetry numbers fit on one line (Dan) */
   .telemetry .ttag { font-family: var(--cop); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase;
     color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 6px; text-align: right; }
-  .telemetry .ttag::before { content: '\2720 '; color: var(--brass); }
+  .telemetry .ttag::before { content: '\2699\FE0E  '; color: var(--brass); font-family: var(--mono); } /* 2026-06-28: gear glyph (was \2720) */
   .telemetry .trow { margin-bottom: 3px; } /* 2026-06-28: tightened row spacing (Dan) */
   .telemetry .tk { display: flex; justify-content: space-between; align-items: baseline;
     font-family: var(--mono); font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase;
@@ -222,7 +222,7 @@
   /* understanding-stage latencies: hear (stt) · filter (classifier) · resolve (coref :8093) · recall (memory)
      2x2 grid (flex-basis ~46%) so the labels/values stay large and legible on the booth screen. */
   .telemetry .perc { display: flex; flex-wrap: wrap; gap: 4px 6px;
-    margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(214,86,68,0.18); }
+    margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid rgba(214,86,68,0.18); }
   .telemetry .perc i { flex: 0 0 46%; font-style: normal; font-family: var(--mono);
     display: flex; gap: 6px; align-items: baseline; justify-content: space-between;
     color: var(--bone-strong); text-shadow: var(--shadow-light); }
@@ -235,10 +235,10 @@
   .telemetry .tk.hero b { font-size: 22px; color: var(--bone-strong); }
   .telemetry .herosub { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
     text-align: right; color: var(--bone-faint); text-shadow: var(--shadow-light);
-    margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(214,86,68,0.18); }
+    margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid rgba(214,86,68,0.18); }
   /* vox · mic VU meter — booth-palette twin of the LT-OS green/orange/red bar:
      brass→red-hot fill, bone peak-hold tick, brass energy-floor tick. */
-  .telemetry .vox { margin-bottom: 6px; padding-bottom: 6px;
+  .telemetry .vox { margin-bottom: 4px; padding-bottom: 4px;
     border-bottom: 1px solid rgba(214,86,68,0.18); }
   .vumeter { position: relative; height: 10px; background: rgba(214,86,68,0.16); border-radius: 3px; }
   .vumeter .vufill { position: absolute; top: 0; left: 0; height: 100%; width: 0%; max-width: 100%;
@@ -318,6 +318,10 @@
   .caption .desc { font-size: 30px; }
   .context-panel .panel-tag { font-size: 24px; letter-spacing: 0.16em; }
   .context-panel li { font-size: 24px; line-height: 1.25; margin-bottom: 8px; }
+  /* 2026-06-28 (Dan): @ground (.bl) carries short single-line facts that read
+     airier than @mem's long wrapping memories at the shared 8px gap — tighten
+     the inter-item margin for ground only so its rhythm resembles @mem. */
+  .context-panel.bl li { margin-bottom: 4px; }
   .stamp .pl { font-size: 22px; }
   .stamp .when { font-size: 17px; }
   .corner-id { font-size: 22px; }
@@ -327,16 +331,21 @@
   .gauge .gv { font-size: 28px; }
   .gauge .gl { font-size: 15px; }
   .gauge .gsub { font-size: 14px; }
-  .telemetry .ttag { font-size: 20px; letter-spacing: 0.16em; }
-  /* labels sized to match the metric they display (Dan 2026-06-28): tk label
-     = tk value (22), perc label = perc value (23), hero label = hero value (30). */
-  .telemetry .tk { font-size: 22px; }
-  .telemetry .tk b { font-size: 22px; font-weight: 600; }
-  .telemetry .perc .pl { font-size: 23px; }
-  .telemetry .perc b { font-size: 23px; font-weight: 600; }
-  .telemetry .tk.hero { font-size: 30px; }
-  .telemetry .tk.hero b { font-size: 30px; font-weight: 600; }
-  .telemetry .herosub { font-size: 14px; }
+  .telemetry .ttag { font-size: 24px; letter-spacing: 0.16em; } /* 2026-06-28: match the other panel headers (was 20) */
+  /* 2026-06-28 (Dan) telemetry de-clutter: re-establish hierarchy so the block
+     stops competing with itself. ONE hero (reply lag) dominates; every metric
+     VALUE is medium + heavy + red-hot; every LABEL is downgraded to a small,
+     dim, wide-tracked caption that recedes. Previously labels were sized equal
+     to their values (22/23/30) which is what made it a wall of equal-weight
+     text. Shorter rows here also free vertical space for @mem above. */
+  .telemetry .tk      { font-size: 13px; letter-spacing: 0.14em; color: var(--bone-faint); }
+  .telemetry .tk b    { font-size: 19px; font-weight: 600; }
+  .telemetry .perc .pl{ font-size: 13px; letter-spacing: 0.12em; color: var(--bone-faint); opacity: 1; }
+  .telemetry .perc i  { color: var(--bone-faint); }
+  .telemetry .perc b  { font-size: 19px; font-weight: 600; }
+  .telemetry .tk.hero    { font-size: 15px; }
+  .telemetry .tk.hero b  { font-size: 32px; font-weight: 600; }
+  .telemetry .herosub { font-size: 13px; }
   .barlbl { font-size: 14px; }
   .seglbl { font-size: 14px; }
   .faceid .tag .nm { font-size: 22px; }
@@ -532,7 +541,11 @@
             <i class="k-tts">tts <span id="lTts">—</span></i>
           </div>
         </div>
-        <div class="tk"><span>completion</span><b><span id="tkComp">—</span> · <span id="tkTps" class="tps">—</span></b></div>
+        <!-- "reply out": output tokens + throughput of the SINGLE Qwen 3.6
+             reply-generation call (last_est_completion_tokens / last_llm_total_ms),
+             NOT the whole pipeline. Paired with "payload → llm" (that call's
+             prompt) and "response latency" (that call's 1st/gen/tts). -->
+        <div class="tk"><span>reply out</span><b><span id="tkComp">—</span> · <span id="tkTps" class="tps">—</span></b></div>
       </div>
 
     </div>
@@ -981,8 +994,9 @@
         const overflow = ul.offsetHeight - ps.clientHeight; // offsetHeight ignores transform
         if (overflow > 4) {
           ps.style.setProperty('--drift', overflow + 'px');
-          // gentle pace, scaled to how much overflows
-          const dur = Math.max(18, Math.min(70, Math.round(overflow / 40 * 6) + 12));
+          // gentle pace, scaled to how much overflows (2026-06-28: nudged
+          // ~15-20% faster per Dan — memories were drifting a touch too slow)
+          const dur = Math.max(15, Math.min(58, Math.round(overflow / 40 * 5) + 10));
           ps.style.setProperty('--drift-dur', dur + 's');
           ps.classList.add('overflow');
         } else {
