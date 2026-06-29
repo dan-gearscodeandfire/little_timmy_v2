@@ -104,7 +104,7 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 16px; right: 36px; bottom: 488px; } /* 2026-06-29: top:16 aligns the RETRIEVED MEMORIES tag onto the litany's line (justified left/center/right with WHO IS PRESENT + FITTER HAPPIER). bottom:488px still clears the ~346px telemetry block with a ~40px gap; re-measure if telemetry grows. */
+  .context-panel.tr { top: 16px; right: 36px; bottom: 397px; } /* 2026-06-29: top:16 aligns the RETRIEVED MEMORIES tag onto the litany's line. After dropping the reply-lag hero + pipeline footer the telemetry block is ~255px tall (top ~363px from viewport top at 1280x720); bottom:397px keeps a ~40px gap below the memories list. Re-measure if telemetry grows. */
   .context-panel.tl { top: 16px; left: 24px;  bottom: 52%; } /* 2026-06-29: top:16 aligns WHO IS PRESENT onto the litany's line; left:24 hugs the left margin a bit tighter (Dan) */
   .context-panel.bl { top: 55%;  left: 24px;  bottom: 130px; } /* 2026-06-29: nudged down a little + left:24 to hug the left margin (Dan) */
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
@@ -533,11 +533,6 @@
       <!-- bottom-right cogitator telemetry (live LT /api/metrics) -->
       <div class="telemetry">
         <div class="ttag">cogitator telemetry</div>
-        <!-- reply lag: from when the speaker stops talking (incl. endpointing
-             delay) to Timmy's first reply audio. The headline responsiveness
-             number. last_reply_lag_ms / last_speech_to_reply_ms from LT. -->
-        <div class="tk hero"><span>reply lag</span><b id="tkReplyLag">—</b></div>
-        <div class="herosub"><span id="tkReplySpan">&nbsp;</span></div>
         <!-- vox · mic level (VU), mirrors the Little Timmy OS meter:
              /lt/api/audio/diag last_peak with peak-hold + energy-floor tick. -->
         <div class="vox">
@@ -558,7 +553,6 @@
           <div class="tk"><span>pipeline · to 1st audio</span><b id="pipeTotal">—</b></div>
           <div class="pipebar" id="pipeBar"></div>
           <div class="pipelegend" id="pipeLegend"></div>
-          <div class="pipefoot" id="pipeFoot">&nbsp;</div>
         </div>
         <!-- PROMPT: the giant prompt sent to the reply LLM, broken into its
              sections by ESTIMATED tokens (char/4). system=static persona
@@ -1254,10 +1248,6 @@
       leg.innerHTML = segs.map(s =>
         `<i class="${s.m ? '' : 'ghost'}"><span class="sw" style="background:${PIPE_COL[s.k]}"></span><span class="pk">${s.k}</span><b>${s.m ? '' : '~'}${fmtMs(s.ms)}</b></i>`).join('');
       document.getElementById('pipeTotal').textContent = fmtMs(total);
-      const gen = Math.max(0, (d.last_llm_total_ms || 0) - ft);
-      const foot = document.getElementById('pipeFoot');
-      if (foot) foot.textContent = (wait > 0 || gen > 0)
-        ? ('wait ≈ endpointing (untimed) · +gen ' + fmtMs(gen) + ' streams past 1st audio') : '';
     }
 
     // PROMPT composition: split the assembled messages by ~token (char/4).
@@ -1295,11 +1285,6 @@
         const r = await fetch('/lt/api/metrics', { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
-        // headline felt latency: you stop talking -> first reply audio.
-        const rl = d.last_reply_lag_ms, rlEl = document.getElementById('tkReplyLag');
-        if (rlEl) rlEl.textContent = (typeof rl === 'number') ? fmtMs(rl) : '—';
-        const sr = d.last_speech_to_reply_ms, srEl = document.getElementById('tkReplySpan');
-        if (srEl) srEl.innerHTML = (typeof sr === 'number') ? ('from speech onset ' + fmtMs(sr)) : '&nbsp;';
         // pipeline timeline
         renderPipeline(d);
         // reply out: tokens + throughput of the single reply LLM call
