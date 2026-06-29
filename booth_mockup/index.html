@@ -104,7 +104,7 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 88px; right: 36px; bottom: 497px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry de-clutter pass (compact labels, tightened section spacing, single-line "reply out") the block measures ~355px tall → its top sits ~263px from the viewport top at 1280x720 logical; bottom:497px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
+  .context-panel.tr { top: 88px; right: 36px; bottom: 473px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry de-clutter pass (compact labels, tightened section spacing, single-line "reply out") AND the single-row headers (nowrap), the block measures ~331px tall → its top sits ~287px from the viewport top at 1280x720 logical; bottom:473px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
   .context-panel.tl { top: 88px; left: 36px;  bottom: 52%; }
   .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
@@ -332,6 +332,10 @@
   .gauge .gl { font-size: 15px; }
   .gauge .gsub { font-size: 14px; }
   .telemetry .ttag { font-size: 24px; letter-spacing: 0.16em; } /* 2026-06-28: match the other panel headers (was 20) */
+  /* 2026-06-28 (Dan): keep the right-side headers on ONE row. They're
+     right-aligned, so nowrap lets "RETRIEVED MEMORIES" / "COGITATOR TELEMETRY"
+     extend left into empty space instead of wrapping to a second line. */
+  .context-panel .panel-tag, .telemetry .ttag { white-space: nowrap; }
   /* 2026-06-28 (Dan) telemetry de-clutter: re-establish hierarchy so the block
      stops competing with itself. ONE hero (reply lag) dominates; every metric
      VALUE is medium + heavy + red-hot; every LABEL is downgraded to a small,
