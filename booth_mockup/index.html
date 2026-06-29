@@ -104,8 +104,8 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 88px; right: 36px; bottom: 488px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry rebuild (pipeline-timeline + prompt-composition bars) the block measures ~346px tall → its top sits ~272px from the viewport top at 1280x720 logical; bottom:488px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
-  .context-panel.tl { top: 88px; left: 36px;  bottom: 52%; }
+  .context-panel.tr { top: 32px; right: 36px; bottom: 488px; } /* 2026-06-29: raised to the top (stamp/clock removed) so RETRIEVED MEMORIES tops the screen. bottom:488px still clears the ~346px telemetry block with a ~40px gap; re-measure if telemetry grows. */
+  .context-panel.tl { top: 32px; left: 36px;  bottom: 52%; } /* 2026-06-29: raised to top, aligned with .tr */
   .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
@@ -133,9 +133,15 @@
     text-shadow: var(--shadow-light); text-transform: uppercase; }
 
   /* top-left identity */
-  .corner-id { position: absolute; top: 30px; left: 36px; font-family: var(--cop); font-weight: 700;
+  /* 2026-06-29: relocated from the (now-removed) top-left corner to a centered
+     stack under the mood matrix — litany / mood / attention-state read together
+     as the cogitator's internal-state column, freeing both top corners for the
+     who-present + retrieved-memories panels. */
+  .corner-id { position: absolute; top: 134px; left: 50%; transform: translateX(-50%); text-align: center;
+    white-space: nowrap; font-family: var(--cop); font-weight: 700;
     font-size: 15px; letter-spacing: 0.22em; color: var(--red-hot); text-shadow: var(--shadow-light); text-transform: uppercase; }
-  .corner-state { position: absolute; top: 54px; left: 49px; font-family: var(--mono); font-weight: 600;
+  .corner-state { position: absolute; top: 162px; left: 50%; transform: translateX(-50%); text-align: center;
+    white-space: nowrap; font-family: var(--mono); font-weight: 600;
     font-size: 13px; letter-spacing: 0.24em; color: var(--signal); text-shadow: var(--shadow-light); text-transform: uppercase; }
   .corner-id .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--red);
     margin-right: 8px; transform: translateY(-1px); box-shadow: 0 0 6px var(--red); animation: pulse 2.4s ease-in-out infinite; }
@@ -386,7 +392,7 @@
 </head>
 <body>
   <div class="fx"></div>
-  <div class="litany">++ AVE OMNISSIAH · THE FLESH IS WEAK · THE MACHINE ENDURES ++</div>
+  <div class="litany">FITTER, HAPPIER, LITTLE TIMMY</div>
   <!-- Tool-call rite flash (2026-06-18): lights up when the classifier invokes a
        tool, naming the rite enacted; auto-fades. -->
   <div id="toolFlash" style="display:none; position:fixed; top:48px; left:50%;
@@ -439,12 +445,6 @@
       <!-- live streamerpi behavior mode (track/scan/engage/idle), polled from
            /streamerpi/behavior/status; sits directly under "observing" -->
       <div class="corner-state" id="corner-state"></div>
-
-      <!-- top-right stamp -->
-      <div class="stamp">
-        <div class="pl">PL. 011</div>
-        <div class="when" id="ts">17:42 EDT</div>
-      </div>
 
       <!-- Context panels. TR + BL are populated from LT /api/last_payload
            ephemeral_block (GROUND TRUTH -> BL, Relevant memories -> TR; MOOD +
@@ -605,18 +605,6 @@
       panv.textContent  = fmtDeg(pan);
       tiltv.textContent = fmtDeg(tilt);
     }
-
-    // tick the timestamp
-    const ts = document.getElementById('ts');
-    function tickTime() {
-      const d = new Date();
-      const hh = String(d.getHours()).padStart(2,'0');
-      const mm = String(d.getMinutes()).padStart(2,'0');
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().slice(0,3).toUpperCase();
-      ts.textContent = `${hh}:${mm} ${tz}`;
-    }
-    tickTime();
-    setInterval(tickTime, 30000);
 
     // ----- WebRTC client: pull the live streamerpi feed via /streamerpi/offer -----
     // Same-origin proxy means we negotiate against our own HTTPS server,
