@@ -104,7 +104,7 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 88px; right: 36px; bottom: 473px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry de-clutter pass (compact labels, tightened section spacing, single-line "reply out") AND the single-row headers (nowrap), the block measures ~331px tall → its top sits ~287px from the viewport top at 1280x720 logical; bottom:473px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
+  .context-panel.tr { top: 88px; right: 36px; bottom: 488px; } /* edited 2026-06-28: clears the .telemetry block. After the telemetry rebuild (pipeline-timeline + prompt-composition bars) the block measures ~346px tall → its top sits ~272px from the viewport top at 1280x720 logical; bottom:488px keeps a ~40px gap below the memories list. Re-measure getBoundingClientRect() and reset this if telemetry gains rows or fonts grow. */
   .context-panel.tl { top: 88px; left: 36px;  bottom: 52%; }
   .context-panel.bl { top: 52%;  left: 36px;  bottom: 130px; }
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
@@ -229,6 +229,31 @@
   .telemetry .perc .pl { text-transform: uppercase; letter-spacing: 0.10em; font-size: 12px; opacity: 0.92; }
   .telemetry .perc b { font-weight: 400; color: var(--red-hot); font-size: 17px; letter-spacing: 0.03em; }
   .telemetry .tps { color: var(--brass); }
+  /* ===== 2026-06-28 (Dan): pipeline-timeline + prompt-composition =========
+     Two stories for the curious nerd: (1) where the reply latency actually
+     goes, stage by stage, measured-only (endpointing shown ghosted); (2) how
+     the giant prompt is composed by ~token (char/4). Segment colors are set
+     inline from a JS palette (warm Mechanicus ramp) so this CSS stays
+     structural. */
+  .telemetry .pipe, .telemetry .prompt { margin-top: 7px; }
+  .pipebar, .stackbar { display: flex; height: 13px; border-radius: 3px; overflow: hidden;
+    background: rgba(214,86,68,0.12); margin: 5px 0 4px; box-shadow: inset 0 0 0 1px rgba(214,86,68,0.10); }
+  .pipebar .pseg, .stackbar .sseg { height: 100%; min-width: 1px;
+    transition: width 0.6s cubic-bezier(0.4,0,0.2,1); }
+  .pipelegend, .stacklegend { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .pipelegend i, .stacklegend i { font-style: normal; display: inline-flex; align-items: baseline; gap: 5px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--bone-faint);
+    text-shadow: var(--shadow-light); }
+  .pipelegend i .sw, .stacklegend i .sw { width: 8px; height: 8px; border-radius: 2px;
+    align-self: center; box-shadow: 0 0 3px rgba(0,0,0,0.55); }
+  .pipelegend i .pk, .stacklegend i .pk { text-transform: uppercase; letter-spacing: 0.08em; }
+  .pipelegend i b, .stacklegend i b { font-weight: 600; color: var(--bone-strong); font-size: 12px;
+    letter-spacing: 0.02em; }
+  .pipelegend i.ghost .pk, .pipelegend i.ghost b { color: var(--bone-ghost); }
+  .stacklegend i .sub { font-size: 10px; letter-spacing: 0.02em; color: var(--bone-ghost);
+    text-transform: uppercase; }
+  .pipefoot { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--bone-ghost);
+    text-shadow: var(--shadow-light); margin-top: 3px; text-align: right; }
   /* reply-lag hero row: the headline responsiveness number, larger than the
      stage rows so it reads first. */
   .telemetry .tk.hero { margin-bottom: 0px; }
@@ -523,33 +548,29 @@
             <div class="vupeak" id="vuPeak"></div>
           </div>
         </div>
-        <!-- understanding-stage latencies, in pipeline order:
-             hear (whisper STT) · filter (tool-call classifier :8092) · resolve (coref :8093) · recall (memory retrieval) -->
-        <div class="perc">
-          <i><span class="pl">hear</span><b id="tkStt">—</b></i>
-          <i><span class="pl">filter</span><b id="tkClsMs">—</b></i>
-          <i><span class="pl">resolve</span><b id="tkResolve">—</b></i>
-          <i><span class="pl">recall</span><b id="tkRecall">—</b></i>
+        <!-- PIPELINE: honest decomposition of reply_lag (you stop talking ->
+             first reply audio) into the additive MEASURED stages, with the
+             unmeasured endpointing/build remainder shown as a ghosted "wait".
+             hear=STT · filter=classifier:8092 · resolve=coref:8093 (gated) ·
+             recall=memory · think=LLM-to-first-token · speak=first-token->first
+             sentence spoken. Segments + legend are built in renderPipeline(). -->
+        <div class="pipe">
+          <div class="tk"><span>pipeline · to 1st audio</span><b id="pipeTotal">—</b></div>
+          <div class="pipebar" id="pipeBar"></div>
+          <div class="pipelegend" id="pipeLegend"></div>
+          <div class="pipefoot" id="pipeFoot">&nbsp;</div>
         </div>
-        <div class="trow">
-          <div class="tk"><span>payload → llm</span><b id="tkPayload">—</b></div>
-          <div class="bar" id="tokBar"><div class="fill"></div></div>
-          <div class="barlbl"><span id="tkMin">min —</span><span id="tkMax">— max</span></div>
+        <!-- PROMPT: the giant prompt sent to the reply LLM, broken into its
+             sections by ESTIMATED tokens (char/4). system=static persona
+             (KV-cached) · history=hot turns · context=ephemeral block (rebuilt
+             every turn) · utterance. Built client-side from /api/last_payload
+             messages in renderPrompt(). "reply out" = that call's output. -->
+        <div class="prompt">
+          <div class="tk"><span>prompt → llm</span><b id="promptTotal">—</b></div>
+          <div class="stackbar" id="promptBar"></div>
+          <div class="stacklegend" id="promptLegend"></div>
+          <div class="tk"><span>reply out</span><b><span id="tkComp">—</span> · <span id="tkTps" class="tps">—</span></b></div>
         </div>
-        <div class="trow">
-          <div class="tk"><span>response latency</span><b id="tkE2E">—</b></div>
-          <div class="seg" id="segBar"><span class="s-ft"></span><span class="s-gen"></span><span class="s-tts"></span></div>
-          <div class="seglbl">
-            <i class="k-ft">1st <span id="lFt">—</span></i>
-            <i class="k-gen">gen <span id="lGen">—</span></i>
-            <i class="k-tts">tts <span id="lTts">—</span></i>
-          </div>
-        </div>
-        <!-- "reply out": output tokens + throughput of the SINGLE Qwen 3.6
-             reply-generation call (last_est_completion_tokens / last_llm_total_ms),
-             NOT the whole pipeline. Paired with "payload → llm" (that call's
-             prompt) and "response latency" (that call's 1st/gen/tts). -->
-        <div class="tk"><span>reply out</span><b><span id="tkComp">—</span> · <span id="tkTps" class="tps">—</span></b></div>
       </div>
 
     </div>
@@ -1033,6 +1054,7 @@
         if (d && d.available && typeof d.ephemeral_block === 'string') {
           renderContext(d.ephemeral_block);
         }
+        if (d && d.available) renderPrompt(d);
       } catch (_) { /* LT temporarily unreachable; leave last content */ }
     }
     setInterval(pollContext, 4000);
@@ -1206,63 +1228,99 @@
         return h ? (h + 'h' + String(m).padStart(2, '0')) : (m + 'm');
       } catch { return '—'; }
     }
+    // Warm Mechanicus ramp for the bars; set inline so the CSS stays structural.
+    const WAIT_HATCH = 'repeating-linear-gradient(45deg, rgba(176,72,56,0.60) 0 4px, rgba(120,45,35,0.20) 4px 8px)';
+    const PIPE_COL = { wait: WAIT_HATCH, hear: '#d49a4a', filter: '#e6bd6e', resolve: '#f0cf9a',
+                       recall: '#ffb293', think: '#ff3b3b', speak: '#cf8273' };
+    const SECT_COL = { system: '#b6772f', history: '#e69b73', context: '#ff4d4d', utter: '#7e5147' };
+    const estTok = (s) => Math.max(0, Math.round((s || '').length / 4));
+
+    // PIPELINE: decompose reply_lag (you stop talking -> first reply audio) into
+    // the MEASURED, additive stages. hear=STT, filter=classifier, resolve=coref
+    // (gated), recall=memory, think=LLM-to-first-token, speak=first-token->first
+    // sentence spoken (tts is measured from LLM start, so speak = tts - first_token).
+    // The remainder vs the measured sum is the UNMEASURED endpointing/build "wait"
+    // — drawn ghosted + flagged ~ so we never imply we timed it.
+    function renderPipeline(d) {
+      const bar = document.getElementById('pipeBar'), leg = document.getElementById('pipeLegend');
+      if (!bar || !leg) return;
+      const stt = d.last_stt_ms || 0, cls = d.last_classifier_ms || 0;
+      const res = (typeof d.last_resolution_ms === 'number') ? d.last_resolution_ms : 0;
+      const rec = d.last_retrieval_ms || 0, ft = d.last_llm_first_token_ms || 0;
+      const speak = Math.max(0, (d.last_tts_ms || 0) - ft);
+      const rl = d.last_reply_lag_ms || 0;
+      const measured = stt + cls + res + rec + ft + speak;
+      const wait = Math.max(0, rl - measured);
+      const total = rl || measured || 1;
+      const segs = [
+        { k: 'wait',   ms: wait, m: false },
+        { k: 'hear',   ms: stt,  m: true },
+        { k: 'filter', ms: cls,  m: true },
+        ...(res > 0 ? [{ k: 'resolve', ms: res, m: true }] : []),
+        { k: 'recall', ms: rec,  m: true },
+        { k: 'think',  ms: ft,   m: true },
+        { k: 'speak',  ms: speak, m: true },
+      ].filter(s => s.ms > 0);
+      bar.innerHTML = segs.map(s =>
+        `<span class="pseg" style="width:${(s.ms / total * 100).toFixed(2)}%;background:${PIPE_COL[s.k]}" title="${s.k} ${fmtMs(s.ms)}${s.m ? '' : ' (estimated)'}"></span>`).join('');
+      leg.innerHTML = segs.map(s =>
+        `<i class="${s.m ? '' : 'ghost'}"><span class="sw" style="background:${PIPE_COL[s.k]}"></span><span class="pk">${s.k}</span><b>${s.m ? '' : '~'}${fmtMs(s.ms)}</b></i>`).join('');
+      document.getElementById('pipeTotal').textContent = fmtMs(total);
+      const gen = Math.max(0, (d.last_llm_total_ms || 0) - ft);
+      const foot = document.getElementById('pipeFoot');
+      if (foot) foot.textContent = (wait > 0 || gen > 0)
+        ? ('wait ≈ endpointing (untimed) · +gen ' + fmtMs(gen) + ' streams past 1st audio') : '';
+    }
+
+    // PROMPT composition: split the assembled messages by ~token (char/4).
+    // system[0]=static persona (KV-cached) · middle=history turns · the last
+    // user message's [CONTEXT] ephemeral block=rebuilt every turn · the rest of
+    // that message=utterance (markers + speech). Estimate only -> "≈".
+    function renderPrompt(d) {
+      const bar = document.getElementById('promptBar'), leg = document.getElementById('promptLegend');
+      if (!bar || !leg) return;
+      const msgs = Array.isArray(d.messages) ? d.messages : [];
+      if (!msgs.length) return;
+      const sysTok = estTok(msgs[0] && msgs[0].content);
+      let histTok = 0;
+      for (let i = 1; i < msgs.length - 1; i++) histTok += estTok(msgs[i] && msgs[i].content);
+      const ctxTok = estTok(d.ephemeral_block);
+      const lastTok = (msgs.length > 1) ? estTok(msgs[msgs.length - 1].content) : 0;
+      const uttTok = Math.max(0, lastTok - ctxTok);
+      const total = (sysTok + histTok + ctxTok + uttTok) || 1;
+      const turns = (typeof d.history_turn_count === 'number') ? d.history_turn_count : Math.max(0, msgs.length - 2);
+      const segs = [
+        { k: 'system',  tok: sysTok,  sub: 'cached' },
+        { k: 'history', tok: histTok, sub: turns + ' turns' },
+        { k: 'context', tok: ctxTok,  sub: 'rebuilt' },
+        { k: 'utter',   tok: uttTok,  sub: '' },
+      ].filter(s => s.tok > 0);
+      bar.innerHTML = segs.map(s =>
+        `<span class="sseg" style="width:${(s.tok / total * 100).toFixed(2)}%;background:${SECT_COL[s.k]}" title="${s.k} ≈${s.tok} tok"></span>`).join('');
+      leg.innerHTML = segs.map(s =>
+        `<i><span class="sw" style="background:${SECT_COL[s.k]}"></span><span class="pk">${s.k === 'utter' ? 'utterance' : s.k}</span><b>${s.tok}</b>${s.sub ? `<span class="sub">${s.sub}</span>` : ''}</i>`).join('');
+      document.getElementById('promptTotal').textContent = '≈' + total.toLocaleString() + ' tok';
+    }
+
     async function pollMetrics() {
       try {
         const r = await fetch('/lt/api/metrics', { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
-        // first-pass tool-call filter latency (Qwen3-4B :8092)
-        const clsMs = d.last_classifier_ms;
-        document.getElementById('tkClsMs').textContent =
-          (typeof clsMs === 'number') ? fmtMs(clsMs) : (d.classifier_enabled ? '—' : 'off');
-        // perception pipeline: hear (whisper STT) · resolve (coref :8093) · recall (memory retrieval)
-        const optMs = (v) => (typeof v === 'number') ? fmtMs(v) : '—';
-        document.getElementById('tkStt').textContent = optMs(d.last_stt_ms);
-        document.getElementById('tkResolve').textContent =
-          (typeof d.last_resolution_ms === 'number') ? fmtMs(d.last_resolution_ms)
-            : (d.query_resolution_enabled ? '—' : 'off');
-        document.getElementById('tkRecall').textContent = optMs(d.last_retrieval_ms);
-        // payload tokens + observed min·max envelope
-        const tok = d.last_est_prompt_tokens;
-        if (typeof tok === 'number' && tok > 0) {
-          tokMin = Math.min(tokMin, tok); tokMax = Math.max(tokMax, tok);
-          document.getElementById('tkPayload').textContent = tok.toLocaleString() + ' tok';
-          const lo = (tokMin === Infinity) ? tok : tokMin;
-          const hi = Math.max(tokMax, lo + 1);
-          const span = (hi - lo) || 1;
-          const fill = document.querySelector('#tokBar .fill');
-          fill.style.left = '0%';
-          fill.style.width = Math.max(3, ((tok - lo) / span) * 100).toFixed(0) + '%';
-          document.getElementById('tkMin').textContent = 'min ' + lo.toLocaleString();
-          document.getElementById('tkMax').textContent = hi.toLocaleString() + ' max';
-        }
-        const comp = d.last_est_completion_tokens;
-        if (typeof comp === 'number') document.getElementById('tkComp').textContent = comp + ' tok';
-        // latency: first-token | generation | tts segmented bar
-        const ft  = d.last_llm_first_token_ms || 0;
-        const tot = d.last_llm_total_ms || 0;
-        const gen = Math.max(0, tot - ft);
-        const tts = d.last_tts_ms || 0;
-        const sum = (ft + gen + tts) || 1;
-        document.querySelector('#segBar .s-ft').style.width  = (ft / sum * 100) + '%';
-        document.querySelector('#segBar .s-gen').style.width = (gen / sum * 100) + '%';
-        document.querySelector('#segBar .s-tts').style.width = (tts / sum * 100) + '%';
-        document.getElementById('lFt').textContent  = fmtMs(ft);
-        document.getElementById('lGen').textContent = fmtMs(gen);
-        document.getElementById('lTts').textContent = fmtMs(tts);
-        document.getElementById('tkE2E').textContent = fmtMs(d.last_e2e_ms || sum);
-        // reply lag (you stop talking -> first reply audio, incl. endpointing
-        // delay) + full span from speech onset. Headline responsiveness number.
+        // headline felt latency: you stop talking -> first reply audio.
         const rl = d.last_reply_lag_ms, rlEl = document.getElementById('tkReplyLag');
         if (rlEl) rlEl.textContent = (typeof rl === 'number') ? fmtMs(rl) : '—';
         const sr = d.last_speech_to_reply_ms, srEl = document.getElementById('tkReplySpan');
-        if (srEl) srEl.innerHTML = (typeof sr === 'number')
-            ? ('from speech onset ' + fmtMs(sr)) : '&nbsp;';
-        // throughput tok/s (completion / generation time)
+        if (srEl) srEl.innerHTML = (typeof sr === 'number') ? ('from speech onset ' + fmtMs(sr)) : '&nbsp;';
+        // pipeline timeline
+        renderPipeline(d);
+        // reply out: tokens + throughput of the single reply LLM call
+        const comp = d.last_est_completion_tokens, tot = d.last_llm_total_ms || 0;
+        if (typeof comp === 'number') document.getElementById('tkComp').textContent = comp + ' tok';
         if (tot > 0 && typeof comp === 'number') {
           const tps = (comp / (tot / 1000)).toFixed(1) + ' t/s';
-          document.getElementById('mTps').textContent = tps;
           const tpsEl = document.getElementById('tkTps'); if (tpsEl) tpsEl.textContent = tps;
+          const mt = document.getElementById('mTps'); if (mt) mt.textContent = tps;
         }
         // meta row
         if (d.started_at) document.getElementById('mUptime').textContent = fmtUptime(d.started_at);
