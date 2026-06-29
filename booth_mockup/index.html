@@ -106,7 +106,7 @@
   .context-panel { position: absolute; width: 320px; }
   .context-panel.tr { top: 16px; right: 36px; bottom: 397px; } /* 2026-06-29: top:16 aligns the RETRIEVED MEMORIES tag onto the litany's line. After dropping the reply-lag hero + pipeline footer the telemetry block is ~255px tall (top ~363px from viewport top at 1280x720); bottom:397px keeps a ~40px gap below the memories list. Re-measure if telemetry grows. */
   .context-panel.tl { top: 16px; left: 24px;  bottom: 52%; } /* 2026-06-29: top:16 aligns WHO IS PRESENT onto the litany's line; left:24 hugs the left margin a bit tighter (Dan) */
-  .context-panel.bl { top: 55%;  left: 24px;  bottom: 130px; } /* 2026-06-29: nudged down a little + left:24 to hug the left margin (Dan) */
+  .context-panel.bl { top: 55%;  left: 24px;  bottom: 96px; } /* 2026-06-29: nudged down + left:24; bottom lowered to 96 to give the grouped (subject-header + gear-bulleted) facts more room before they drift */
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
@@ -353,6 +353,18 @@
      airier than @mem's long wrapping memories at the shared 8px gap — tighten
      the inter-item margin for ground only so its rhythm resembles @mem. */
   .context-panel.bl li { margin-bottom: 4px; font-size: 21px; } /* 2026-06-29: slightly smaller than @mem's 24px (Dan) */
+  /* 2026-06-29: ground-truth grouped by subject — bright plain subject header,
+     facts beneath each preceded by a brass gear bullet. */
+  .context-panel.bl li.gsubj { color: var(--bone-strong); font-size: 23px; letter-spacing: 0.05em; margin-top: 11px; margin-bottom: 5px; }
+  .context-panel.bl li.gsubj:first-child { margin-top: 0; }
+  .context-panel.bl li.gfact .g { color: var(--brass); }
+  /* Ground truth is a stable, subject-headed list — don't drift it (that would
+     scroll the subject header out of view) and don't fade its top. Anchor to
+     the top; fade only the bottom when it overflows. */
+  .context-panel.bl .panel-scroll.overflow ul { animation: none; transform: none; }
+  .context-panel.bl .panel-scroll.overflow {
+    mask-image: linear-gradient(180deg, #000 0%, #000 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 80%, transparent 100%); }
   .stamp .pl { font-size: 22px; }
   .stamp .when { font-size: 17px; }
   .corner-id { font-size: 22px; }
@@ -992,6 +1004,40 @@
       }
     }
 
+    // Ground-truth facts arrive as "<subject> <predicate> <value...>". Group
+    // them by subject: a plain subject header ("dan") followed by each fact's
+    // predicate+value beneath it, every fact preceded by a gear + one space
+    // ("⚙ relationship_status married"). Left-justified.
+    function fillGround(ul, items) {
+      ul.innerHTML = '';
+      const groups = new Map(); // subject -> [predicate+value, ...], first-seen order
+      for (const raw of items) {
+        const t = (raw || '').trim();
+        if (!t) continue;
+        const sp = t.indexOf(' ');
+        const subj = sp === -1 ? t : t.slice(0, sp);
+        const rest = sp === -1 ? '' : t.slice(sp + 1);
+        if (!groups.has(subj)) groups.set(subj, []);
+        if (rest) groups.get(subj).push(rest);
+      }
+      for (const [subj, facts] of groups) {
+        const head = document.createElement('li');
+        head.className = 'gsubj';
+        head.textContent = subj;
+        ul.appendChild(head);
+        for (const f of facts) {
+          const li = document.createElement('li');
+          li.className = 'gfact';
+          const g = document.createElement('span');
+          g.className = 'g';
+          g.textContent = '⚙︎';
+          li.appendChild(g);
+          li.appendChild(document.createTextNode(' ' + f));
+          ul.appendChild(li);
+        }
+      }
+    }
+
     // Top-anchor each panel; only enable the drift when the list is taller than
     // its visible area. Sparse content then sits crisp under the header.
     function updatePanelDrift() {
@@ -1023,7 +1069,7 @@
       // driven by the structured room ledger (/lt/api/presence) via
       // pollPresence() below, which carries last-seen / last-heard ages + pose.
       fillList(ctxMem,    s.mem);
-      fillList(ctxGround, s.ground);
+      fillGround(ctxGround, s.ground);
       updatePanelDrift();
     }
     window.addEventListener('resize', updatePanelDrift);
