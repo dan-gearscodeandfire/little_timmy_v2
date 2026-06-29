@@ -104,9 +104,9 @@
 
   /* drifting context panels */
   .context-panel { position: absolute; width: 320px; }
-  .context-panel.tr { top: 16px; right: 36px; bottom: 397px; } /* 2026-06-29: top:16 aligns the RETRIEVED MEMORIES tag onto the litany's line. After dropping the reply-lag hero + pipeline footer the telemetry block is ~255px tall (top ~363px from viewport top at 1280x720); bottom:397px keeps a ~40px gap below the memories list. Re-measure if telemetry grows. */
+  .context-panel.tr { top: 16px; right: 36px; bottom: 337px; } /* 2026-06-29: top:16 aligns RETRIEVED MEMORIES onto the litany's line. Telemetry was lowered to sit just above the pan ruler (top ~y441 at 1422x738), so memories extends down to bottom:337 (ends ~y401) to fill the gap and keep a ~40px space above telemetry. Re-measure if telemetry moves. */
   .context-panel.tl { top: 16px; left: 24px;  bottom: 52%; } /* 2026-06-29: top:16 aligns WHO IS PRESENT onto the litany's line; left:24 hugs the left margin a bit tighter (Dan) */
-  .context-panel.bl { top: 55%;  left: 24px;  bottom: 96px; } /* 2026-06-29: nudged down + left:24; bottom lowered to 96 to give the grouped (subject-header + gear-bulleted) facts more room before they drift */
+  .context-panel.bl { top: 55%;  left: 24px;  bottom: 42px; } /* 2026-06-29: bottom lowered to sit just above the pan ruler (freed bottom space); taller panel = more facts before drift */
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
@@ -216,7 +216,7 @@
     color: var(--bone-faint); text-shadow: var(--shadow-light); margin-top: 1px; }
 
   /* bottom-right cogitator telemetry: tokens + latency, live /lt/api/metrics */
-  .telemetry { position: absolute; right: 36px; bottom: 102px; width: 372px; z-index: 12; } /* 2026-06-28: widened 312->372 so the larger telemetry numbers fit on one line (Dan) */
+  .telemetry { position: absolute; right: 36px; bottom: 42px; width: 372px; z-index: 12; } /* 2026-06-29: lowered to sit just above the pan ruler (freed bottom space) */ /* 2026-06-28: widened 312->372 so the larger telemetry numbers fit on one line (Dan) */
   .telemetry .ttag { font-family: var(--cop); font-size: 13px; letter-spacing: 0.24em; text-transform: uppercase;
     color: var(--bone-strong); text-shadow: var(--shadow-light); margin-bottom: 6px; text-align: right; }
   .telemetry .ttag::before { content: ''; } /* 2026-06-29: gear removed (kept only on the litany) */
