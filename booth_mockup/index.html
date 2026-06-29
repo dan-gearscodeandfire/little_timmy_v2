@@ -148,7 +148,7 @@
   @keyframes pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 
   /* bottom horizon: pan rule + meta */
-  .horizon { position: absolute; left: 36px; right: 36px; bottom: 40px; }
+  .horizon { position: absolute; left: 36px; right: 36px; bottom: 20px; } /* 2026-06-29: ruler near the bottom (almost flush) */
   .rule-wrap { position: relative; height: 14px; }
   .rule { position: absolute; top: 7px; left: 0; right: 0; height: 1px;
     background: linear-gradient(90deg, transparent 0%, var(--bone-mid) 6%, var(--bone-mid) 94%, transparent 100%); }
@@ -158,8 +158,8 @@
   .needle { position: absolute; top: 0; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent;
     border-top: 8px solid var(--red-hot); transform: translateX(-50%); transition: left 1.4s cubic-bezier(0.4,0,0.2,1);
     filter: drop-shadow(0 0 4px rgba(255,45,45,0.6)); }
-  .meta { margin-top: 20px; display: flex; justify-content: space-between; align-items: baseline;
-    font-family: var(--mono); font-weight: 500; font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase; text-shadow: var(--shadow-light); }
+  .meta { margin: 0 0 28px; display: flex; justify-content: center; align-items: baseline;
+    font-family: var(--mono); font-weight: 500; font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase; text-shadow: var(--shadow-light); } /* 2026-06-29: pan/tilt only, centered, lifted a couple lines above the ruler */
   .meta .l, .meta .c, .meta .r { display: flex; gap: 22px; align-items: baseline; }
   .meta .l { color: var(--bone-strong); } .meta .c { color: var(--bone-mid); } .meta .r { color: var(--bone-faint); }
   .meta .sep::before { content: '·'; margin-right: 22px; color: var(--bone-faint); }
@@ -468,8 +468,14 @@
         <div class="panel-scroll"><ul id="ctx-ground"></ul></div>
       </div>
 
-      <!-- bottom horizon -->
+      <!-- bottom horizon: pan/tilt readout above, pan ruler near the bottom -->
       <div class="horizon">
+        <div class="meta">
+          <div class="c">
+            <span>pan<span class="val" id="panv">+04°</span></span>
+            <span>tilt<span class="val" id="tiltv">−02°</span></span>
+          </div>
+        </div>
         <div class="rule-wrap">
           <div class="rule"></div>
           <div class="ticks">
@@ -482,21 +488,6 @@
             <span class="major"></span>
           </div>
           <div class="needle" id="needle" style="left: 50%;"></div>
-        </div>
-        <div class="meta">
-          <div class="l">
-            <span>up<span class="val" id="mUptime">—</span></span>
-            <span>turns<span class="val" id="mTurns">—</span></span>
-            <span class="sep health" id="mHealth"></span>
-          </div>
-          <div class="c">
-            <span>pan<span class="val" id="panv">+04°</span></span>
-            <span>tilt<span class="val" id="tiltv">−02°</span></span>
-          </div>
-          <div class="r">
-            <span>qwen 3.6 · think off</span>
-            <span>gen<span class="val" id="mTps">—</span></span>
-          </div>
         </div>
       </div>
 
@@ -1343,11 +1334,7 @@
         if (tot > 0 && typeof comp === 'number') {
           const tps = (comp / (tot / 1000)).toFixed(1) + ' t/s';
           const tpsEl = document.getElementById('tkTps'); if (tpsEl) tpsEl.textContent = tps;
-          const mt = document.getElementById('mTps'); if (mt) mt.textContent = tps;
         }
-        // meta row
-        if (d.started_at) document.getElementById('mUptime').textContent = fmtUptime(d.started_at);
-        if (typeof d.turns === 'number') document.getElementById('mTurns').textContent = d.turns;
         // tool-call rite flash: fire when last_tool_call_ts advances past what we've seen
         if (typeof d.last_tool_call_ts === 'number' && d.last_tool_call_ts > _lastToolTs) {
           _lastToolTs = d.last_tool_call_ts;
