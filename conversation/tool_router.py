@@ -361,6 +361,20 @@ async def _resolve_semantic_block(user_text: str) -> str | None:
                  user_text[:50])
         return None
     log.info("[TOOL recall_semantic] %r -> %d episode(s)", user_text[:50], len(episodes))
+    # Phase-2 tuning observability (2026-06-30): emit one greppable line per
+    # retrieved episode with pre-decay (base) + post-decay scores, age, and a
+    # snippet, so the distance floor / 30d half-life can be tuned from the
+    # journal against real hits. grep '[recall_semantic-obs]'. Low-frequency
+    # (only on a recall_semantic route), so no flag/gating needed.
+    for rank, e in enumerate(episodes, 1):
+        try:
+            age_h = (now - e["span_end"]).total_seconds() / 3600.0
+        except Exception:
+            age_h = -1.0
+        log.info("[recall_semantic-obs] q=%r r%d ep%s base=%.4f decayed=%.4f "
+                 "age=%.1fh | %s",
+                 user_text[:60], rank, e["id"], e.get("base_score", -1.0),
+                 e.get("score", -1.0), age_h, e["text"][:70])
     return _build_semantic_block(episodes)
 
 
