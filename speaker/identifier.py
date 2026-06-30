@@ -172,14 +172,18 @@ DRIFT_NEW_WEIGHT = 0.30            # EMA weight for new samples vs existing voic
 PROTOTYPE_DEDUP_DIST = 0.06        # a new prototype within this of an existing one is a dup → skip (WeSpeaker; was 0.05)
 MAX_PROTOTYPES = 12               # cap per identity (keep most recent beyond this)
 
-# Online (in-conversation) voiceprint learning master switch. When False, the
-# three live-enrollment triggers (T1 auto-persist on naming, T2 voice-command
-# re-enroll, T3 drift) do NOT write prototypes to disk or mutate an identity's
-# prototype set — deliberate enrollment via enroll_prototypes.py is the only way
-# voiceprints change. Kept False for the party so short/noisy utterances can't
-# pollute identities mid-event. (T3 also independently gated by
-# config.SPEAKER_DRIFT_LEARNING.)
-ONLINE_LEARNING_ENABLED = False
+# Online (in-conversation) voiceprint learning master switch. When True, the
+# live-enrollment triggers may write prototypes to disk / mutate an identity's
+# prototype set: T1 auto-persists a freshly-NAMED speaker (so anyone who engages
+# Timmy and gives a name can be remembered across sessions) and T2 voice-command
+# re-enroll persists. T3 continuous DRIFT correction stays independently gated by
+# config.SPEAKER_DRIFT_LEARNING (kept False) — so we learn deliberate, named
+# enrollments but never passively absorb noisy/off-mic clips into an identity.
+# 2026-06-30 (Dan): flipped True — "anyone who converses with Timmy should have
+# the potential to be remembered." (Was False; the rationale for off was that
+# short/noisy party utterances could pollute identities — see off-mic misID risk
+# in project_lt_mic_chain_misid; T1's MIN_ENROLL_SAMPLES + name-gate mitigate.)
+ONLINE_LEARNING_ENABLED = True
 
 # Minimum collected samples before T1 will auto-persist a freshly-named speaker
 # (guards against enrolling a one-word filler like "Glad").
