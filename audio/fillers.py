@@ -38,11 +38,21 @@ def wav_path(text: str) -> Path:
     return WAV_DIR / f"filler_{digest}.wav"
 
 
-# Natural thinking-beats, biased toward the longer end (Dan 2026-06-25). Tone
-# stays dry/deadpan to fit the skeleton persona but the job here is purely to
-# mask the pre-first-token gap, so they're deliberately low-commitment (they
-# precede an answer we don't have yet). Edit freely — order/count don't matter.
-FILLERS: tuple[str, ...] = (
+# Two length-tiered pools, selected by how slow we expect the turn to be (Dan
+# 2026-06-30, after measuring filler overrun). The asymmetry that drives the
+# split: a LONG clip on a turn that turns out fast DELAYS the answer (it sits in
+# the serial playback queue ahead of the ready reply — measured ~0.5-2.0s of
+# overrun on normal turns); a SHORT clip on a turn that turns out slow merely
+# UNDER-fills (the clip ends, a little quiet, then the answer plays the instant
+# it's ready — never delayed). So we bias SHORT and only go LONG when we're
+# CONFIDENT the turn is slow. The one high-precision "slow" signal available for
+# free at fire time is a visual question landing on a stale frame, which forces a
+# blocking VLM capture (+2.4-2.85s measured) — see the call site in main.py.
+
+# LONG (~1.75-2.93s): the original 2026-06-25 natural beats. Used ONLY on turns
+# we know will block on a fresh VLM capture, where even the longest clip can't
+# outrun the answer. Tone stays dry/deadpan. Order/count don't matter.
+LONG_FILLERS: tuple[str, ...] = (
     "Hmm, let me think about that for a second.",
     "Okay, give me a moment here.",
     "Right, let me chew on that.",
@@ -54,6 +64,28 @@ FILLERS: tuple[str, ...] = (
     "Give me just a moment.",
     "Let me see what I've got.",
 )
+
+# SHORT (~0.65-0.8s, busy <=1.2s): the DEFAULT for normal turns. The measured
+# filler-start->answer-ready gap on no-VLM turns is min ~1.0s / median ~2.0s, so
+# to NEVER delay the answer (Dan 2026-06-30) a clip's busy time (audio + 0.4s
+# cooldown) must stay under ~1.0-1.2s — worst-case overrun then ~0.1s on the
+# very fastest turn, ~0 on a median turn. These are deliberately curt: on a
+# no-VLM turn the real answer is only ~1-2s away, so a brief acknowledgement is
+# the right register; the long "let me think about that" beats (LONG_FILLERS)
+# would land absurdly before a one-second answer and would also overrun it.
+# Curt acknowledgements, NOT the pre-2026-06-25 "Eh./Huh." nonsense tics.
+SHORT_FILLERS: tuple[str, ...] = (
+    "Alright.",
+    "One sec.",
+    "Hang on.",
+    "Right then.",
+    "Okay.",
+    "Sure.",
+)
+
+# Union — render_fillers freezes ALL of these to .wav and prewarm_fillers loads
+# ALL of them; pick() routes to the right pool per turn.
+FILLERS: tuple[str, ...] = LONG_FILLERS + SHORT_FILLERS
 
 DEFAULT_RATE = 0.5
 MIN_USER_WORDS = 4
@@ -68,6 +100,8 @@ def should_fire(user_text: str, rate: float = DEFAULT_RATE) -> bool:
     return random.random() < rate
 
 
-def pick() -> str:
-    """Uniform random pick from FILLERS."""
-    return random.choice(FILLERS)
+def pick(long: bool = False) -> str:
+    """Uniform random pick. long=True -> the 2-3s pool (only when the turn is
+    known-slow, e.g. a visual question forcing a fresh VLM capture); long=False
+    (default, fail-safe) -> the ~1.1s pool for normal turns."""
+    return random.choice(LONG_FILLERS if long else SHORT_FILLERS)

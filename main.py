@@ -800,8 +800,30 @@ class Orchestrator:
         #     looks like it's pondering during the LLM run (Dan 2026-06-25).
         #     Fires every brain turn, matching the THINKING eye-LED (sent at STT
         #     finalize above). Cleared when the first sentence re-asserts engage.
+        # Per-turn audio-onset scratch for the filler-latency instrumentation
+        # (2026-06-30, measurement only). filler_text is the picked clip;
+        # filler_play is stamped by the TTS playback loop the instant the filler
+        # actually starts sounding. Read later in _on_first_audio to compute the
+        # overrun (how long the ready reply waited behind the filler).
+        audio_ts: dict = {}
+        # Filler length is chosen by how slow we expect the turn to be. The one
+        # high-precision "slow" signal free at fire time: a visual question
+        # landing on a stale frame forces a blocking VLM capture (+2.4-2.85s
+        # measured), where a 2-3s clip can't outrun the answer. Everything else
+        # defaults SHORT (~1.1s) and fails safe — under-fill never delays the
+        # reply, over-fill would. (is_visual_question is a cheap pure-text check;
+        # it's re-evaluated in the vision block below — same result.) (Dan 6-30)
+        _vq = (is_visual_question(user_text)
+               or is_self_referential_visual_question(user_text))
+        _age = self.vision.scene_age()
+        long_think = _vq and (_age is None or _age > config.VISION_VISUAL_Q_MAX_AGE_S)
         if audio_fillers.should_fire(user_text):
-            asyncio.create_task(self.tts.speak_filler(audio_fillers.pick()))
+            filler_text = audio_fillers.pick(long=long_think)
+            audio_ts["filler_text"] = filler_text
+            asyncio.create_task(self.tts.speak_filler(
+                filler_text,
+                on_play_start=lambda ts: audio_ts.__setitem__("filler_play", ts),
+            ))
         asyncio.create_task(self.supervisor.on_thinking_start())
 
         # --- Presence face fetch (doorway) ---
@@ -1004,6 +1026,40 @@ class Orchestrator:
             asyncio.create_task(self.supervisor.on_tts_start())
             asyncio.create_task(eye_led.notify("SPEAKING"))
 
+        def _on_first_audio(play_ts: float):
+            # Fires from the TTS playback loop the instant the FIRST real reply
+            # sentence actually starts sounding (true audible onset). The gap
+            # from first_audio_wall (the ENQUEUE stamp) is the filler OVERRUN:
+            # how long the ready answer sat behind the THINKING filler in the
+            # serial playback queue — latency the booth's reply_lag can't see,
+            # because reply_lag is stamped at enqueue. Measurement only; no
+            # behavior change. (2026-06-30, filler-latency study.)
+            enq = first_audio_wall
+            overrun_ms = (int(max(0.0, play_ts - enq) * 1000)
+                          if enq is not None else None)
+            true_reply_lag_ms = (int(max(0.0, play_ts - vad_offset_ts) * 1000)
+                                 if vad_offset_ts is not None else None)
+            fplay = audio_ts.get("filler_play")
+            ftext = audio_ts.get("filler_text")
+            filler_fired = fplay is not None
+            # filler_lead = silence from user-stop to the filler sounding (the
+            # early gap a filler fired post-endpointing CANNOT mask).
+            filler_lead_ms = (int((fplay - vad_offset_ts) * 1000)
+                              if (fplay is not None and vad_offset_ts is not None)
+                              else None)
+            filler_dur_ms = self.tts.filler_duration_ms(ftext) if ftext else None
+            log.info("[PERF-AUDIO] filler_fired=%s filler_dur=%sms "
+                     "filler_lead=%sms overrun=%sms true_reply_lag=%sms",
+                     filler_fired, filler_dur_ms, filler_lead_ms,
+                     overrun_ms, true_reply_lag_ms)
+            asyncio.create_task(broadcast_event("audio_onset", {
+                "filler_fired": filler_fired,
+                "filler_dur_ms": filler_dur_ms,
+                "filler_lead_ms": filler_lead_ms,
+                "overrun_ms": overrun_ms,
+                "true_reply_lag_ms": true_reply_lag_ms,
+            }))
+
         # --- Delegate the turn to the ConversationTurn module ---
         # It owns: memory retrieval (+ the "retrieval" broadcast), prompt
         # assembly (vision + presence passed in), LLM stream, narration/length
@@ -1024,6 +1080,7 @@ class Orchestrator:
                 situation_regime=runtime_toggles.get("situation_regime"),
                 recall_block=recall_block,
                 on_first_sentence=_on_first_sentence,
+                on_first_audio=_on_first_audio,
                 stt_words=stt_words,
                 resolved_query=resolved_query,
                 query_pre_resolved=query_pre_resolved,

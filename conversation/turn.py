@@ -172,6 +172,11 @@ class TurnContext:
     recall_block: Optional[str] = None
     on_first_token: Optional[Callable[[], Awaitable[None]]] = None
     on_first_sentence: Optional[Callable[[], Awaitable[None]]] = None
+    # Fires with time.time() the instant the FIRST real reply sentence actually
+    # starts PLAYING (true audible onset), vs on_first_sentence which fires at
+    # ENQUEUE. The doorway uses the delta to measure filler overrun. Sync hook,
+    # runs in the TTS playback loop. None on the text path. (2026-06-30)
+    on_first_audio: Optional[Callable[[float], None]] = None
     # whisper per-word probs for this utterance, threaded to the background
     # extractor so it can value-confidence-gate the facts it mines (else they
     # default to verified). None on the text path. 2026-06-21.
@@ -334,6 +339,7 @@ class ConversationTurn:
             messages, max_sentences=cap,
             on_first_token=ctx.on_first_token,
             on_first_sentence=ctx.on_first_sentence,
+            on_first_audio=ctx.on_first_audio,
             user_text=words,
         )
 
@@ -433,6 +439,7 @@ class ConversationTurn:
                                 max_sentences: int | None,
                                 on_first_token=None,
                                 on_first_sentence=None,
+                                on_first_audio=None,
                                 user_text: str | None = None) -> TurnResult:
         """Ported verbatim from main.Orchestrator._stream_to_tts, with the LLM
         and TTS as injected seams and broadcast via the event hook.
@@ -462,18 +469,26 @@ class ConversationTurn:
                 sentence = sentence_buffer.strip()
                 sentence_buffer = ""
                 if sentence:
-                    if first_tts_time is None:
+                    is_first = first_tts_time is None
+                    if is_first:
                         first_tts_time = time.time()
                         if on_first_sentence is not None:
                             await on_first_sentence()
-                    await self._speaker.speak(sentence)
+                    await self._speaker.speak(
+                        sentence,
+                        on_play_start=on_first_audio if is_first else None,
+                    )
 
         if sentence_buffer.strip():
-            if first_tts_time is None:
+            is_first = first_tts_time is None
+            if is_first:
                 first_tts_time = time.time()
                 if on_first_sentence is not None:
                     await on_first_sentence()
-            await self._speaker.speak(sentence_buffer.strip())
+            await self._speaker.speak(
+                sentence_buffer.strip(),
+                on_play_start=on_first_audio if is_first else None,
+            )
 
         end_time = time.time()
         return TurnResult(full_response, {
