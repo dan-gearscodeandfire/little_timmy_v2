@@ -818,7 +818,11 @@ class Orchestrator:
         _age = self.vision.scene_age()
         long_think = _vq and (_age is None or _age > config.VISION_VISUAL_Q_MAX_AGE_S)
         if audio_fillers.should_fire(user_text):
-            filler_text = audio_fillers.pick(long=long_think)
+            # Register-aware pick: declarative vs interrogative phrasing (free
+            # lexical check). Tool/command turns route through tool_router and
+            # don't reach here, so register() only splits question vs statement.
+            filler_text = audio_fillers.pick(
+                long=long_think, reg=audio_fillers.register(user_text))
             audio_ts["filler_text"] = filler_text
             asyncio.create_task(self.tts.speak_filler(
                 filler_text,

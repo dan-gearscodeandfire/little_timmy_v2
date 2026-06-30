@@ -49,46 +49,86 @@ def wav_path(text: str) -> Path:
 # free at fire time is a visual question landing on a stale frame, which forces a
 # blocking VLM capture (+2.4-2.85s measured) — see the call site in main.py.
 
-# LONG (~1.75-2.93s): the original 2026-06-25 natural beats. Used ONLY on turns
-# we know will block on a fresh VLM capture, where even the longest clip can't
-# outrun the answer. Tone stays dry/deadpan. Order/count don't matter.
-LONG_FILLERS: tuple[str, ...] = (
-    "Hmm, let me think about that for a second.",
-    "Okay, give me a moment here.",
-    "Right, let me chew on that.",
-    "Oh, hang on, let me think.",
-    "Well, let me work that one out.",
-    "Hmm, good question. Let me think.",
-    "Let me dig into that for a sec.",
-    "Okay, let me put this together.",
-    "Give me just a moment.",
-    "Let me see what I've got.",
+# Beyond the length split, the pools are also REGISTER-split (Dan 2026-06-30):
+# what fits a declarative statement ("I see.", "Got it.") is wrong before/while
+# answering a question ("Let me see."), and vice-versa. register() below is a
+# free lexical classifier (question vs statement; default statement). Tool/command
+# turns are deliberately OUT of scope here — they route through tool_router with
+# their own flow we'll revisit separately, so they fall to the statement default.
+
+# --- SHORT pools (~0.4-0.9s, busy <=~1.2s): the DEFAULT for normal turns. The
+# measured filler-start->answer-ready gap on no-VLM turns is min ~1.0s / median
+# ~2.0s, so to NEVER delay the answer a clip's busy time (audio + 0.4s cooldown)
+# stays ~<=1.2s. Curt acknowledgement/thinking tokens, NOT the pre-2026-06-25
+# "Eh./Huh." dismissive tics. ---
+
+# Declarative reply: you TOLD Timmy something; he acknowledges / takes it in.
+SHORT_STATEMENT: tuple[str, ...] = (
+    "I see.",
+    "Got it.",
+    "Right.",
+    "Ah.",
+    "Noted.",
+    "Mm, okay.",
+    "Hmmmm.",
+    "Um.",
 )
 
-# SHORT (~0.65-0.8s, busy <=1.2s): the DEFAULT for normal turns. The measured
-# filler-start->answer-ready gap on no-VLM turns is min ~1.0s / median ~2.0s, so
-# to NEVER delay the answer (Dan 2026-06-30) a clip's busy time (audio + 0.4s
-# cooldown) must stay under ~1.0-1.2s — worst-case overrun then ~0.1s on the
-# very fastest turn, ~0 on a median turn. These are deliberately curt: on a
-# no-VLM turn the real answer is only ~1-2s away, so a brief acknowledgement is
-# the right register; the long "let me think about that" beats (LONG_FILLERS)
-# would land absurdly before a one-second answer and would also overrun it.
-# Curt acknowledgements, NOT the pre-2026-06-25 "Eh./Huh." nonsense tics.
-SHORT_FILLERS: tuple[str, ...] = (
-    "Alright.",
-    "One sec.",
-    "Hang on.",
-    "Right then.",
+# Interrogative reply: you ASKED Timmy something; he's about to answer.
+SHORT_QUESTION: tuple[str, ...] = (
+    "Hmm.",
+    "Let me see.",
+    "Good question.",
+    "Let me think.",
+    "Right.",
     "Okay.",
-    "Sure.",
+    "Ugh.",
+)
+
+# --- LONG pools (~1.5-2.9s): fire ONLY when a turn will block on a fresh VLM
+# capture (+2.4-2.85s measured), so even the longest clip can't outrun the
+# answer. Because LONG is EXCLUSIVELY a vision-capture beat, the phrasing is
+# "let me LOOK", not "let me think". ---
+
+# Declarative + visual: you SHOWED Timmy something ("look at this", "check out
+# my X"). Rare today — the detector mostly catches visual *questions*, not
+# "look at this" statements — but ready if visual detection widens.
+LONG_STATEMENT: tuple[str, ...] = (
+    "Hmm, let me take a look at that.",
+    "Okay, let me have a look.",
+    "Hold on, let me get a proper look.",
+    "Let me see what you've got there.",
+    "Alright, let me take this in.",
+)
+
+# Interrogative + visual: you ASKED a visual question ("what am I holding?",
+# "what do you see?"). The live LONG case.
+LONG_QUESTION: tuple[str, ...] = (
+    "Let me get a good look at that.",
+    "Let me take a closer look.",
+    "Okay, let me check what I'm seeing.",
+    "Hold on, let me focus on that.",
+    "Give me a second to look that over.",
 )
 
 # Union — render_fillers freezes ALL of these to .wav and prewarm_fillers loads
-# ALL of them; pick() routes to the right pool per turn.
-FILLERS: tuple[str, ...] = LONG_FILLERS + SHORT_FILLERS
+# ALL of them; pick() routes to the right pool per turn. (Strings shared across
+# pools, e.g. "Right.", are content-addressed -> one .wav, rendered/loaded once.)
+FILLERS: tuple[str, ...] = (
+    SHORT_STATEMENT + SHORT_QUESTION + LONG_STATEMENT + LONG_QUESTION
+)
 
 DEFAULT_RATE = 0.5
 MIN_USER_WORDS = 4
+
+# Question cues for register(): wh-words + aux-inversion openers. STT rarely
+# emits a "?", so we lean on these, not punctuation. Default is "statement".
+_QUESTION_OPENERS = (
+    "what", "why", "how", "when", "where", "who", "whom", "whose", "which",
+    "is ", "are ", "am ", "was ", "were ", "do ", "does ", "did ", "can ",
+    "could ", "will ", "would ", "should ", "shall ", "may ", "might ",
+    "have ", "has ", "had ", "is", "are",
+)
 
 
 def should_fire(user_text: str, rate: float = DEFAULT_RATE) -> bool:
@@ -100,8 +140,28 @@ def should_fire(user_text: str, rate: float = DEFAULT_RATE) -> bool:
     return random.random() < rate
 
 
-def pick(long: bool = False) -> str:
-    """Uniform random pick. long=True -> the 2-3s pool (only when the turn is
-    known-slow, e.g. a visual question forcing a fresh VLM capture); long=False
-    (default, fail-safe) -> the ~1.1s pool for normal turns."""
-    return random.choice(LONG_FILLERS if long else SHORT_FILLERS)
+def register(user_text: str) -> str:
+    """Free lexical register classifier: 'question' vs 'statement' (default).
+    Question = ends with '?' OR opens with a wh-word / aux-inversion. STT drops
+    punctuation, so openers carry most of the weight. A miss is cheap (you get a
+    still-fitting token from the other pool), so we default to the common case."""
+    if not user_text:
+        return "statement"
+    t = user_text.lower().lstrip()
+    if user_text.rstrip().endswith("?"):
+        return "question"
+    if t.startswith(_QUESTION_OPENERS):
+        return "question"
+    return "statement"
+
+
+def pick(long: bool = False, reg: str = "statement") -> str:
+    """Uniform random pick from the pool for this (length, register). long=True
+    is the vision-capture pool (only when a visual question/stale frame forces a
+    fresh VLM call); reg comes from register(user_text)."""
+    is_q = reg == "question"
+    if long:
+        pool = LONG_QUESTION if is_q else LONG_STATEMENT
+    else:
+        pool = SHORT_QUESTION if is_q else SHORT_STATEMENT
+    return random.choice(pool)
