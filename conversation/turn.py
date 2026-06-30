@@ -132,6 +132,7 @@ class TurnResult:
     text: str
     timings: dict                       # first_token_ms, first_tts_ms, total_ms
     retrieval_ms: int = 0
+    build_ms: int = 0                   # prompt/context assembly (ephemeral + fact reads)
     est_prompt_tokens: int = 0
     est_completion_tokens: int = 0
     # The assembled prompt is returned so the doorway's after-chores
@@ -304,6 +305,12 @@ class ConversationTurn:
                     log.info("[QUERY-VCONF] low-confidence content word heard as "
                              "%r (<%.2f) -> confirm-input hint", uncertain_term, thr)
 
+        # Prompt/context assembly. Timed (build_ms) because it includes the
+        # ephemeral-block render AND the ground-truth fact-DB reads inside
+        # build_history_messages — a real, previously-unmeasured slice that only
+        # ever showed up in the booth's ghosted WAIT remainder (the LLM
+        # first-token timer's t_start is stamped AFTER this, in _stream_and_speak).
+        t_build = time.time()
         ephemeral = build_ephemeral_block(
             memories=retrieved.memories,
             facts=retrieved.facts,
@@ -320,6 +327,7 @@ class ConversationTurn:
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)
+        build_ms = int((time.time() - t_build) * 1000)
 
         cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(words) else None
         result = await self._stream_and_speak(
@@ -338,7 +346,7 @@ class ConversationTurn:
                                 speaker_id=who.db_id, speaker_name=who.name,
                                 stt_words=ctx.stt_words)
 
-        return self._finalize(result, messages, retrieval_ms, ephemeral)
+        return self._finalize(result, messages, retrieval_ms, ephemeral, build_ms)
 
     # -- front door 2: proactive (unprompted) ------------------------------
     async def speak_proactively(self, ephemeral_block: str) -> TurnResult:
@@ -499,8 +507,9 @@ class ConversationTurn:
 
     @staticmethod
     def _finalize(result: TurnResult, messages: list[dict],
-                  retrieval_ms: int, ephemeral: str) -> TurnResult:
-        """Attach retrieval timing + ~4-chars/token estimates (matches
+                  retrieval_ms: int, ephemeral: str,
+                  build_ms: int = 0) -> TurnResult:
+        """Attach retrieval + build timing + ~4-chars/token estimates (matches
         conversation.manager.estimate_tokens) + the assembled prompt for the
         doorway's metrics and after-chores."""
         prompt_chars = sum(len(m.get("content", "") or "") for m in messages)
@@ -508,6 +517,7 @@ class ConversationTurn:
             text=result.text,
             timings=result.timings,
             retrieval_ms=retrieval_ms,
+            build_ms=build_ms,
             est_prompt_tokens=max(1, prompt_chars // 4),
             est_completion_tokens=max(0, len(result.text) // 4),
             messages=messages,

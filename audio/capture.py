@@ -193,10 +193,19 @@ class AudioCapture:
             """Thread-safe enqueue to asyncio. Carries the utterance's speech
             onset/offset wall-clock so the turn loop can report a true
             speech-onset / speech-end -> first-reply-audio latency (the lag the
-            user actually feels, *including* the endpointing-silence delay)."""
+            user actually feels, *including* the endpointing-silence delay).
+
+            eou_ts is stamped HERE — the wall-clock the segment is finalized and
+            enqueued (end-of-utterance). It lets the turn loop split two slices
+            that were previously invisible (folded into the booth's ghosted WAIT
+            remainder): the endpointing-silence window
+            endpoint_ms = eou_ts - offset_ts (the ~1.3s the VAD waits for
+            silence before finalizing — the dominant felt lag), and the
+            queue-handoff gap queue_ms = dequeue_ts - eou_ts."""
+            eou_ts = time.time()
             if self._loop and not self._loop.is_closed():
                 self._loop.call_soon_threadsafe(
-                    self.speech_queue.put_nowait, (audio, onset_ts, offset_ts))
+                    self.speech_queue.put_nowait, (audio, onset_ts, offset_ts, eou_ts))
 
         log.info("Starting audio capture (device=%s, native_sr=%d, target_sr=%d, chunk=%d)",
                  device_idx, native_sr, target_sr, native_chunk)

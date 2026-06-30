@@ -387,14 +387,31 @@ class Orchestrator:
 
     async def process_speech(self, audio: np.ndarray,
                              vad_onset_ts: float | None = None,
-                             vad_offset_ts: float | None = None):
+                             vad_offset_ts: float | None = None,
+                             vad_eou_ts: float | None = None,
+                             dequeue_ts: float | None = None):
         """Process a speech segment through the full pipeline.
 
         vad_onset_ts / vad_offset_ts are the wall-clock of this utterance's
         speech onset and last-voiced-chunk (offset), carried from capture so we
         can report a true speech-end -> first-reply-audio latency that includes
-        the endpointing-silence delay."""
+        the endpointing-silence delay.
+
+        vad_eou_ts (segment finalize / enqueue) and dequeue_ts (main loop
+        dequeue) split two formerly-invisible slices out of the booth's WAIT
+        remainder: endpoint_ms = eou - offset (the endpointing-silence wait, the
+        dominant felt lag) and queue_ms = dequeue - eou (queue/handoff gap,
+        usually ~0, spikes under shared-GPU contention)."""
         t_start = time.time()
+        # Attribute the endpointing-silence window and the queue-handoff gap.
+        # Both are genuine sequential sub-intervals of reply_lag (which is
+        # measured first_audio - vad_offset), so surfacing them shrinks the
+        # booth's ghosted WAIT bar by exactly their sum. None on any path that
+        # lacks the capture timestamps (text / inject / legacy producers).
+        endpoint_ms = (int(max(0.0, vad_eou_ts - vad_offset_ts) * 1000)
+                       if vad_eou_ts is not None and vad_offset_ts is not None else None)
+        queue_ms = (int(max(0.0, dequeue_ts - vad_eou_ts) * 1000)
+                    if dequeue_ts is not None and vad_eou_ts is not None else None)
 
         # --- Speaker Identification (runs on raw 16kHz audio) ---
         t_spk = time.time()
@@ -557,6 +574,8 @@ class Orchestrator:
             query_pre_resolved=query_pre_resolved,
             vad_onset_ts=vad_onset_ts,
             vad_offset_ts=vad_offset_ts,
+            endpoint_ms=endpoint_ms,
+            queue_ms=queue_ms,
         )
 
     # Snapshot of the most-recent finalized turn so /api/feedback/manual_flag
@@ -742,7 +761,9 @@ class Orchestrator:
                                   resolved_query: str | None = None,
                                   query_pre_resolved: bool = False,
                                   vad_onset_ts: float | None = None,
-                                  vad_offset_ts: float | None = None):
+                                  vad_offset_ts: float | None = None,
+                                  endpoint_ms: int | None = None,
+                                  queue_ms: int | None = None):
         """Core response pipeline: presence doorway → delegate to the turn.
 
         `resolved_query`/`query_pre_resolved` carry the doorway's speculative coref
@@ -1020,6 +1041,7 @@ class Orchestrator:
         llm_total_ms = result.timings["total_ms"]
         tts_ms = result.timings["first_tts_ms"] or 0
         retrieval_ms = result.retrieval_ms
+        build_ms = result.build_ms
         e2e_ms = int((time.time() - t_start) * 1000)
 
         # True user-perceived latency, computed from the capture timestamps and
@@ -1038,9 +1060,10 @@ class Orchestrator:
                 speech_to_reply_ms = max(0, int((first_audio_wall - vad_onset_ts) * 1000))
 
         log.info("[TIMMY] %s", full_response)
-        log.info("[PERF] stt=%dms spk=%dms retrieval=%dms llm_ft=%dms llm=%dms tts=%dms e2e=%dms "
-                 "reply_lag=%sms speech_to_reply=%sms",
-                 stt_ms, spk_ms, retrieval_ms, llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms,
+        log.info("[PERF] endpoint=%sms queue=%sms spk=%dms stt=%dms retrieval=%dms build=%dms "
+                 "llm_ft=%dms llm=%dms tts=%dms e2e=%dms reply_lag=%sms speech_to_reply=%sms",
+                 endpoint_ms, queue_ms, spk_ms, stt_ms, retrieval_ms, build_ms,
+                 llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms,
                  reply_lag_ms, speech_to_reply_ms)
 
         # The turn already broadcast the assistant "turn" event and persisted
@@ -1050,9 +1073,12 @@ class Orchestrator:
         est_completion_tokens = result.est_completion_tokens
 
         await broadcast_event("metrics", {
+            "endpoint_ms": endpoint_ms,
+            "queue_ms": queue_ms,
             "stt_ms": stt_ms,
             "spk_ms": spk_ms,
             "retrieval_ms": retrieval_ms,
+            "build_ms": build_ms,
             "llm_first_token_ms": llm_first_token_ms,
             "llm_total_ms": llm_total_ms,
             "tts_ms": tts_ms,
@@ -1067,8 +1093,12 @@ class Orchestrator:
         update_metrics(
             last_reply_lag_ms=reply_lag_ms,
             last_speech_to_reply_ms=speech_to_reply_ms,
+            last_endpoint_ms=endpoint_ms,
+            last_queue_ms=queue_ms,
+            last_spk_ms=spk_ms,
             last_stt_ms=stt_ms,
             last_retrieval_ms=retrieval_ms,
+            last_build_ms=build_ms,
             last_llm_first_token_ms=llm_first_token_ms,
             last_llm_total_ms=llm_total_ms,
             last_tts_ms=tts_ms,
@@ -1465,13 +1495,19 @@ async def main():
     try:
         while True:
             item = await orch.capture.speech_queue.get()
-            # Queue items are (audio, onset_ts, offset_ts) since 2026-06-25 for
-            # the speech-onset->first-reply latency metric. Tolerate a bare
-            # ndarray (tests / any legacy producer) -> no timestamps.
+            dequeue_ts = time.time()  # handoff: segment leaves the queue here
+            # Queue items are (audio, onset_ts, offset_ts, eou_ts) since
+            # 2026-06-29 (eou_ts added to split endpoint_ms/queue_ms out of the
+            # booth WAIT remainder). Tolerate the older 3-tuple and a bare
+            # ndarray (tests / any legacy producer) -> missing timestamps.
             if isinstance(item, tuple):
-                audio_segment, vad_onset_ts, vad_offset_ts = item
+                if len(item) >= 4:
+                    audio_segment, vad_onset_ts, vad_offset_ts, vad_eou_ts = item[:4]
+                else:
+                    audio_segment, vad_onset_ts, vad_offset_ts = item[:3]
+                    vad_eou_ts = None
             else:
-                audio_segment, vad_onset_ts, vad_offset_ts = item, None, None
+                audio_segment, vad_onset_ts, vad_offset_ts, vad_eou_ts = item, None, None, None
             # Hold the turn lock so an in-flight proactive remark finishes (or
             # is excluded) before this reactive turn speaks -- never overlap.
             async with orch._turn_lock:
@@ -1481,6 +1517,8 @@ async def main():
                         audio_segment,
                         vad_onset_ts=vad_onset_ts,
                         vad_offset_ts=vad_offset_ts,
+                        vad_eou_ts=vad_eou_ts,
+                        dequeue_ts=dequeue_ts,
                     )
                 finally:
                     orch.vision.resume_polling()
