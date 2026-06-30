@@ -106,7 +106,7 @@
   .context-panel { position: absolute; width: 320px; }
   .context-panel.tr { top: 16px; right: 36px; bottom: 337px; } /* 2026-06-29: top:16 aligns RETRIEVED MEMORIES onto the litany's line. Telemetry was lowered to sit just above the pan ruler (top ~y441 at 1422x738), so memories extends down to bottom:337 (ends ~y401) to fill the gap and keep a ~40px space above telemetry. Re-measure if telemetry moves. */
   .context-panel.tl { top: 16px; left: 24px;  bottom: 52%; } /* 2026-06-29: top:16 aligns WHO IS PRESENT onto the litany's line; left:24 hugs the left margin a bit tighter (Dan) */
-  .context-panel.bl { top: 55%;  left: 24px;  bottom: 42px; } /* 2026-06-29: bottom lowered to sit just above the pan ruler (freed bottom space); taller panel = more facts before drift */
+  .context-panel.bl { top: 55%;  left: 24px;  bottom: 150px; } /* 2026-06-29: bottom raised from 42 to clear the system-vitals donuts now sitting beneath the GROUND TRUTH pane (Dan) */
   .context-panel .panel-tag { font-family: var(--cop); font-weight: 400; font-size: 14px;
     letter-spacing: 0.26em; text-transform: uppercase; color: var(--bone-strong);
     text-shadow: var(--shadow-light); margin-bottom: 10px; }
@@ -199,8 +199,8 @@
     box-shadow: 0 0 8px var(--signal), 0 0 2px #000; transition: left 0.9s ease, top 0.9s ease; }
 
   /* bottom-center system VITALS donut cluster (VRAM / SYS RAM / CPU) */
-  .vitals { position: absolute; left: 50%; bottom: 102px; transform: translateX(-50%);
-    display: flex; gap: 26px; z-index: 12; } /* 2026-06-29: tighter cluster */
+  .vitals { position: absolute; left: 24px; bottom: 44px;
+    display: flex; gap: 26px; z-index: 12; } /* 2026-06-29: moved from bottom-center to bottom-left, under the GROUND TRUTH pane (Dan); PAN/TILT stay centered. 4x60 + 3x26 gap = 318px, fits the 320px panel width */
   .gauge { position: relative; width: 60px; text-align: center; } /* 2026-06-29: smaller dials */
   .gauge svg { width: 60px; height: 60px; transform: rotate(-90deg); display: block; }
   .gauge .track { fill: none; stroke: rgba(214,86,68,0.16); stroke-width: 5; }
@@ -1253,41 +1253,58 @@
     }
     // Warm Mechanicus ramp for the bars; set inline so the CSS stays structural.
     const WAIT_HATCH = 'repeating-linear-gradient(45deg, rgba(176,72,56,0.60) 0 4px, rgba(120,45,35,0.20) 4px 8px)';
-    const PIPE_COL = { wait: WAIT_HATCH, hear: '#d49a4a', filter: '#e6bd6e', resolve: '#f0cf9a',
-                       recall: '#ffb293', think: '#ff3b3b', speak: '#cf8273' };
+    const PIPE_COL = { endpoint: '#6f5436', queue: '#8a6a42', wait: WAIT_HATCH, spkid: '#c2923f',
+                       hear: '#d49a4a', filter: '#e6bd6e', resolve: '#f0cf9a',
+                       recall: '#ffb293', build: '#ff8a66', think: '#ff3b3b', speak: '#cf8273' };
+    // Display labels for the pipeline legend/tooltips. Keys stay semantic (drive
+    // color/logic); only the shown text differs. 2026-06-29 (Dan): hear -> STT;
+    // added endpoint/queue/spk ID/build (formerly folded into WAIT).
+    const PIPE_LABEL = { endpoint: 'VADbreak', queue: 'queue', wait: 'wait', spkid: 'Voiceprint',
+                         hear: 'STT', filter: 'filter', resolve: 'resolve',
+                         recall: 'recall', build: 'build', think: 'think', speak: 'speak' };
     const SECT_COL = { system: '#b6772f', history: '#e69b73', context: '#ff4d4d', utter: '#7e5147' };
     const estTok = (s) => Math.max(0, Math.round((s || '').length / 4));
 
     // PIPELINE: decompose reply_lag (you stop talking -> first reply audio) into
-    // the MEASURED, additive stages. hear=STT, filter=classifier, resolve=coref
-    // (gated), recall=memory, think=LLM-to-first-token, speak=first-token->first
-    // sentence spoken (tts is measured from LLM start, so speak = tts - first_token).
-    // The remainder vs the measured sum is the UNMEASURED endpointing/build "wait"
-    // — drawn ghosted + flagged ~ so we never imply we timed it.
+    // the MEASURED, additive stages, in temporal order. endpoint=VAD silence wait
+    // before the segment finalizes (was the bulk of the old WAIT), queue=segment
+    // -> main-loop dequeue handoff, spk ID=speaker identification, hear=STT,
+    // filter=classifier, resolve=coref (gated), recall=memory, build=prompt/
+    // context assembly + fact reads, think=LLM-to-first-token, speak=first-token
+    // ->first sentence spoken (tts is measured from LLM start, so speak = tts -
+    // first_token). With endpoint/queue/spk/build now measured, the residual
+    // "wait" should collapse to scheduling slack — drawn ghosted + flagged ~ so
+    // we never imply we timed it.
     function renderPipeline(d) {
       const bar = document.getElementById('pipeBar'), leg = document.getElementById('pipeLegend');
       if (!bar || !leg) return;
+      const ep = d.last_endpoint_ms || 0, q = d.last_queue_ms || 0, spk = d.last_spk_ms || 0;
       const stt = d.last_stt_ms || 0, cls = d.last_classifier_ms || 0;
       const res = (typeof d.last_resolution_ms === 'number') ? d.last_resolution_ms : 0;
-      const rec = d.last_retrieval_ms || 0, ft = d.last_llm_first_token_ms || 0;
+      const rec = d.last_retrieval_ms || 0, bld = d.last_build_ms || 0;
+      const ft = d.last_llm_first_token_ms || 0;
       const speak = Math.max(0, (d.last_tts_ms || 0) - ft);
       const rl = d.last_reply_lag_ms || 0;
-      const measured = stt + cls + res + rec + ft + speak;
+      const measured = ep + q + spk + stt + cls + res + rec + bld + ft + speak;
       const wait = Math.max(0, rl - measured);
       const total = rl || measured || 1;
       const segs = [
-        { k: 'wait',   ms: wait, m: false },
-        { k: 'hear',   ms: stt,  m: true },
-        { k: 'filter', ms: cls,  m: true },
+        { k: 'endpoint', ms: ep,   m: true },
+        { k: 'queue',    ms: q,    m: true },
+        { k: 'spkid',    ms: spk,  m: true },
+        { k: 'hear',     ms: stt,  m: true },
+        { k: 'filter',   ms: cls,  m: true },
         ...(res > 0 ? [{ k: 'resolve', ms: res, m: true }] : []),
-        { k: 'recall', ms: rec,  m: true },
-        { k: 'think',  ms: ft,   m: true },
-        { k: 'speak',  ms: speak, m: true },
+        { k: 'recall',   ms: rec,  m: true },
+        { k: 'build',    ms: bld,  m: true },
+        { k: 'think',    ms: ft,   m: true },
+        { k: 'speak',    ms: speak, m: true },
+        { k: 'wait',     ms: wait, m: false },
       ].filter(s => s.ms > 0);
       bar.innerHTML = segs.map(s =>
-        `<span class="pseg" style="width:${(s.ms / total * 100).toFixed(2)}%;background:${PIPE_COL[s.k]}" title="${s.k} ${fmtMs(s.ms)}${s.m ? '' : ' (estimated)'}"></span>`).join('');
+        `<span class="pseg" style="width:${(s.ms / total * 100).toFixed(2)}%;background:${PIPE_COL[s.k]}" title="${PIPE_LABEL[s.k] || s.k} ${fmtMs(s.ms)}${s.m ? '' : ' (estimated)'}"></span>`).join('');
       leg.innerHTML = segs.map(s =>
-        `<i class="${s.m ? '' : 'ghost'}"><span class="sw" style="background:${PIPE_COL[s.k]}"></span><span class="pk">${s.k}</span><b>${s.m ? '' : '~'}${fmtMs(s.ms)}</b></i>`).join('');
+        `<i class="${s.m ? '' : 'ghost'}"><span class="sw" style="background:${PIPE_COL[s.k]}"></span><span class="pk">${PIPE_LABEL[s.k] || s.k}</span><b>${s.m ? '' : '~'}${fmtMs(s.ms)}</b></i>`).join('');
       document.getElementById('pipeTotal').textContent = fmtMs(total);
     }
 
