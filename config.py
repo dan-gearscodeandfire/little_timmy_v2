@@ -88,7 +88,7 @@ RECALL_TEMPORAL_ENABLED = True   # S3 LIVE 2026-06-20 (Dan): enable the `recall_
 # (memory/manager.store_episode) is ALWAYS on (no flag) — it must guard the very
 # first writes; it needs no embedding and never drops a distinct episode.
 EMBED_EPISODES = True            # 2026-06-24 (Dan): vector-embed each SUBSTANTIVE warm rollup at write (write-through at mint, memory/rollup.py) so episodes are cosine-recallable. Banter is gated out upstream (usefulness verdict). recall_semantic stays OFF until a corpus accumulates + the sim-dedup threshold/decay half-life are tuned on it (Phase 2). Backfill any NULL-embedding rows: ops/backfill_episode_embeddings.py.
-RECALL_SEMANTIC_ENABLED = False  # `recall_semantic` router intent: vector+FTS+trigram over episodes, recency-DECAYED. Requires EMBED_EPISODES (embeddings to search) + classifier_enabled. Adds a route grammar class — default OFF keeps the live classifier byte-identical.
+RECALL_SEMANTIC_ENABLED = True   # 2026-06-30 (Dan): ENABLED. `recall_semantic` router intent: vector+FTS+trigram over episodes, recency-DECAYED. Corpus precondition met (51/54 episodes embedded). Running on default 30d half-life (EPISODE_DECAY_HALFLIFE_S) — Phase-2 "tuning" is now observe-and-adjust on live hits. Switches the classifier to the 4-class semantic route grammar/prompt. Sim-dedup (EPISODE_DEDUP_SIM_ENABLED) is a separate write-side layer, independently off. Rollback = set False + restart.
 # Recency decay (memory/decay.py) for the episode semantic rank: a fresh episode
 # outranks a stale one of equal similarity. Half-life 30d = recent-favored but
 # old still retrievable (90d -> 0.125 weight). Tunable once there's data.
