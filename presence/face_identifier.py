@@ -58,6 +58,20 @@ RESERVED_IDS = {"dan": 1, "timmy": 2}
 FIRST_FREE_ID = 3
 
 
+_shared = None
+
+
+def get_shared_identifier():
+    """Process-wide FaceIdentifier, loaded once (shared by shadow + authority
+    paths so the gallery loads a single time)."""
+    global _shared
+    if _shared is None:
+        fi = FaceIdentifier()
+        fi.load()
+        _shared = fi
+    return _shared
+
+
 def band_of(dist: float) -> str:
     """EdgeFace-calibrated confidence band for a match distance."""
     if dist < FACE_BAND_HIGH:

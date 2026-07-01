@@ -48,6 +48,16 @@ _DEFAULTS: dict = {
     # flipping authority to okDemerzel. Fire-and-forget + off the event loop, so
     # it never adds reply latency. Read live per-turn; default False (opt-in).
     "face_shadow_enabled": False,
+    # Identity AUTHORITY source (2026-07-01). "pi" = the Pi's SFace /faces result
+    # feeds IdentityFusion (legacy). "okdemerzel" = okDemerzel EdgeFace (multi-
+    # frame /capture grab) feeds fusion instead, recognizing the enrolled makers
+    # too (superset of the Pi). The Pi still supplies the BehaviorSnapshot either
+    # way. Falls back to the Pi observation on any okDemerzel error/timeout. Read
+    # live per-turn; default "pi".
+    "face_authority": "pi",
+    # Frames grabbed per turn when face_authority == "okdemerzel" (best match per
+    # identity across them; an off-center subject dodges a single frame).
+    "face_authority_frames": 3,
     # Mouth-mute (2026-06-12). When True, Timmy's CONVERSATIONAL voice (replies
     # + THINKING fillers) is silenced — speak()/speak_filler() skip the playback
     # enqueue, so capture.suppressed never sets and the mic stays fully open.

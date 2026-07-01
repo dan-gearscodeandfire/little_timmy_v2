@@ -15,37 +15,17 @@ can never break a turn (all failures swallowed). Gated by the
 import logging
 
 import httpx
-import numpy as np
 
 import config
 
 log = logging.getLogger(__name__)
 
-_identifier = None
-
-
-def _get_identifier():
-    """Lazily load the FaceIdentifier once (shared across turns)."""
-    global _identifier
-    if _identifier is None:
-        from presence.face_identifier import FaceIdentifier
-        fi = FaceIdentifier()
-        fi.load()
-        _identifier = fi
-    return _identifier
-
-
 def _recognize(jpeg: bytes) -> list:
     """Blocking: JPEG bytes -> [FacePrediction] via okDemerzel recognition.
-    Runs behind asyncio.to_thread (cv2 decode + YuNet + EdgeFace are CPU)."""
-    import cv2
-    from presence.face_detect import aligned_crops
-    frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-    if frame is None:
-        return []
-    fi = _get_identifier()
-    obs = fi.observe(aligned_crops(frame))
-    return list(obs.predictions)
+    Runs behind asyncio.to_thread. Delegates to the shared recognizer."""
+    from presence.face_recognize import recognize_frame
+    preds, _ = recognize_frame(jpeg)
+    return preds
 
 
 async def shadow_compare(pi_face_obs) -> None:

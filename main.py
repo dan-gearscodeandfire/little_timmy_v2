@@ -191,10 +191,30 @@ class Orchestrator:
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
-        # Uses in-tree FaceID via face_client_local (no HTTP to :8895).
+        # face_authority toggle picks the IDENTITY source: "okdemerzel" runs the
+        # local EdgeFace multi-frame recognizer (recognizes the enrolled makers,
+        # a superset of the Pi's SFace) and falls back to the Pi observation on
+        # any miss; "pi" (default) uses the Pi's /faces via face_client_local.
+        # Either way the Pi supplies the BehaviorSnapshot fuse_identity gates on.
         if not self._presence_enabled:
             return None
         try:
+            if runtime_toggles.get("face_authority") == "okdemerzel":
+                from presence.face_recognize import fetch_face_observation_okdemerzel
+                frames = int(runtime_toggles.get("face_authority_frames") or 2)
+                obs = await asyncio.wait_for(
+                    fetch_face_observation_okdemerzel(
+                        self._face_http,
+                        config.STREAMERPI_CAPTURE_URL,
+                        config.STREAMERPI_BEHAVIOR_URL,
+                        frames=frames,
+                        timeout_sec=1.5,
+                    ),
+                    timeout=2.5,
+                )
+                if obs is not None:
+                    return obs
+                # okDemerzel recognized nothing / grab failed -> Pi fallback below.
             return await asyncio.wait_for(
                 fetch_face_observation_local(
                     self.vision,
