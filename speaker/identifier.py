@@ -43,6 +43,14 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.distance import cosine
 
+from presence.prototype_base import (
+    IdMap,
+    PrototypeFileStore,
+    build_prototypes,
+    merge_prototypes,
+    min_cosine_distance,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -200,26 +208,10 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
 
 def _build_prototypes(embeddings: list) -> np.ndarray:
-    """Turn a list of raw embeddings into a deduped, capped (K, D) prototype set.
-
-    Each embedding is L2-normalized; one is dropped if it sits within
-    PROTOTYPE_DEDUP_DIST cosine of an already-kept prototype (near-duplicate
-    pose/distance). Capped at MAX_PROTOTYPES. Falls back to the mean if every
-    sample deduped away.
-    """
-    kept: list[np.ndarray] = []
-    for e in embeddings:
-        e = e / np.linalg.norm(e)
-        if any(cosine(e, k) < PROTOTYPE_DEDUP_DIST for k in kept):
-            continue
-        kept.append(e)
-        if len(kept) >= MAX_PROTOTYPES:
-            break
-    if not kept:
-        m = np.mean(embeddings, axis=0)
-        m /= np.linalg.norm(m)
-        kept = [m]
-    return np.vstack(kept)
+    """Voice-scale wrapper over the shared prototype builder (dedup/cap at the
+    WeSpeaker-calibrated constants). See presence.prototype_base.build_prototypes."""
+    return build_prototypes(embeddings, dedup_dist=PROTOTYPE_DEDUP_DIST,
+                            max_protos=MAX_PROTOTYPES)
 
 
 @dataclass
@@ -237,7 +229,7 @@ class KnownSpeaker:
 
     def distance(self, emb: np.ndarray) -> float:
         """Minimum cosine distance from ``emb`` to any of this speaker's prototypes."""
-        return float(min(cosine(emb, p) for p in self.prototypes))
+        return min_cosine_distance(emb, self.prototypes)
 
 
 @dataclass
@@ -272,6 +264,16 @@ class SpeakerIdentifier:
 
     def __init__(self):
         self._encoder = None
+        # Shared, modality-agnostic persistence (see presence.prototype_base).
+        # The id-map file is the ONE canonical name->speaker_id map; the face
+        # identifier points its own IdMap at this SAME file so a person keeps one
+        # speaker_id across both biometrics.
+        self._store = PrototypeFileStore(
+            VOICEPRINT_DIR, "_wespeaker",
+            reserved_names=RESERVED_NAMES, name_re=_NAME_RE)
+        self._id_map = IdMap(
+            VOICEPRINT_DIR / self._ID_MAP_FILENAME,
+            reserved_ids=self._RESERVED_IDS, first_free_id=self._NEXT_ID)
         # Open-set guard (anti-model + s-norm), lazily built on first use from
         # COHORT_DIR. None once loaded-and-empty so we don't re-stat every call.
         self._open_set_scorer = None
@@ -319,43 +321,22 @@ class SpeakerIdentifier:
     _ID_MAP_FILENAME = "_id_map.json"
 
     def _read_id_map(self) -> dict:
-        """Read the persisted name -> speaker_id map, or {} if missing/corrupt."""
-        path = VOICEPRINT_DIR / self._ID_MAP_FILENAME
-        if not path.exists():
-            return {}
-        try:
-            import json as _json
-            with open(path) as f:
-                return {k.lower(): int(v) for k, v in _json.load(f).items()}
-        except Exception as e:
-            log.warning("Failed to read %s: %s; treating as empty", path.name, e)
-            return {}
+        """Read the persisted name -> speaker_id map, or {} if missing/corrupt.
+        Delegates to the shared IdMap (see presence.prototype_base)."""
+        return self._id_map.read()
 
     def _write_id_map(self, mapping: dict) -> None:
-        """Persist the name -> speaker_id map atomically."""
-        import json as _json
-        path = VOICEPRINT_DIR / self._ID_MAP_FILENAME
-        tmp = path.with_suffix(".json.tmp")
-        VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "w") as f:
-            _json.dump(mapping, f, indent=2, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(path)
+        """Persist the name -> speaker_id map atomically (shared IdMap)."""
+        self._id_map.write(mapping)
 
     def enrolled_speaker_ids(self) -> dict:
         """Return ``name -> speaker_id`` for every registered speaker WITHOUT
-        loading the encoder or any voiceprint.
-
-        Reserved ids (dan=1, timmy=2) are always present; the ``_next_id``
-        bookkeeping key is excluded. This is the source of truth the postgres
-        ``speakers`` table is reconciled against (see ``db/speakers.py``) so an
-        enrolled voiceprint can never FK-fail a facts/memories insert.
-        """
-        mapping = {n: i for n, i in self._read_id_map().items()
-                   if n != "_next_id" and isinstance(i, int)}
-        mapping.update(self._RESERVED_IDS)
-        return mapping
+        loading the encoder or any voiceprint. Reserved ids (dan=1, timmy=2) are
+        always present; ``_next_id`` excluded. Source of truth the postgres
+        ``speakers`` table is reconciled against (``db/speakers.py``) so an
+        enrolled voiceprint can never FK-fail a facts/memories insert. Delegates
+        to the shared IdMap so face + voice share ONE id space."""
+        return self._id_map.enrolled_ids()
 
     def load_voiceprints(self):
         """Load every ``*_wespeaker.npy`` in VOICEPRINT_DIR.
@@ -445,25 +426,10 @@ class SpeakerIdentifier:
         Accepts a single embedding (shape (D,)) or a prototype set (shape
         (K, D)); always stored on disk as 2-D so older callers stay valid.
         Refuses reserved/empty/malformed names. Backs up any existing file
-        as ``.bak.<unix_ts>`` if backup=True.
+        as ``.bak.<unix_ts>`` if backup=True. Delegates to the shared
+        PrototypeFileStore (presence.prototype_base).
         """
-        clean = (name or "").strip().lower()
-        if clean in RESERVED_NAMES or not _NAME_RE.match(clean):
-            raise ValueError(f"refusing to persist voiceprint as {clean!r}")
-        if not isinstance(prototypes, np.ndarray) or prototypes.ndim not in (1, 2):
-            raise ValueError("prototypes must be a 1-D or 2-D ndarray")
-        if prototypes.ndim == 1:
-            prototypes = prototypes[None, :]
-        VOICEPRINT_DIR.mkdir(parents=True, exist_ok=True)
-        out = VOICEPRINT_DIR / f"{clean}_wespeaker.npy"
-        if backup and out.exists():
-            bak = VOICEPRINT_DIR / f"{clean}_wespeaker.npy.bak.{int(time.time())}"
-            out.rename(bak)
-            log.info("Backed up existing voiceprint: %s -> %s", out.name, bak.name)
-        np.save(out, prototypes.astype(np.float32))
-        log.info("Persisted voiceprint: %s (%d prototype(s), %d-dim)",
-                 out, prototypes.shape[0], prototypes.shape[1])
-        return out
+        return self._store.persist(name, prototypes, backup=backup)
 
     def _next_known_id(self) -> int:
         used = {ks.speaker_id for ks in self._known_speakers}
@@ -780,19 +746,13 @@ class SpeakerIdentifier:
         """Append new embeddings to ``ks.prototypes`` as additional prototypes,
         deduping against existing ones (within PROTOTYPE_DEDUP_DIST) and capping
         at MAX_PROTOTYPES (keeping the most recent). Returns how many were added;
-        persists the updated set to disk when ``persist`` is True."""
-        protos = ks.prototypes
-        added = 0
-        for e in embeddings:
-            e = e / np.linalg.norm(e)
-            if any(cosine(e, p) < PROTOTYPE_DEDUP_DIST for p in protos):
-                continue
-            protos = np.vstack([protos, e[None, :]])
-            added += 1
+        persists the updated set to disk when ``persist`` is True. Vector math
+        lives in presence.prototype_base.merge_prototypes."""
+        protos, added = merge_prototypes(
+            ks.prototypes, embeddings,
+            dedup_dist=PROTOTYPE_DEDUP_DIST, max_protos=MAX_PROTOTYPES)
         if added == 0:
             return 0
-        if protos.shape[0] > MAX_PROTOTYPES:
-            protos = protos[-MAX_PROTOTYPES:]
         ks.prototypes = protos
         if persist:
             try:

@@ -13,6 +13,11 @@ models/tts/
 # Speaker voiceprints + id map are runtime-generated state, never tracked
 # (covers *.npy and variant suffixes like .npy.pre_pipeline / .npy.disabled).
 models/speaker/
+# Face prototypes are personal biometric state — never tracked. The EdgeFace
+# ONNX model itself (models/face/*.onnx) is a public artifact and IS tracked.
+models/face/*.npy
+models/face/*.npy.*
+models/face/_id_map.json
 
 # IDE
 .vscode/
