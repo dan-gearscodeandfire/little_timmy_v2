@@ -965,6 +965,16 @@ async def presence_state():
         return {"now": None, "present": [], "unknown_voices_recent": 0, "enabled": False}
     state = _orchestrator.room_ledger.current_state()
     state["enabled"] = True
+    # Enrich each present person with a proper display name + creator flag so the
+    # booth panel can render "William Osman" (not the "william_osman" slug) and
+    # highlight recognized OpenSauce creators vs household.
+    try:
+        from presence.creators import display_name, is_creator
+        for p in state.get("present", []):
+            p["display_name"] = display_name(p.get("name", ""))
+            p["is_creator"] = is_creator(p.get("name", ""))
+    except Exception:
+        pass
     return state
 
 

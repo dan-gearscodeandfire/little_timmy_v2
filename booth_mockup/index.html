@@ -1150,13 +1150,34 @@
             + Math.round(p.last_pose.tilt) + '°';
         }
         const dot = '<span style="color:var(--bone-faint); margin:0 8px;">·</span>';
+        // Proper display name (server: "William Osman", not the "william_osman" slug).
+        const nm = p.display_name || capName(p.name);
+        // Modality badge from the fused recognition source (face / voice / both).
+        const src = p.source || '';
+        const modTxt = src === 'both' ? 'FACE·VOICE' : src === 'face' ? 'FACE'
+                     : src === 'voice' ? 'VOICE' : '';
+        const modBadge = modTxt
+          ? "<span style=\"font-family:'Inter',sans-serif; font-weight:600; font-size:11px; "
+            + "letter-spacing:0.08em; color:var(--bone-ghost); border:1px solid var(--bone-faint); "
+            + "border-radius:3px; padding:1px 5px; margin-left:10px; vertical-align:middle;\">"
+            + modTxt + "</span>"
+          : '';
+        // Recognized OpenSauce creator: accent the name + a CREATOR tag.
+        const creator = !!p.is_creator;
+        const nameColor = creator ? 'var(--signal)' : 'inherit';
+        const creatorTag = creator
+          ? "<span style=\"font-family:'Inter',sans-serif; font-weight:700; font-size:11px; "
+            + "letter-spacing:0.1em; color:var(--signal); margin-left:10px; vertical-align:middle;\">"
+            + "◆ CREATOR</span>"
+          : '';
         const li = document.createElement('li');
         li.style.marginBottom = '16px';
         li.innerHTML =
           '<span style="font-style:normal; margin-right:8px; color:'
             + (onCam ? 'var(--signal)' : 'var(--bone-ghost)') + ';">'
             + (onCam ? '●' : '○') + '</span>'
-          + capName(p.name)
+          + '<span style="color:' + nameColor + ';">' + nm + '</span>'
+          + modBadge + creatorTag
           + '<div style="' + sub + ' font-size:16px; letter-spacing:0.01em; '
               + 'margin-top:4px;">'
             + '<span style="color:' + ageColour(faceAge) + ';">' + faceLabel + '</span>'
