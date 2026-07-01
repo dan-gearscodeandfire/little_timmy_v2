@@ -58,6 +58,23 @@ RESERVED_IDS = {"dan": 1, "timmy": 2}
 FIRST_FREE_ID = 3
 
 
+def _toggle(key, fallback):
+    """Read a runtime toggle live, falling back to a static default (keeps this
+    module import-clean/testable). Lazy import avoids an import cycle."""
+    try:
+        from persistence import runtime_toggles
+        v = runtime_toggles.get(key)
+        return v if v is not None else fallback
+    except Exception:
+        return fallback
+
+
+def accept_threshold() -> float:
+    """Live accept cutoff (runtime toggle `face_threshold`, default the calibrated
+    KNOWN_FACE_THRESHOLD). Tunable on the day at OpenSauce with no restart."""
+    return float(_toggle("face_threshold", KNOWN_FACE_THRESHOLD))
+
+
 _shared = None
 
 
@@ -72,11 +89,14 @@ def get_shared_identifier():
     return _shared
 
 
-def band_of(dist: float) -> str:
-    """EdgeFace-calibrated confidence band for a match distance."""
-    if dist < FACE_BAND_HIGH:
+def band_of(dist: float, high: float = FACE_BAND_HIGH,
+            medium: float = FACE_BAND_MEDIUM) -> str:
+    """Confidence band for a match distance. Cutoffs default to the calibrated
+    constants; callers pass live-scaled cutoffs so the bands track the tunable
+    accept threshold (medium == accept, high == 0.8 * accept)."""
+    if dist < high:
         return "high"
-    if dist < FACE_BAND_MEDIUM:
+    if dist < medium:
         return "medium"
     return "low"
 
@@ -170,13 +190,14 @@ class FaceIdentifier:
 
     def _prediction_from_embedding(self, emb: np.ndarray, bbox: tuple):
         best, d = self.match_embedding(emb)
-        if best is None or d >= KNOWN_FACE_THRESHOLD:
+        thr = accept_threshold()          # live, tunable at OpenSauce
+        if best is None or d >= thr:
             return None
         return FacePrediction(
             user_id=best.name,
             confidence=max(0.0, 1.0 - d),
             bbox=tuple(int(v) for v in bbox),
-            band=band_of(d),
+            band=band_of(d, high=0.8 * thr, medium=thr),
             sticky=False,  # no Pi stabilizer on this side (deliberate)
         )
 

@@ -58,6 +58,12 @@ _DEFAULTS: dict = {
     # Frames grabbed per turn when face_authority == "okdemerzel" (best match per
     # identity across them; an off-center subject dodges a single frame).
     "face_authority_frames": 3,
+    # Live face-recognition accept cutoff (cosine distance). A probe within this
+    # of an enrolled prototype is recognized; bands scale with it (high=0.8x,
+    # medium=this). Default is the calibrated KNOWN_FACE_THRESHOLD. Tunable on the
+    # day at OpenSauce (different lighting) with NO restart: lower = stricter
+    # (fewer false hits), higher = looser (catches more, watch false accepts).
+    "face_threshold": 0.50,
     # Mouth-mute (2026-06-12). When True, Timmy's CONVERSATIONAL voice (replies
     # + THINKING fillers) is silenced — speak()/speak_filler() skip the playback
     # enqueue, so capture.suppressed never sets and the mic stays fully open.
