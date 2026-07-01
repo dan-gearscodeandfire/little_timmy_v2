@@ -18,6 +18,9 @@ models/speaker/
 models/face/*.npy
 models/face/*.npy.*
 models/face/_id_map.json
+# Calibration scratch = real face images (biometric + LFW). Never tracked; the
+# derived thresholds live in presence/face_thresholds.py (committed).
+ops/calib/
 
 # IDE
 .vscode/
