@@ -73,15 +73,40 @@ def _anchor_embedding(anchor_path: Path):
     return extract_embedding(aligned) if aligned is not None else None
 
 
+# Below this anchor-kept count, expand to the anchor's cluster for volume.
+_ANCHOR_MIN = 12
+# A cluster medoid within this (looser) distance of the anchor confirms the
+# cluster IS the anchor person (not a recurring collaborator) before expanding.
+_ANCHOR_EXPAND = 0.62
+
+
 def _dominant_cluster(embs: np.ndarray, thr: float):
-    """Indices of the largest cluster: the face with the most neighbors within
-    ``thr`` is the medoid; keep everything within ``thr`` of it."""
+    """(indices, medoid_idx) of the largest cluster: the face with the most
+    neighbors within ``thr`` is the medoid; keep everything within ``thr``."""
     n = len(embs)
     if n <= 1:
-        return list(range(n))
+        return list(range(n)), (0 if n else -1)
     D = np.array([[cosine(embs[i], embs[j]) for j in range(n)] for i in range(n)])
     medoid = int(np.argmax((D < thr).sum(axis=1)))
-    return [j for j in range(n) if D[medoid][j] < thr]
+    return [j for j in range(n) if D[medoid][j] < thr], medoid
+
+
+def _clean(idxs: list, E: np.ndarray, thr: float) -> list:
+    """Drop injected wrong-person faces: keep a face only if its MEDIAN cosine
+    distance to the other kept faces is < thr. Cosine distance isn't a metric, so
+    a cluster/anchor set can admit an outlier that's near the medoid yet far from
+    the bulk (nate's 0.958 pair); this removes them. No-op for tiny sets."""
+    if len(idxs) <= 3:
+        return idxs
+    sub = E[idxs]
+    D = np.array([[cosine(sub[i], sub[j]) for j in range(len(sub))]
+                  for i in range(len(sub))])
+    keep = []
+    for i in range(len(idxs)):
+        others = np.delete(D[i], i)
+        if np.median(others) < thr:
+            keep.append(idxs[i])
+    return keep or idxs
 
 
 def process(raw_root: Path, anchors_root: Path, out_root: Path, thr: float) -> int:
@@ -97,9 +122,18 @@ def process(raw_root: Path, anchors_root: Path, out_root: Path, thr: float) -> i
         if anchor is not None:
             keep = [i for i in range(len(E)) if cosine(E[i], anchor) < thr]
             mode = "ANCHOR"
+            if len(keep) < _ANCHOR_MIN:
+                # Strict avatar distance missed volume (avatar pose/era differs).
+                # Expand to the dominant cluster IF its medoid confirms as the
+                # anchor person -> anchor-verified recall.
+                cl, med = _dominant_cluster(E, thr)
+                if med >= 0 and cosine(E[med], anchor) < _ANCHOR_EXPAND:
+                    keep = sorted(set(keep) | set(cl))
+                    mode = "ANCHOR+CL"
         else:
-            keep = _dominant_cluster(E, thr)
+            keep, _ = _dominant_cluster(E, thr)
             mode = "CLUSTER"
+        keep = _clean(keep, E, thr)
         if len(keep) >= 2:
             Ek = E[keep]
             dd = [cosine(Ek[a], Ek[b]) for a, b in itertools.combinations(range(len(keep)), 2)]
