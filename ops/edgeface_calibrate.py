@@ -53,17 +53,32 @@ def _detector(w: int, h: int):
     return det
 
 
+_YUNET_DET_MAX = 640   # detect at this longer-side scale; YuNet misses faces too
+                       # large in-frame (tight hi-res headshots) at native size.
+
+
 def _yunet_faces(frame_bgr: np.ndarray):
-    """Return list of (bbox_xywh, landmarks5_arcface_order) for detected faces."""
+    """Return list of (bbox_xywh, landmarks5_arcface_order) for detected faces.
+
+    Downscales so the longer side is <= _YUNET_DET_MAX before detection (large
+    in-frame faces fall outside YuNet's anchor range), then maps bbox+landmarks
+    back to original-image coordinates."""
     h, w = frame_bgr.shape[:2]
-    det = _detector(w, h)
-    _, faces = det.detect(frame_bgr)
+    scale = min(1.0, _YUNET_DET_MAX / max(h, w))
+    if scale < 1.0:
+        dw, dh = int(round(w * scale)), int(round(h * scale))
+        det_img = cv2.resize(frame_bgr, (dw, dh))
+    else:
+        dw, dh, det_img = w, h, frame_bgr
+    det = _detector(dw, dh)
+    _, faces = det.detect(det_img)
     out = []
     if faces is None:
         return out
+    inv = 1.0 / scale
     for f in faces:
-        box = f[0:4].astype(np.float32)
-        lm = f[4:14].reshape(5, 2).astype(np.float32)[_YUNET_TO_ARCFACE]
+        box = (f[0:4].astype(np.float32)) * inv
+        lm = (f[4:14].reshape(5, 2).astype(np.float32) * inv)[_YUNET_TO_ARCFACE]
         out.append((box, lm))
     return out
 
