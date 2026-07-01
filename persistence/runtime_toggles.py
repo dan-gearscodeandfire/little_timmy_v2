@@ -41,6 +41,13 @@ _DEFAULTS: dict = {
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the
     # static master switch) -- BOTH must be true. Default False (opt-in).
     "proactive_speech_enabled": False,
+    # Face-recognition SHADOW mode (2026-06-30). When True, each speech turn also
+    # runs okDemerzel-side EdgeFace recognition (self-served from a /capture grab)
+    # and logs [FACE-SHADOW] okDemerzel-vs-Pi agreement — WITHOUT changing fusion
+    # (the Pi's SFace stays authoritative). Lets us watch real accuracy before
+    # flipping authority to okDemerzel. Fire-and-forget + off the event loop, so
+    # it never adds reply latency. Read live per-turn; default False (opt-in).
+    "face_shadow_enabled": False,
     # Mouth-mute (2026-06-12). When True, Timmy's CONVERSATIONAL voice (replies
     # + THINKING fillers) is silenced — speak()/speak_filler() skip the playback
     # enqueue, so capture.suppressed never sets and the mic stays fully open.

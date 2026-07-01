@@ -837,6 +837,16 @@ class Orchestrator:
         # _fetch_face_safe returns None when presence is disabled.
         face_obs = await self._fetch_face_safe()
 
+        # Face-recognition SHADOW mode (2026-06-30): also run okDemerzel-side
+        # EdgeFace recognition (self-served from a /capture grab) and log how it
+        # compares to the Pi's SFace, WITHOUT touching fusion. Fire-and-forget +
+        # off the event loop -> zero reply latency. Gated by face_shadow_enabled
+        # (default OFF). Lets us watch real agreement before flipping identity
+        # authority to okDemerzel (plan Phase A).
+        if runtime_toggles.get("face_shadow_enabled"):
+            from presence.face_shadow import shadow_compare
+            asyncio.create_task(shadow_compare(face_obs))
+
         # --- Presence: voice + face fusion ---
         fusion_source = None
         face_hint_name = None
