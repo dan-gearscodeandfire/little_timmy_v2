@@ -39,6 +39,13 @@ class FaceObservation:
     predictions: tuple  # tuple[FacePrediction]
     behavior: Optional[BehaviorSnapshot]
     image_size: Optional[tuple] = None  # (width, height) for bbox normalization
+    # Total faces DETECTED in frame (recognized OR not), when the source knows it
+    # (okDemerzel self-serve path counts YuNet detections; predictions only carry
+    # RECOGNISED faces, so a lone stranger would otherwise be invisible). Drives
+    # the "sole face in frame == the speaker" rule (2026-07-01, standing in for
+    # the green-LED is_speaker signal). None => source didn't report it; fusion
+    # falls back to counting predictions (Pi/legacy path).
+    detected_face_count: Optional[int] = None
 
 
 @dataclass(frozen=True)

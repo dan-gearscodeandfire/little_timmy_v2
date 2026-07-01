@@ -26,38 +26,50 @@ log = logging.getLogger(__name__)
 
 
 def recognize_frame(jpeg: bytes):
-    """JPEG bytes -> (list[FacePrediction], image_size). Blocking (cv2 + YuNet +
-    EdgeFace); call behind asyncio.to_thread. Empty list if no recognized face."""
+    """JPEG bytes -> (list[FacePrediction], image_size, detected_face_count).
+
+    Blocking (cv2 + YuNet + EdgeFace); call behind asyncio.to_thread. Empty
+    prediction list if no recognized face. detected_face_count is the number of
+    DETECTED+alignable faces in the frame (recognized or not) — the input to the
+    "sole face == speaker" rule; None if the frame failed to decode."""
     import cv2
     from presence.face_detect import aligned_crops
     from presence.face_identifier import get_shared_identifier
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
-        return [], None
+        return [], None, None
     fi = get_shared_identifier()
+    crops = aligned_crops(frame)
     preds = []
-    for crop, bbox in aligned_crops(frame):
+    for crop, bbox in crops:
         p = fi.identify_crop(crop, bbox)
         if p is not None:
             preds.append(p)
     h, w = frame.shape[:2]
-    return preds, (w, h)
+    return preds, (w, h), len(crops)
 
 
 def _recognize_many(jpegs: list):
     """Recognize several frames, keep the BEST (highest-confidence) prediction
-    per identity across them. Returns (tuple[FacePrediction], image_size)."""
+    per identity across them. Returns (tuple[FacePrediction], image_size,
+    detected_face_count). The count is the MAX detected across frames — the
+    conservative choice for the sole-face gate: if ANY frame shows a second
+    face, treat it as ambiguous (abstain) rather than risk mis-binding. A
+    genuinely-lone speaker who dodges some frames still reads as 1."""
     best = {}
     size = None
+    detected = 0
     for jpeg in jpegs:
-        preds, sz = recognize_frame(jpeg)
+        preds, sz, n = recognize_frame(jpeg)
         if sz is not None:
             size = sz
+        if n is not None:
+            detected = max(detected, n)
         for p in preds:
             cur = best.get(p.user_id)
             if cur is None or p.confidence > cur.confidence:
                 best[p.user_id] = p
-    return tuple(best.values()), size
+    return tuple(best.values()), size, detected
 
 
 async def fetch_face_observation_okdemerzel(
@@ -89,7 +101,7 @@ async def fetch_face_observation_okdemerzel(
     if not jpegs:
         return None
     try:
-        preds, size = await asyncio.to_thread(_recognize_many, jpegs)
+        preds, size, detected = await asyncio.to_thread(_recognize_many, jpegs)
     except Exception:
         log.info("[FACE-AUTH] recognition failed", exc_info=True)
         return None
@@ -98,4 +110,5 @@ async def fetch_face_observation_okdemerzel(
         predictions=preds,
         behavior=behavior,
         image_size=size,
+        detected_face_count=detected,
     )

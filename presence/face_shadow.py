@@ -24,7 +24,7 @@ def _recognize(jpeg: bytes) -> list:
     """Blocking: JPEG bytes -> [FacePrediction] via okDemerzel recognition.
     Runs behind asyncio.to_thread. Delegates to the shared recognizer."""
     from presence.face_recognize import recognize_frame
-    preds, _ = recognize_frame(jpeg)
+    preds, _size, _n = recognize_frame(jpeg)
     return preds
 
 

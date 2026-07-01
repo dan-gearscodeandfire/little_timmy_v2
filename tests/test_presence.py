@@ -63,12 +63,14 @@ def _good_behavior(elapsed_ms=3000, mode="track", face_visible=True):
     )
 
 
-def _face_obs(predictions, behavior=None, image_size=(640, 480)):
+def _face_obs(predictions, behavior=None, image_size=(640, 480),
+             detected_face_count=None):
     return FaceObservation(
         captured_at=time.time(),
         predictions=tuple(predictions),
         behavior=behavior,
         image_size=image_size,
+        detected_face_count=detected_face_count,
     )
 
 
@@ -115,6 +117,52 @@ class TestFuseIdentity:
         assert v.final_name == "unknown_3"
         assert v.resolution_source == "voice"
         assert v.gates["single_face"] is False
+
+    def test_sole_unknown_face_sets_single_face_but_does_not_promote(self):
+        # "Sole face == speaker" (2026-07-01): a lone STRANGER (no prediction —
+        # recognition dropped the unknown) is still a single in-frame face via
+        # detected_face_count. single_face/face_present are True (so we DON'T
+        # abstain-as-multi), but there's no name to promote to, so the turn
+        # stays the unknown voice. This is the Phase-B binding hook.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs([], _good_behavior(), detected_face_count=1),
+        )
+        assert v.gates["face_present"] is True
+        assert v.gates["single_face"] is True
+        assert v.gates["face_above_threshold"] is False
+        assert v.final_name == "unknown_3"
+        assert v.resolution_source == "voice"
+
+    def test_detection_count_two_blocks_promotion_even_with_one_recognized(self):
+        # A recognized face PLUS an unrecognized bystander: predictions has 1
+        # (the stranger was dropped), but detected_face_count=2 means the scene
+        # is ambiguous. The detection count must win -> single_face False ->
+        # abstain rather than attribute the unknown voice to the known face.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs([_pred("Robin", 0.91)], _good_behavior(),
+                           detected_face_count=2),
+        )
+        assert v.gates["single_face"] is False
+        assert v.final_name == "unknown_3"
+        assert v.resolution_source == "voice"
+
+    def test_detection_count_one_with_recognized_face_still_promotes(self):
+        # The common case: exactly one detected face, and it's recognized.
+        # detected_face_count=1 agrees with the recognized-count -> promotes,
+        # identical to the pre-detection-count behavior.
+        v = fuse_identity(
+            voice_name="unknown_3",
+            voice_is_unknown=True,
+            face=_face_obs([_pred("Robin", 0.91)], _good_behavior(),
+                           detected_face_count=1),
+        )
+        assert v.gates["single_face"] is True
+        assert v.final_name == "robin"
+        assert v.resolution_source == "face_hint"
 
     def test_head_not_steady_blocks_promotion(self):
         v = fuse_identity(

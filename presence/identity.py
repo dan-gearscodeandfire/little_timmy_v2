@@ -193,25 +193,41 @@ def fuse_identity(
 
     top_band = "low"
     top_sticky = False
-    if face is not None and face.predictions:
-        gates["face_present"] = True
-        gates["single_face"] = len(face.predictions) == 1
-        top = face.predictions[0]
-        face_hint_name = canonicalize(top.user_id)
-        face_hint_confidence = float(top.confidence)
-        # Single classification (band string wins; else derived from the floors).
-        top_band = band_of(top, high_conf=streak_high_conf, med_conf=face_conf_threshold)
-        top_sticky = bool(getattr(top, "sticky", False))
-        # Attribution gate: trust streamerpi's match decision (high OR medium).
-        gates["face_above_threshold"] = top_band in ("high", "medium")
+    if face is not None:
+        # face_present / single_face: prefer the true DETECTED count (okDemerzel
+        # self-serve path) so a lone STRANGER counts as a single in-frame face
+        # even though it isn't in predictions (recognition drops unknowns). This
+        # is the "sole face == the speaker" rule (2026-07-01), standing in for
+        # the green-LED is_speaker: exactly one in-frame face is the speaker;
+        # 2+ stay ambiguous -> abstain. Never over-attributes — promotion still
+        # requires a RECOGNISED face (face_above_threshold), so a lone stranger
+        # sets single_face without being handed a name. Falls back to the
+        # recognised-count when the source didn't report detections (Pi/legacy).
+        det_count = face.detected_face_count
+        if det_count is not None:
+            gates["face_present"] = det_count >= 1
+            gates["single_face"] = det_count == 1
+        elif face.predictions:
+            gates["face_present"] = True
+            gates["single_face"] = len(face.predictions) == 1
 
-        beh = face.behavior
-        if beh is not None:
-            gates["behavior_known"] = True
-            gates["tracking_mode"] = beh.mode in _TRACKING_MODES
-            gates["face_visible_flag"] = bool(beh.face_visible)
-            head_steady = beh.elapsed_ms >= head_steady_min_ms
-            gates["head_steady"] = head_steady
+        if face.predictions:
+            top = face.predictions[0]
+            face_hint_name = canonicalize(top.user_id)
+            face_hint_confidence = float(top.confidence)
+            # Single classification (band string wins; else derived from the floors).
+            top_band = band_of(top, high_conf=streak_high_conf, med_conf=face_conf_threshold)
+            top_sticky = bool(getattr(top, "sticky", False))
+            # Attribution gate: trust streamerpi's match decision (high OR medium).
+            gates["face_above_threshold"] = top_band in ("high", "medium")
+
+            beh = face.behavior
+            if beh is not None:
+                gates["behavior_known"] = True
+                gates["tracking_mode"] = beh.mode in _TRACKING_MODES
+                gates["face_visible_flag"] = bool(beh.face_visible)
+                head_steady = beh.elapsed_ms >= head_steady_min_ms
+                gates["head_steady"] = head_steady
 
     promote = (
         voice_is_unknown

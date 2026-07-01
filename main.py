@@ -966,13 +966,19 @@ class Orchestrator:
                 and not verdict.gates.get("single_face")
             ):
                 # No-silent-caps: an unknown voice with MULTIPLE faces in frame
-                # can't be attributed without a speaker-selection signal (the
-                # planned green-LED-on-mic). We abstain (respond as guest, bind
-                # nothing) rather than guess. Make that visible, not silent.
+                # is ambiguous — the "sole face == speaker" rule only fires on
+                # exactly one detected face. With 2+ we abstain (respond as
+                # guest, bind nothing) rather than guess which face is talking.
+                # Make that visible, not silent.
+                _n_faces = (
+                    face_obs.detected_face_count
+                    if (face_obs and face_obs.detected_face_count is not None)
+                    else (len(face_obs.predictions) if face_obs else 0)
+                )
                 log.info(
                     "[PRESENCE] attribution ABSTAINED: unknown voice %s + %d faces "
-                    "in frame, no LED speaker-select -> staying guest (no bind)",
-                    speaker_name, len(face_obs.predictions) if face_obs else 0,
+                    "in frame (need exactly 1 for sole-face attribution) -> staying guest (no bind)",
+                    speaker_name, _n_faces,
                 )
             fusion_source = verdict.resolution_source
             face_hint_name = verdict.face_hint_name
