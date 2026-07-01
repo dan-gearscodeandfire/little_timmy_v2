@@ -64,6 +64,16 @@ _DEFAULTS: dict = {
     # day at OpenSauce (different lighting) with NO restart: lower = stricter
     # (fewer false hits), higher = looser (catches more, watch false accepts).
     "face_threshold": 0.50,
+    # Phase B unified dual-modality enroll (2026-07-01). When True, "enroll me /
+    # remember my face / remember my voice as X" routes through
+    # presence.identity_commit.commit_identity (okDemerzel voiceprint + EdgeFace +
+    # shared id-map + Postgres) instead of main._handle_enrollment's RETIRED Pi
+    # SFace POST, and passively co-sampled sole-face crops enroll the face with no
+    # separate capture dialog. Wins over config.UNIFIED_ENROLL_ENABLED (the env
+    # default). Read live per-turn at the doorway; default False (opt-in) — flip
+    # here to enable without a restart once validated. See
+    # docs/enroll-unification-phase-bc.md.
+    "unified_enroll_enabled": False,
     # Mouth-mute (2026-06-12). When True, Timmy's CONVERSATIONAL voice (replies
     # + THINKING fillers) is silenced — speak()/speak_filler() skip the playback
     # enqueue, so capture.suppressed never sets and the mic stays fully open.

@@ -49,6 +49,7 @@ from web.app import (app, init as web_init, broadcast_event, update_metrics,
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
 from conversation.enroll_intent import detect_enroll_intent
+from presence.cosample import CoSampleBuffer
 from conversation import tool_router
 from vision.supervisor import BehaviorSupervisor
 from presence import (
@@ -188,6 +189,16 @@ class Orchestrator:
             # runtime_toggles so LT-OS sliders take effect without a restart.
             trigger=NewFaceTrigger(TriggerConfig(), knobs=runtime_toggles.get),
         )
+
+        # Phase B: passive dual-modality co-sampling. Buffers the SOLE in-frame
+        # face crop each speaking turn (keyed by the turn's speaker) so a later
+        # "enroll me" can bind the face that has been talking without a separate
+        # capture dialog. Bounded ring; crops embed only at commit. Consumed by
+        # _handle_unified_enroll when the unified-enroll flag is on.
+        self._cosample = CoSampleBuffer()
+        # A two-turn latch: set to the requested scope when the user says "enroll
+        # me" without a name, so the next turn's name completes the enroll.
+        self._pending_enroll: str | None = None
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
@@ -330,6 +341,74 @@ class Orchestrator:
             await self.tts.speak(
                 f"Sorry, I couldn't get a clear look. Try again with better lighting?"
             )
+
+    async def _handle_unified_enroll(self, name: str, scope: str,
+                                     speaker_name: str, speaker_result) -> None:
+        """Phase B dual-modality enroll via commit_identity (okDemerzel stores).
+
+        Binds ``name`` to a face and/or voice under one shared speaker_id, using
+        the PASSIVELY co-sampled sole-face crop(s) for this speaker plus the
+        tracked unknown-voice embeddings — no separate capture dialog. Scoped by
+        what the user asked (``face`` / ``voice`` / ``both``). Speaks the result;
+        the caller early-returns to skip the normal turn.
+        """
+        name = (name or "").strip().lower()
+        key = speaker_name
+        want_face = scope in ("both", "face")
+        want_voice = scope in ("both", "voice")
+
+        face_crops = self._cosample.crops_for(key) if want_face else []
+        voice_embs = None
+        if want_voice and speaker_name.startswith("unknown_"):
+            us = self.speaker_id_module.get_unknown_for_name_ask(speaker_name)
+            if us is not None and us.embeddings:
+                voice_embs = list(us.embeddings)
+
+        if not face_crops and not voice_embs:
+            # Nothing co-sampled yet for the requested scope.
+            if want_face:
+                await self.tts.speak(
+                    "I can't get a clear look at you just now — face me and say that again.")
+            else:
+                await self.tts.speak(
+                    "I haven't heard enough of your voice yet — say a bit more and try again.")
+            return
+
+        await self.tts.speak(f"Okay {name.title()}, hold on while I remember you.")
+        try:
+            from presence.identity_commit import commit_identity
+            res = await commit_identity(
+                name,
+                voice_embeddings=voice_embs,
+                face_crops=(face_crops or None),
+                speaker_identifier=self.speaker_id_module,
+            )
+        except Exception:
+            log.exception("[ENROLL] unified commit failed for %s", name)
+            await self.tts.speak(
+                "Sorry, something went wrong saving that. Try again in a moment.")
+            return
+
+        if res.status == "mismatch":
+            await self.tts.speak(
+                f"Hmm — you don't quite match the {name.title()} I already know, so I'll "
+                "hold off for now.")
+            return
+        if not (res.voice_committed or res.face_committed):
+            await self.tts.speak(
+                "Sorry, I couldn't get a good enough look or listen just then. Try again?")
+            return
+
+        self._cosample.clear_speaker(key)
+        got = []
+        if res.face_committed:
+            got.append("face")
+        if res.voice_committed:
+            got.append("voice")
+        log.info("[ENROLL] unified %s -> id=%s (%s) status=%s warnings=%s",
+                 res.name, res.speaker_id, "+".join(got), res.status, res.warnings)
+        await self.tts.speak(
+            f"Got it — I'll recognize your {' and '.join(got)} now, {name.title()}.")
 
     async def _enroll_stream(self, name: str, count: int, interval_s: float, mode: str):
         """Async generator over streamerpi's SSE /face_db/enroll/stream.
@@ -510,6 +589,25 @@ class Orchestrator:
         })
         await self.conversation.add_user_turn(user_text, speaker=speaker_name)
 
+        # Phase B unified enroll (flag-gated). Enabled by EITHER the live runtime
+        # toggle (flip without restart, UI-visible) OR the static env master
+        # (config.UNIFIED_ENROLL_ENABLED) — mirrors the proactive-speech gating
+        # pattern. Default OFF on both. All reactive-enroll routing keys off this.
+        _unified = bool(runtime_toggles.get("unified_enroll_enabled")) or \
+            config.UNIFIED_ENROLL_ENABLED
+
+        # Two-turn latch: a prior "enroll me" without a name is waiting for one.
+        # This turn supplies it -> commit dually and consume the latch.
+        if _unified and self._pending_enroll is not None:
+            from conversation.introductions import _extract_name_from_response
+            _nm = _extract_name_from_response(user_text)
+            _scope = self._pending_enroll
+            self._pending_enroll = None
+            if _nm:
+                await self._handle_unified_enroll(_nm, _scope, speaker_name, speaker_result)
+                return
+            # No name heard -> abandon the latch silently and continue as normal.
+
         # A face auto-enroll consent dialog in flight OWNS this turn. Route it to
         # the FSM BEFORE the legacy voice enroll-intent / name-ask below, which
         # would otherwise hijack natural consent phrases. STT audits out a bare
@@ -522,7 +620,22 @@ class Orchestrator:
 
         # voice-enroll-shortcut
         enroll = detect_enroll_intent(user_text, speaker_name)
-        if enroll.matched:
+        if _unified:
+            # Phase B: route through commit_identity (okDemerzel stores), scoped
+            # to what the user asked (face / voice / both). A keyword with no name
+            # latches a one-turn name ask instead of the dead Pi POST.
+            if enroll.matched:
+                await self._handle_unified_enroll(
+                    enroll.name, enroll.scope, speaker_name, speaker_result)
+                return
+            if enroll.keyword_present:
+                self._pending_enroll = enroll.scope
+                await self.tts.speak("Sure — what name should I remember you by?")
+                return
+        elif enroll.matched:
+            # Legacy path (flag OFF): the Pi SFace gallery enroll. NOTE this
+            # gallery is retired (Pi recognition disabled) so this is effectively
+            # a no-op until the unified flag is flipped — Phase B is the fix.
             await self._handle_enrollment(enroll.name, enroll.used_speaker_fallback)
             return
 
@@ -866,6 +979,15 @@ class Orchestrator:
         if runtime_toggles.get("face_shadow_enabled"):
             from presence.face_shadow import shadow_compare
             asyncio.create_task(shadow_compare(face_obs))
+
+        # Phase B passive co-sampling: the recognizer only fills sole_face_crops
+        # when EXACTLY one face was in frame (the sole-face==speaker rule), so a
+        # buffered crop is unambiguously this turn's speaker. Key by the pre-fusion
+        # voice name (temp_id for an unknown) so crops stay per-person. Cheap
+        # (bounded ring, no embedding here) so we buffer even with the flag off,
+        # keeping the buffer warm for the moment it's flipped on.
+        if face_obs is not None and face_obs.sole_face_crops:
+            self._cosample.add(speaker_name, list(face_obs.sole_face_crops))
 
         # --- Presence: voice + face fusion ---
         fusion_source = None

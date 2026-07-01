@@ -46,6 +46,12 @@ class FaceObservation:
     # the green-LED is_speaker signal). None => source didn't report it; fusion
     # falls back to counting predictions (Pi/legacy path).
     detected_face_count: Optional[int] = None
+    # Aligned 112x112 RGB crop(s) of the SOLE in-frame face this observation, for
+    # passive dual-modality co-sampling (Phase B): populated ONLY when exactly one
+    # face was detected across the grab (detected_face_count == 1), so the crop is
+    # unambiguously the speaker. Empty otherwise. Excluded from eq/repr (numpy
+    # arrays + heavy) so FaceObservation stays a clean frozen value object.
+    sole_face_crops: tuple = field(default=(), compare=False, repr=False)
 
 
 @dataclass(frozen=True)

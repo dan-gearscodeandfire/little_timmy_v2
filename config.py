@@ -373,6 +373,17 @@ AUTO_ENROLL_ENGAGE_ANY_SPEECH = os.getenv(
 # Environment=TIMMY_AUTO_ENROLL_KILL=1 in little-timmy.service.d/auto-enroll.conf,
 # then daemon-reload + restart.
 AUTO_ENROLL_KILL = os.getenv("TIMMY_AUTO_ENROLL_KILL", "0").strip().lower() in ("1", "true", "yes", "on")
+# Phase B — unified dual-modality enrollment (default OFF; flip live once
+# validated). When ON, "enroll me / remember my face / remember my voice as X"
+# routes through presence.identity_commit.commit_identity — the okDemerzel
+# stores (voiceprint + EdgeFace + shared id-map + Postgres speakers row) — instead
+# of the RETIRED Pi SFace gallery that main._handle_enrollment still POSTs to.
+# Passively co-sampled sole-face crops (the sole-face==speaker rule) enroll the
+# face without a separate capture dialog; voice comes from the tracked unknown
+# speaker's buffered embeddings. Enabled by EITHER this env master OR the live
+# "unified_enroll_enabled" runtime toggle (OR-gated; flip the toggle to enable
+# without a restart). Both default OFF.
+UNIFIED_ENROLL_ENABLED = os.getenv("TIMMY_UNIFIED_ENROLL", "0").strip().lower() in ("1", "true", "yes", "on")
 STREAMERPI_EYE_LED_URL = os.getenv(
     "TIMMY_EYE_LED_URL", "https://192.168.1.110:8080/esp32/write"
 )

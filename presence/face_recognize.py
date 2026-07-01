@@ -26,18 +26,21 @@ log = logging.getLogger(__name__)
 
 
 def recognize_frame(jpeg: bytes):
-    """JPEG bytes -> (list[FacePrediction], image_size, detected_face_count).
+    """JPEG bytes -> (list[FacePrediction], image_size, detected_face_count,
+    sole_crop).
 
     Blocking (cv2 + YuNet + EdgeFace); call behind asyncio.to_thread. Empty
     prediction list if no recognized face. detected_face_count is the number of
     DETECTED+alignable faces in the frame (recognized or not) — the input to the
-    "sole face == speaker" rule; None if the frame failed to decode."""
+    "sole face == speaker" rule; None if the frame failed to decode. sole_crop is
+    the aligned 112x112 RGB crop when EXACTLY one face was detected (the
+    unambiguous speaker, for Phase B co-sampling), else None."""
     import cv2
     from presence.face_detect import aligned_crops
     from presence.face_identifier import get_shared_identifier
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
-        return [], None, None
+        return [], None, None, None
     fi = get_shared_identifier()
     crops = aligned_crops(frame)
     preds = []
@@ -46,7 +49,8 @@ def recognize_frame(jpeg: bytes):
         if p is not None:
             preds.append(p)
     h, w = frame.shape[:2]
-    return preds, (w, h), len(crops)
+    sole_crop = crops[0][0] if len(crops) == 1 else None
+    return preds, (w, h), len(crops), sole_crop
 
 
 def _recognize_many(jpegs: list):
@@ -59,17 +63,26 @@ def _recognize_many(jpegs: list):
     best = {}
     size = None
     detected = 0
+    sole_crops = []
     for jpeg in jpegs:
-        preds, sz, n = recognize_frame(jpeg)
+        preds, sz, n, sole = recognize_frame(jpeg)
         if sz is not None:
             size = sz
         if n is not None:
             detected = max(detected, n)
+        if sole is not None:
+            sole_crops.append(sole)
         for p in preds:
             cur = best.get(p.user_id)
             if cur is None or p.confidence > cur.confidence:
                 best[p.user_id] = p
-    return tuple(best.values()), size, detected
+    # Only surface co-sample crops when the WHOLE grab was unambiguously one
+    # face (detected == 1). If any frame caught a second face, drop them all —
+    # we won't risk co-sampling the wrong person. Multiple frames of a lone
+    # speaker yield several crops (pose diversity for enrollment).
+    if detected != 1:
+        sole_crops = []
+    return tuple(best.values()), size, detected, sole_crops
 
 
 async def fetch_face_observation_okdemerzel(
@@ -101,7 +114,8 @@ async def fetch_face_observation_okdemerzel(
     if not jpegs:
         return None
     try:
-        preds, size, detected = await asyncio.to_thread(_recognize_many, jpegs)
+        preds, size, detected, sole_crops = await asyncio.to_thread(
+            _recognize_many, jpegs)
     except Exception:
         log.info("[FACE-AUTH] recognition failed", exc_info=True)
         return None
@@ -111,4 +125,5 @@ async def fetch_face_observation_okdemerzel(
         behavior=behavior,
         image_size=size,
         detected_face_count=detected,
+        sole_face_crops=tuple(sole_crops),
     )
