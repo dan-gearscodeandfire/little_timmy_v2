@@ -34,76 +34,15 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 CALIB_DIR = REPO / "ops" / "calib"
-YUNET_PATH = REPO / "models" / "face_detection_yunet_2023mar.onnx"
-
-# YuNet landmark order already matches the ArcFace template by IMAGE POSITION
-# (both: image-left eye, image-right eye, nose, image-left mouth, image-right
-# mouth), so NO reorder — YuNet's "right eye" (idx0) is the person's right eye,
-# which sits on the image-LEFT, exactly where template point 0 (x=38) is. An
-# earlier L/R swap forced a mirrored correspondence a similarity warp can't
-# satisfy, collapsing the transform to scale~0.23 (tiny face) and flattening
-# EdgeFace discrimination. Verified on-camera 2026-06-30.
-_YUNET_TO_ARCFACE = [0, 1, 2, 3, 4]
 
 
-def _detector(w: int, h: int):
-    det = cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (w, h),
-                                    score_threshold=0.7, nms_threshold=0.3)
-    det.setInputSize((w, h))
-    return det
-
-
-_YUNET_DET_MAX = 640   # detect at this longer-side scale; YuNet misses faces too
-                       # large in-frame (tight hi-res headshots) at native size.
-
-
-def _yunet_faces(frame_bgr: np.ndarray):
-    """Return list of (bbox_xywh, landmarks5_arcface_order) for detected faces.
-
-    Downscales so the longer side is <= _YUNET_DET_MAX before detection (large
-    in-frame faces fall outside YuNet's anchor range), then maps bbox+landmarks
-    back to original-image coordinates."""
-    h, w = frame_bgr.shape[:2]
-    scale = min(1.0, _YUNET_DET_MAX / max(h, w))
-    if scale < 1.0:
-        dw, dh = int(round(w * scale)), int(round(h * scale))
-        det_img = cv2.resize(frame_bgr, (dw, dh))
-    else:
-        dw, dh, det_img = w, h, frame_bgr
-    det = _detector(dw, dh)
-    _, faces = det.detect(det_img)
-    out = []
-    if faces is None:
-        return out
-    inv = 1.0 / scale
-    for f in faces:
-        box = (f[0:4].astype(np.float32)) * inv
-        lm = (f[4:14].reshape(5, 2).astype(np.float32) * inv)[_YUNET_TO_ARCFACE]
-        out.append((box, lm))
-    return out
-
-
-def _loose_crop(frame_bgr, box, scale=1.3):
-    """Crop ~scale*bbox around the face, clamped; return (crop_bgr, offset)."""
-    x, y, bw, bh = box
-    cx, cy = x + bw / 2, y + bh / 2
-    side = max(bw, bh) * scale
-    x0 = int(max(0, cx - side / 2)); y0 = int(max(0, cy - side / 2))
-    x1 = int(min(frame_bgr.shape[1], cx + side / 2))
-    y1 = int(min(frame_bgr.shape[0], cy + side / 2))
-    return frame_bgr[y0:y1, x0:x1], np.array([x0, y0], dtype=np.float32)
-
-
-def _aligned_from_frame(frame_bgr, box, lm):
-    """Loose-crop + align to 112x112 RGB (mirrors the planned Pi->okDemerzel path:
-    Pi ships loose crop + landmarks, okDemerzel warps)."""
-    from presence.face_align import align_face, landmarks_ok
-    crop_bgr, off = _loose_crop(frame_bgr, box)
-    lm_local = lm - off
-    if not landmarks_ok(lm_local):
-        return None
-    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-    return align_face(crop_rgb, lm_local)
+# Detection/alignment delegate to the runtime canonical (presence.face_detect)
+# so the landmark-order + detect-scale gotchas have ONE implementation.
+from presence.face_detect import (  # noqa: E402
+    align_one as _aligned_from_frame,
+    detect_faces as _yunet_faces,
+    loose_crop as _loose_crop,
+)
 
 
 def capture(name: str, n: int, interval: float) -> int:
