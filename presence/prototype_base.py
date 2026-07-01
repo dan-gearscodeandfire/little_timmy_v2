@@ -30,6 +30,14 @@ from scipy.spatial.distance import cosine
 
 log = logging.getLogger(__name__)
 
+# Shared identity-name rules (both modalities). Names reserved/refused as an
+# enrolled identity, and the valid on-disk name pattern (alpha start, 2-32 chars).
+RESERVED_NAMES = frozenset({
+    "timmy", "system", "unknown", "the", "a", "an",
+    "you", "me", "i", "user", "assistant",
+})
+NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
+
 
 # ── Pure vector-space helpers ────────────────────────────────────────────────
 
