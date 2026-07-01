@@ -1,32 +1,40 @@
-"""EdgeFace-S cosine-distance thresholds (calibrated, PROVISIONAL).
+"""EdgeFace-S cosine-distance thresholds (calibrated). EdgeFace-S (gamma 0.5) on
+okDemerzel CPU through the pinned aligner (presence.face_align).
 
-Derived by ops/edgeface_calibrate.py against a real genuine/impostor split on
-2026-06-30: genuine = 30 on-camera captures of Dan (single session), impostor =
-171 distinct-identity LFW strangers, EdgeFace-S (gamma 0.5) on okDemerzel CPU
-through the pinned aligner (presence.face_align).
+Two calibration passes (ops/edgeface_calibrate.py + ops/build_maker_gallery.py),
+2026-06-30:
 
-    GENUINE  (Dan vs Dan)      mean 0.088  p95 0.173  max 0.193
-    IMPOSTOR (Dan vs stranger) mean 1.012  p05 0.847  min 0.697
-    Separation CLEAN: max(genuine) 0.193 << min(impostor) 0.697
+  (1) same-session floor — 30 on-camera Dan captures vs 171 LFW strangers:
+      GENUINE  mean 0.088  p95 0.173  max 0.193
+      IMPOSTOR mean 1.012  p05 0.847  min 0.697   (clean, huge gap)
 
-PROVISIONAL because genuine is single-session (one lighting/day) — that is the
-FALSE-REJECT-relevant unknown, and the impostors are random strangers, not the
-lookalikes/household who could actually be confused with an enrolled person.
-Phase B passive co-sampling collects real in-domain impostors + cross-session
-genuine through the same camera; recalibrate then (harness: ingest/report) and
-tighten. WeSpeaker's voice constants are a DIFFERENT scale — do not copy across.
+  (2) cross-condition + in-community — Dan + 14 maker identities (each across
+      many varied YouTube thumbnails) as genuine; maker-vs-maker + LFW as
+      impostor (the real confusable population, not just random strangers):
+      GENUINE  mean 0.362  p95 0.597  max 0.794   (realistic cross-condition)
+      IMPOSTOR mean 0.987  p05 0.802  min 0.558
+      @0.50 FRR 17% FAR 0.00% | @0.55 FRR 9% FAR 0.00% | @0.45 FRR 28% FAR 0.00%
+
+Key result: FAR ~0% through 0.55 even against real in-community faces — the
+separation holds. Pass (2)'s genuine spread is PESSIMISTIC for live use: it is
+thumbnail->thumbnail (compression + years + wild pose), whereas the booth camera
+enrolls AND recognizes the household in ONE consistent domain (pass (1) regime,
+FRR far lower). The makers, enrolled from thumbnails but recognized live, are the
+hard cross-domain case. Recalibrate in-domain once Phase B co-sampling collects
+real booth-camera crops. WeSpeaker's voice constants are a DIFFERENT scale.
 """
 
 # Accept an identity when a probe's MINIMUM cosine distance to its prototypes is
-# below this. Midpoint of p95-genuine (0.173) and p05-impostor (0.847) is ~0.51;
-# set slightly under to bias toward FAR-safety, leaving ~2.6x headroom over the
-# single-session genuine max (0.193) for cross-session drift, still far below the
-# impostor floor (0.697).
+# below this. 0.50 sits below the in-community impostor min (0.558) -> FAR ~0%,
+# while accepting the same-camera household comfortably and most cross-domain
+# maker shots. 0.55 trades a hair of FAR headroom for ~8pt lower FRR if booth
+# recognition of the makers proves too strict.
 KNOWN_FACE_THRESHOLD = 0.50
 
 # Confidence bands (mirrors the voice band_of pattern; consumed by fuse_identity
-# via FacePrediction.band). Distances below the cutoff fall in the band.
-FACE_BAND_HIGH = 0.35     # decisively this person
+# via FacePrediction.band). Distances below the cutoff fall in the band. HIGH is
+# ~ the same-session genuine ceiling (0.19) rounded up; MEDIUM == accept.
+FACE_BAND_HIGH = 0.40     # decisively this person (same-domain tight match)
 FACE_BAND_MEDIUM = 0.50   # probable (== accept threshold)
 
 # A new prototype within this cosine distance of an existing one is a near-dup
