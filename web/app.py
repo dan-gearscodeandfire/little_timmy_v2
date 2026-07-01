@@ -378,6 +378,60 @@ async def set_guest_mode(payload: dict | None = None):
     return {"ok": True, "guest_mode": bool(runtime_toggles.get("guest_mode"))}
 
 
+def _face_recognition_state() -> dict:
+    """Current okDemerzel face-recognition runtime knobs (all live-tunable)."""
+    from persistence import runtime_toggles
+    from presence.face_thresholds import KNOWN_FACE_THRESHOLD
+    authority = runtime_toggles.get("face_authority") or "pi"
+    return {
+        "authority": authority,                       # "pi" | "okdemerzel"
+        "okdemerzel": authority == "okdemerzel",      # convenience bool for a switch
+        "shadow": bool(runtime_toggles.get("face_shadow_enabled")),
+        "threshold": float(runtime_toggles.get("face_threshold") or KNOWN_FACE_THRESHOLD),
+        "frames": int(runtime_toggles.get("face_authority_frames") or 3),
+    }
+
+
+@app.get("/api/face_recognition")
+async def get_face_recognition():
+    """Read the okDemerzel face-recognition knobs (authority / shadow / accept
+    threshold / frames-per-turn). All persisted by runtime_toggles and read live
+    — no restart to change."""
+    return _face_recognition_state()
+
+
+@app.post("/api/face_recognition")
+async def set_face_recognition(payload: dict | None = None):
+    """Set any subset of the face-recognition knobs live. Accepts:
+      okdemerzel: bool   -> face_authority "okdemerzel"/"pi"
+      authority:  str    -> face_authority (explicit)
+      shadow:     bool   -> face_shadow_enabled
+      threshold:  float  -> face_threshold (clamped 0.30-0.70)
+      frames:     int    -> face_authority_frames (clamped 1-5)
+    """
+    from persistence import runtime_toggles
+    p = payload or {}
+    if "okdemerzel" in p:
+        runtime_toggles.set("face_authority", "okdemerzel" if p["okdemerzel"] else "pi")
+    if "authority" in p and p["authority"] in ("pi", "okdemerzel"):
+        runtime_toggles.set("face_authority", p["authority"])
+    if "shadow" in p:
+        runtime_toggles.set("face_shadow_enabled", bool(p["shadow"]))
+    if "threshold" in p:
+        try:
+            t = max(0.30, min(0.70, float(p["threshold"])))
+            runtime_toggles.set("face_threshold", t)
+        except (TypeError, ValueError):
+            pass
+    if "frames" in p:
+        try:
+            f = max(1, min(5, int(p["frames"])))
+            runtime_toggles.set("face_authority_frames", f)
+        except (TypeError, ValueError):
+            pass
+    return {"ok": True, **_face_recognition_state()}
+
+
 # --- Memory Inspector (read-only) -------------------------------------------
 # Backs the LT-OS /memory page. LT-OS proxies these exactly like /api/timmy/*.
 # Read-only by design: no write/supersede/delete endpoints. Sensitive facts ARE

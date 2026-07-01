@@ -586,6 +586,12 @@ async def check_lt_toggles_status() -> dict:
         "classifier_up": False,
         "query_resolution_enabled": False,
         "query_resolution_up": False,
+        # okDemerzel face-recognition knobs (all live-tunable).
+        "face_authority": "pi",
+        "face_okdemerzel": False,
+        "face_shadow": False,
+        "face_threshold": 0.50,
+        "face_frames": 3,
         "error": None,
     }
     try:
@@ -595,6 +601,7 @@ async def check_lt_toggles_status() -> dict:
             p = await client.get(f"{cfg.TIMMY_BASE_URL}/api/proactive")
             c = await client.get(f"{cfg.TIMMY_BASE_URL}/api/classifier")
             qr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/query_resolution")
+            fr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/face_recognition")
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
             pj = p.json()
@@ -606,9 +613,32 @@ async def check_lt_toggles_status() -> dict:
             qj = qr.json()
             out["query_resolution_enabled"] = bool(qj.get("enabled", False))
             out["query_resolution_up"] = bool(qj.get("up", False))
+            frj = fr.json()
+            out["face_authority"] = frj.get("authority", "pi")
+            out["face_okdemerzel"] = bool(frj.get("okdemerzel", False))
+            out["face_shadow"] = bool(frj.get("shadow", False))
+            out["face_threshold"] = float(frj.get("threshold", 0.50))
+            out["face_frames"] = int(frj.get("frames", 3))
     except Exception as e:
         out["error"] = str(e)[:120]
     return out
+
+
+async def set_face_recognition(**kwargs) -> dict:
+    """Set okDemerzel face-recognition knobs live via :8893 (no restart)."""
+    import config as cfg
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/face_recognition", json=kwargs)
+            result = r.json()
+            await _broadcast_status(
+                "Face recognition set: "
+                + ", ".join(f"{k}={v}" for k, v in kwargs.items()))
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Face-recognition set failed: {e}", "error")
+        return {"error": str(e)[:120]}
 
 
 async def toggle_vision_auto_poll(enabled: bool) -> dict:

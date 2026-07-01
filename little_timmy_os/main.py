@@ -804,6 +804,16 @@ async def toggle_query_resolution(data: dict):
     return await services.toggle_query_resolution(bool(data.get("enabled", True)))
 
 
+@app.post("/api/face_recognition/set")
+async def set_face_recognition(data: dict):
+    """Set okDemerzel face-recognition knobs live (authority / shadow / threshold
+    / frames). Any subset of the keys accepted by :8893 /api/face_recognition."""
+    result = await services.set_face_recognition(**(data or {}))
+    toggles = await services.check_lt_toggles_status()
+    await broadcast_event("lt_toggles", toggles)
+    return result
+
+
 async def health_poll_loop():
     """Background task: poll service health and broadcast updates."""
     while True:
@@ -1461,6 +1471,48 @@ header .uptime {
             <input type="checkbox" onchange="toggleLTFlag('query_resolution', this.checked)">
             <span class="slider"></span>
           </label>
+        </div>
+        <!-- okDemerzel face recognition (EdgeFace). Authority switch flips the
+             identity source Pi SFace -> okDemerzel (recognizes enrolled makers);
+             threshold is the on-the-day tuning knob for venue lighting. All live. -->
+        <div class="service-card" id="face-authority-card" style="border-left:3px solid #3fb950;">
+          <div class="service-info">
+            <div class="service-name">Face Recognition &rarr; okDemerzel (EdgeFace)</div>
+            <div class="service-detail" id="face-authority-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="face-authority-toggle">
+            <input type="checkbox" onchange="setFaceRec('okdemerzel', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="face-shadow-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Face Shadow-log (okDemerzel vs Pi)</div>
+            <div class="service-detail" id="face-shadow-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="face-shadow-toggle">
+            <input type="checkbox" onchange="setFaceRec('shadow', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="service-card" id="face-threshold-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Face Accept Threshold: <span id="face-threshold-val">0.50</span></div>
+            <div class="service-detail">Lower = stricter · Higher = looser (dim/party lighting)</div>
+          </div>
+          <input type="range" id="face-threshold-slider" min="0.30" max="0.70" step="0.01" value="0.50"
+                 style="width:150px; accent-color:#3fb950;"
+                 oninput="document.getElementById('face-threshold-val').textContent=(+this.value).toFixed(2)"
+                 onchange="setFaceRec('threshold', +this.value)">
+        </div>
+        <div class="service-card" id="face-frames-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Face Frames / turn: <span id="face-frames-val">3</span></div>
+            <div class="service-detail">Grabs per turn; best match wins (1–5)</div>
+          </div>
+          <input type="number" id="face-frames-input" min="1" max="5" value="3" step="1"
+                 style="width:52px; background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:4px;"
+                 onchange="setFaceRec('frames', +this.value)">
         </div>
       </div>
       <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
@@ -2708,6 +2760,43 @@ function applyLTToggles(data) {
   if (typeof data.query_resolution_enabled === 'boolean') ltFlagState.query_resolution = data.query_resolution_enabled;
   if (typeof data.query_resolution_up === 'boolean') ltQueryResolutionUp = data.query_resolution_up;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
+  applyFaceRec({
+    okdemerzel: data.face_okdemerzel, shadow: data.face_shadow,
+    threshold: data.face_threshold, frames: data.face_frames,
+  });
+}
+
+// okDemerzel face-recognition knobs (self-contained; not part of LT_FLAGS).
+async function setFaceRec(key, value) {
+  try {
+    const r = await fetch('/api/face_recognition/set', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    applyFaceRec(await r.json());
+  } catch(e) { /* next lt_toggles broadcast will resync */ }
+}
+
+function applyFaceRec(d) {
+  if (!d) return;
+  if (typeof d.okdemerzel === 'boolean') {
+    const t = document.querySelector('#face-authority-toggle input'); if (t) t.checked = d.okdemerzel;
+    const det = document.getElementById('face-authority-detail');
+    if (det) det.textContent = d.okdemerzel ? 'okDemerzel EdgeFace driving identity (makers + household)' : 'Pi SFace (legacy)';
+  }
+  if (typeof d.shadow === 'boolean') {
+    const t = document.querySelector('#face-shadow-toggle input'); if (t) t.checked = d.shadow;
+    const det = document.getElementById('face-shadow-detail');
+    if (det) det.textContent = d.shadow ? 'logging okDemerzel vs Pi each turn' : 'off';
+  }
+  if (typeof d.threshold === 'number') {
+    const s = document.getElementById('face-threshold-slider'); if (s) s.value = d.threshold;
+    const v = document.getElementById('face-threshold-val'); if (v) v.textContent = (+d.threshold).toFixed(2);
+  }
+  if (typeof d.frames === 'number') {
+    const f = document.getElementById('face-frames-input'); if (f) f.value = d.frames;
+    const fv = document.getElementById('face-frames-val'); if (fv) fv.textContent = d.frames;
+  }
 }
 
 async function pollLTToggles() {
