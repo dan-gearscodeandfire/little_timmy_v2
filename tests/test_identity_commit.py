@@ -247,3 +247,176 @@ async def test_live_wrapper_voice_only_scope(stores):
     assert res.voice_committed and not res.face_committed
     assert not face.path_for("ivan").exists()
     assert voice.path_for("ivan").exists()
+
+
+# ---- 2026-07-02 additions: lookalike guard (live test G) ----
+
+def test_new_name_matching_existing_face_is_lookalike(stores):
+    id_map, voice, face = stores
+    # Enroll dan's face.
+    base = _unit(42)
+    commit_identity_stores(
+        "danny", id_map=id_map, face_store=face,
+        face_embeddings=[base, _near(base, seed=1)])
+    # STT homophone mints a "new" person from the SAME face.
+    res = commit_identity_stores(
+        "johnny", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_near(base, seed=2)])
+    assert res.status == "lookalike"
+    assert res.lookalike_of == "danny"
+    # Nothing minted: no id, no prototype file.
+    assert id_map.id_for("johnny") is None
+    assert not face.path_for("johnny").exists()
+
+
+def test_new_name_matching_existing_voice_is_lookalike(stores):
+    id_map, voice, face = stores
+    base = _unit(77)
+    commit_identity_stores(
+        "carla", id_map=id_map, voice_store=voice,
+        voice_embeddings=[base, _near(base, seed=3)])
+    res = commit_identity_stores(
+        "karla", id_map=id_map, voice_store=voice, face_store=face,
+        voice_embeddings=[_near(base, seed=4)])
+    assert res.status == "lookalike"
+    assert res.lookalike_of == "carla"
+    assert id_map.id_for("karla") is None
+
+
+def test_genuinely_new_person_not_lookalike(stores):
+    id_map, voice, face = stores
+    commit_identity_stores(
+        "dave", id_map=id_map, face_store=face,
+        face_embeddings=[_unit(10), _unit(11)])
+    # A genuinely different face enrolls fine.
+    res = commit_identity_stores(
+        "eve", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_unit(9100)])
+    assert res.status == "ok"
+    assert res.created
+
+
+def test_lookalike_guard_off_without_require_match(stores):
+    id_map, voice, face = stores
+    base = _unit(55)
+    commit_identity_stores(
+        "frank", id_map=id_map, face_store=face,
+        face_embeddings=[base])
+    res = commit_identity_stores(
+        "francis", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_near(base, seed=5)],
+        require_match_for_known=False)
+    assert res.status == "ok"
+
+
+# ---- 2026-07-02 code review C9: prototype-less known names ----
+
+def test_prototypeless_known_name_still_guarded_as_lookalike(stores):
+    """A leaked id-map entry with ZERO prototype files (the live 'erin id 5'
+    shape, or any crash-after-allocate leak) must NOT exempt the name from
+    the lookalike guard: an enrolled person's samples arriving under that
+    name are an identity fork, not an augment."""
+    id_map, voice, face = stores
+    # Enroll dan's voice properly.
+    base = _unit(50)
+    commit_identity_stores(
+        "danvoice", id_map=id_map, voice_store=voice,
+        voice_embeddings=[base, _near(base, seed=5)])
+    # 'erin' exists in the id-map but has no prototype files anywhere.
+    id_map.allocate("erin")
+    assert id_map.id_for("erin") is not None
+    assert not voice.path_for("erin").exists()
+    assert not face.path_for("erin").exists()
+    # dan's voice claiming 'erin' must be refused, not warn-and-commit.
+    res = commit_identity_stores(
+        "erin", id_map=id_map, voice_store=voice, face_store=face,
+        voice_embeddings=[_near(base, seed=6)])
+    assert res.status == "lookalike"
+    assert res.lookalike_of == "danvoice"
+    assert not voice.path_for("erin").exists()
+
+
+def test_prototypeless_known_name_novel_samples_commit(stores):
+    """A genuinely novel person enrolling under a prototype-less id-map name
+    commits fine (same semantics as a fresh name — there is no biometric
+    identity to protect)."""
+    id_map, voice, face = stores
+    commit_identity_stores(
+        "danvoice", id_map=id_map, voice_store=voice,
+        voice_embeddings=[_unit(60), _unit(61)])
+    id_map.allocate("erin")
+    prior_id = id_map.id_for("erin")
+    res = commit_identity_stores(
+        "erin", id_map=id_map, voice_store=voice, face_store=face,
+        voice_embeddings=[_unit(7200), _unit(7201)])
+    assert res.status == "ok"
+    assert res.voice_committed
+    assert id_map.id_for("erin") == prior_id      # id stable, no re-mint
+    assert "augment_unverified" in res.warnings   # S3 had nothing to verify
+
+
+# ---- 2026-07-02 code review R1: per-modality lookalike gating ----
+
+def test_single_modality_known_name_missing_modality_guarded(stores):
+    """Code review R1: a voice-only identity receiving FACE samples that
+    match another enrolled face must be refused as lookalike, not
+    warn-and-commit. The original per-name gate (any prototype file in
+    EITHER store) skipped the scan because the voiceprint existed — leaving
+    every single-modality identity open in its missing modality."""
+    id_map, voice, face = stores
+    # devon is known by voice only (the live household shape).
+    commit_identity_stores(
+        "devon", id_map=id_map, voice_store=voice,
+        voice_embeddings=[_unit(90), _unit(91)])
+    # danface's face is enrolled.
+    base = _unit(95)
+    commit_identity_stores(
+        "danface", id_map=id_map, face_store=face,
+        face_embeddings=[base, _near(base, seed=9)])
+    # A danface-lookalike face claiming devon must be refused.
+    res = commit_identity_stores(
+        "devon", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_near(base, seed=10)])
+    assert res.status == "lookalike"
+    assert res.lookalike_of == "danface"
+    assert not face.path_for("devon").exists()
+
+
+def test_single_modality_known_name_novel_missing_modality_commits(stores):
+    """R1 counterpart: a genuinely NOVEL face arriving for a voice-only
+    identity still commits (with the augment_unverified warning) — the
+    per-modality guard only refuses matches to OTHER identities."""
+    id_map, voice, face = stores
+    commit_identity_stores(
+        "devon", id_map=id_map, voice_store=voice,
+        voice_embeddings=[_unit(90), _unit(91)])
+    commit_identity_stores(
+        "danface", id_map=id_map, face_store=face,
+        face_embeddings=[_unit(95)])
+    res = commit_identity_stores(
+        "devon", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_unit(9300), _unit(9301)])
+    assert res.status == "ok"
+    assert res.face_committed
+    assert "augment_unverified" in res.warnings
+    assert face.path_for("devon").exists()
+
+
+def test_augment_with_prototypes_not_lookalike_refused(stores):
+    """Regression guard for the C9 fix: a legit augment (name HAS prototypes,
+    samples match) must still route through S3 verify, not the lookalike
+    guard — even though other identities exist in the store."""
+    id_map, voice, face = stores
+    base = _unit(80)
+    commit_identity_stores(
+        "walt", id_map=id_map, voice_store=voice,
+        voice_embeddings=[base, _near(base, seed=7)])
+    commit_identity_stores(
+        "skyler", id_map=id_map, voice_store=voice,
+        voice_embeddings=[_unit(8100), _unit(8101)])
+    res = commit_identity_stores(
+        "walt", id_map=id_map, voice_store=voice,
+        voice_embeddings=[_near(base, seed=8)])
+    assert res.status == "ok"
+    assert not res.created
+    assert res.voice_committed

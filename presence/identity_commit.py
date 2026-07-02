@@ -56,6 +56,7 @@ from presence.prototype_base import (
     IdMap,
     PrototypeFileStore,
     build_prototypes,
+    is_valid_enroll_name,
     merge_prototypes,
     min_cosine_distance,
 )
@@ -87,6 +88,10 @@ class CommitResult:
       ``ok``               — everything requested committed.
       ``partial``          — id/DB fine, but a modality write failed (see warnings).
       ``mismatch``         — refused: samples don't match the claimed known name.
+      ``lookalike``        — refused: NEW name, but the samples match an
+                             EXISTING identity (``lookalike_of``) — likely an
+                             STT homophone forking a known person (test G,
+                             2026-07-02). Caller should disambiguate.
       ``invalid_name``     — refused: reserved/malformed name.
       ``nothing_to_commit``— no voice and no face samples supplied.
     """
@@ -102,6 +107,7 @@ class CommitResult:
     status: str = "ok"
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    lookalike_of: str | None = None  # set when status == "lookalike"
 
     @property
     def ok(self) -> bool:
@@ -119,6 +125,72 @@ def _face_store(face_dir: Path | None = None) -> PrototypeFileStore:
     return PrototypeFileStore(
         Path(face_dir) if face_dir else FACE_DIR, "_edgeface",
         reserved_names=RESERVED_NAMES, name_re=NAME_RE)
+
+
+def _nearest_identity(store: PrototypeFileStore, embeddings: list,
+                      exclude: str) -> tuple[str, float] | None:
+    """Scan every enrolled identity in ``store`` (except ``exclude``) and
+    return (name, best_min_cosine_distance) for the closest one, or None if
+    the store has no other identities. Cheap: ~20 small .npy loads."""
+    best: tuple[str, float] | None = None
+    for nm, path in store.iter_prototype_files():
+        if nm == exclude:
+            continue
+        try:
+            protos = store.load(path)
+        except Exception as e:  # pragma: no cover - corrupt file
+            # A silently skipped identity is a hole in the lookalike guard —
+            # make the degradation visible (code review C23).
+            log.warning("lookalike scan: failed to load %s: %s", path.name, e)
+            continue
+        d = min(min_cosine_distance(e, protos) for e in embeddings)
+        if best is None or d < best[1]:
+            best = (nm, d)
+    return best
+
+
+def find_lookalike(name: str, v_embs: list, f_embs: list, *,
+                   voice_store: PrototypeFileStore | None,
+                   face_store: PrototypeFileStore | None,
+                   voice_thr: float = KNOWN_SPEAKER_THRESHOLD,
+                   face_thr: float = KNOWN_FACE_THRESHOLD,
+                   ) -> tuple[str, float] | None:
+    """Return (existing_name, distance) if any supplied sample matches an
+    EXISTING identity other than ``name`` below its modality threshold, else
+    None. Shared by the core (hermetic refusal) and the live wrapper (which
+    must refuse BEFORE the S2 id/DB pre-allocation, or a refused new name
+    still leaks into the id-map and resurrects at every startup sync)."""
+    for embs, store, thr in ((v_embs, voice_store, voice_thr),
+                             (f_embs, face_store, face_thr)):
+        if not embs or store is None:
+            continue
+        near = _nearest_identity(store, embs, exclude=name)
+        if near is not None and near[1] < thr:
+            return near
+    return None
+
+
+def unverified_modalities(name: str, v_embs: list, f_embs: list,
+                          voice_store: PrototypeFileStore | None,
+                          face_store: PrototypeFileStore | None,
+                          ) -> tuple[list, list]:
+    """Split the supplied samples down to the modalities in which ``name``
+    has NO prototype file — exactly the samples the S3 verify cannot check.
+
+    The lookalike guard must scan these (and only these): a modality WITH
+    prototypes is already policed by S3, while a prototype-less modality is
+    where a stranger can claim a known name with only an 'augment_unverified'
+    warning. Gating per NAME instead (any file in either store, the original
+    C9 shape) left every single-modality identity open in its missing
+    modality — voice-only 'devon' would accept an unverified face because
+    her voiceprint existed (code review R1). Covers the same C9 cases too:
+    new names and prototype-less id-map leaks have no files anywhere, so
+    every supplied modality is scanned."""
+    scan_v = v_embs if (voice_store is None
+                        or not voice_store.path_for(name).exists()) else []
+    scan_f = f_embs if (face_store is None
+                        or not face_store.path_for(name).exists()) else []
+    return scan_v, scan_f
 
 
 def _min_distance_to(store: PrototypeFileStore, name: str,
@@ -170,7 +242,7 @@ def commit_identity_stores(
     res = CommitResult(name=clean)
 
     # S8 + S1: validate against the shared name rules (reserved / pattern).
-    if clean in RESERVED_NAMES or not NAME_RE.match(clean):
+    if not is_valid_enroll_name(clean):
         res.status = "invalid_name"
         res.error = f"invalid or reserved name {clean!r}"
         return res
@@ -213,6 +285,33 @@ def commit_identity_stores(
                 return res
         else:
             res.warnings.append("augment_unverified")
+
+    # Lookalike guard (test G, 2026-07-02): samples that match an EXISTING
+    # identity arriving under a different name are almost always an STT
+    # homophone ("Jon" -> "John") about to fork a known person into a second
+    # id. Refuse; the caller disambiguates with the user. Gated PER MODALITY
+    # (code review C9 + R1): scan exactly the supplied modalities in which
+    # ``clean`` has no prototype file — the ones the S3 verify above could
+    # not check. That covers new names, prototype-less known names ('erin'
+    # id 5), and a known single-modality identity receiving samples in its
+    # missing modality (voice-only 'devon' handed a stranger's face).
+    # Modalities WITH prototypes are covered by S3.
+    if require_match_for_known:
+        scan_v, scan_f = unverified_modalities(
+            clean, v_embs, f_embs, voice_store, face_store)
+        hit = find_lookalike(
+            clean, scan_v, scan_f,
+            voice_store=voice_store, face_store=face_store,
+            voice_thr=voice_match_thr, face_thr=face_match_thr) \
+            if (scan_v or scan_f) else None
+        if hit is not None:
+            res.status = "lookalike"
+            res.lookalike_of = hit[0]
+            res.error = (f"samples for {clean!r} match existing "
+                         f"{hit[0]!r} (d={hit[1]:.3f}); refusing to fork — "
+                         "disambiguate")
+            log.warning("[COMMIT] lookalike: %s", res.error)
+            return res
 
     # (1) FK precondition — allocate/confirm the shared speaker_id. Idempotent;
     # the live wrapper has already upserted the Postgres row against this id.
@@ -337,10 +436,35 @@ async def commit_identity(
         face_identifier._known.append(
             KnownFace(speaker_id=sid, name=nm, prototypes=protos))
 
+    # Lookalike pre-flight (test G, 2026-07-02): must run BEFORE the S2 id/DB
+    # pre-allocation below — a refused-but-preallocated new name lands in the
+    # id-map, and db.speakers.sync_speakers_from_id_map re-mints its row at
+    # every startup (the "john" resurrection). The core repeats this check
+    # hermetically; here it just gates the allocation. Scans the SAME
+    # per-modality unverified subset as the core (code review C9 + R1) — the
+    # pre-flight must never be looser than the core, or a core refusal after
+    # allocation leaks the id.
+    if require_match_for_known and (voice_embeddings or face_embeddings):
+        _v = [np.asarray(e, dtype=np.float32) for e in (voice_embeddings or [])]
+        _f = [np.asarray(e, dtype=np.float32) for e in (face_embeddings or [])]
+        scan_v, scan_f = unverified_modalities(
+            clean, _v, _f, voice_store, face_store)
+        hit = find_lookalike(
+            clean, scan_v, scan_f, voice_store=voice_store,
+            face_store=face_store, face_thr=accept_threshold()) \
+            if (scan_v or scan_f) else None
+        if hit is not None:
+            res = CommitResult(name=clean, status="lookalike",
+                               lookalike_of=hit[0])
+            res.error = (f"samples for {clean!r} match existing "
+                         f"{hit[0]!r} (d={hit[1]:.3f}); refusing to fork")
+            log.warning("[COMMIT] lookalike (pre-alloc): %s", res.error)
+            return res
+
     # S2 (1): FK precondition BEFORE any biometric write — allocate the id and
     # upsert the Postgres speakers row so a fact extracted mid-commit can't
     # FK-fail. Only meaningful for a valid, brand-new-or-known name.
-    pre_ok = clean not in RESERVED_NAMES and NAME_RE.match(clean) is not None
+    pre_ok = is_valid_enroll_name(clean)
     db_synced = False
     if pre_ok and (voice_embeddings or face_embeddings):
         id_map.allocate(clean)  # idempotent

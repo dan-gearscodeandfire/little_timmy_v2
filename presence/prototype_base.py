@@ -39,6 +39,14 @@ RESERVED_NAMES = frozenset({
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
 
+def is_valid_enroll_name(name: str) -> bool:
+    """Single module-level validator for enrollable identity names (code
+    review C19 — the predicate was inlined at four call sites, inviting
+    drift). Canonicalizes (lowercase/strip) before checking."""
+    clean = (name or "").strip().lower()
+    return clean not in RESERVED_NAMES and bool(NAME_RE.match(clean))
+
+
 # ── Pure vector-space helpers ────────────────────────────────────────────────
 
 def min_cosine_distance(emb: np.ndarray, prototypes: np.ndarray) -> float:
