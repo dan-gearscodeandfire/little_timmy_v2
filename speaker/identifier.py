@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -284,6 +285,14 @@ class SpeakerIdentifier:
         # Short-audio continuity state.
         self._last_known_speaker: KnownSpeaker | None = None
         self._last_known_seen_ts: float = 0.0
+        # Rolling buffer of CONFIDENT-match utterance embeddings per known
+        # speaker (2026-07-02, test A fix). Feeds explicit "remember my voice
+        # as <known>" augments — previously voice samples existed only for
+        # unknown_N speakers, so a recognized speaker could never voice-enroll.
+        # Confident matches only (continuity-applied turns are excluded, same
+        # rationale as T2/T3); commit_identity re-verifies against the
+        # existing prototypes before persisting.
+        self._recent_confident_embs: dict[str, deque] = {}
         # Trigger 2 — at most one active re-enrollment at a time.
         # {"name": str, "started_ts": float, "expiry_ts": float, "embeddings": [np.ndarray]}.
         self._active_reenrollment: dict | None = None
@@ -499,6 +508,8 @@ class SpeakerIdentifier:
             self._last_known_speaker = best_known
             self._last_known_seen_ts = time.time()
             self._record_for_reenrollment(best_known.name, emb)
+            self._recent_confident_embs.setdefault(
+                best_known.name, deque(maxlen=8)).append(emb)
             if best_known_dist < TIGHT_DRIFT_THRESHOLD:
                 self._record_for_drift(best_known.name, emb)
             log.info("Speaker identified: %s (dist=%.3f, %dms)",
@@ -707,6 +718,12 @@ class SpeakerIdentifier:
             "remaining_s": max(0.0, a["expiry_ts"] - now),
             "samples_collected": len(a["embeddings"]),
         }
+
+    def recent_embeddings_for(self, name: str) -> list:
+        """Recent confident-match utterance embeddings for a KNOWN speaker
+        (most-recent-last, up to 8). Empty list if none. Used by the unified
+        enroll path to voice-augment a recognized speaker on request."""
+        return list(self._recent_confident_embs.get(name, ()))
 
     def _record_for_reenrollment(self, name: str, emb: np.ndarray) -> None:
         a = self._active_reenrollment

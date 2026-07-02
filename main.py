@@ -196,9 +196,79 @@ class Orchestrator:
         # capture dialog. Bounded ring; crops embed only at commit. Consumed by
         # _handle_unified_enroll when the unified-enroll flag is on.
         self._cosample = CoSampleBuffer()
-        # A two-turn latch: set to the requested scope when the user says "enroll
-        # me" without a name, so the next turn's name completes the enroll.
-        self._pending_enroll: str | None = None
+        # A two-turn latch: armed when the user says "enroll me" without a
+        # name, so the next turn's name completes the enroll. Dict while
+        # waiting, None otherwise:
+        #   {scope, speaker_key, voice_embs, face_crops}
+        # It carries the REQUESTER's identity and an arm-time biometric
+        # snapshot (code review R2): the bare-name reply that completes this
+        # latch is a short, easily mis-attributed turn, so both the speaker
+        # key and the samples must come from the arming "enroll me" turn and
+        # survive every re-ask/correction loop.
+        self._pending_enroll: dict | None = None
+        # Confirm-before-commit latch (2026-07-02, tests E/F/G): a parsed
+        # enroll name is spoken back and committed only after an explicit yes
+        # on the NEXT turn. Dict while waiting, None otherwise:
+        #   {name, scope, speaker_key, voice_embs, face_crops}
+        # The biometric snapshot is captured AT ASK TIME from the enroll
+        # turn's speaker key (code review C2): the confirm turn's short
+        # "yes, that's right" is exactly the utterance most likely to mint a
+        # fresh unknown_N or mis-attribute to a bystander, so samples resolved
+        # on the yes-turn could be thin or the wrong person's.
+        self._pending_enroll_confirm: dict | None = None
+        # Both latches share one armed-at stamp and expire after TTL (code
+        # review C4): without expiry, "enroll me" + walking away wedges the
+        # latch (and, via the proactive gate, mutes proactive speech) until
+        # some future turn happens to clear it.
+        self._enroll_latch_ts: float = 0.0
+
+    ENROLL_LATCH_TTL_SEC = 120.0
+
+    def _enroll_latch_pending(self) -> bool:
+        """True while an enroll latch is armed and fresh; expires stale ones."""
+        if self._pending_enroll is None and self._pending_enroll_confirm is None:
+            return False
+        if time.time() - self._enroll_latch_ts > self.ENROLL_LATCH_TTL_SEC:
+            log.info("[ENROLL] latch expired after %.0fs — dropping",
+                     self.ENROLL_LATCH_TTL_SEC)
+            self._pending_enroll = None
+            self._pending_enroll_confirm = None
+            return False
+        return True
+
+    def _dialog_owns_turn(self) -> bool:
+        """A multi-turn dialog is mid-flight: enroll latches or the face
+        auto-enroll consent FSM. Used by the proactive gate so an unprompted
+        remark never interjects into a pending dialog (code review C8 — the
+        FSM was left out of the first gate and the P1-2 interjection bug was
+        still live for consent dialogs)."""
+        return self._enroll_latch_pending() or self._face_enroller.awaiting
+
+    async def _speak_direct(self, text: str) -> None:
+        """Speak a doorway/handler reply with full turn visibility (2026-07-02).
+
+        Raw ``tts.speak`` from the enroll doorway was invisible — no [TIMMY]
+        log line, no chat-history turn, no WS broadcast — and the eye LED
+        stayed stuck on THINKING because only the normal reply flow resets it
+        (every early-return path leaked it during the 2026-07-02 test run).
+        Every doorway/handler reply routes here instead."""
+        log.info("[TIMMY] %s", text)
+        try:
+            await broadcast_event("turn", {"role": "assistant", "content": text})
+            await self.conversation.add_system_action_turn(text)
+        except Exception:
+            log.exception("[SPEAK-DIRECT] visibility bookkeeping failed")
+        asyncio.create_task(eye_led.notify("SPEAKING"))
+        try:
+            await self.tts.speak(text)
+        finally:
+            # Parity with the normal reply flow: AI_CONNECTED after enqueue.
+            asyncio.create_task(eye_led.notify("AI_CONNECTED"))
+
+    @staticmethod
+    def _display_name(name: str) -> str:
+        """Canonical (lowercase, underscore-joined) -> spoken form."""
+        return (name or "").replace("_", " ").title()
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
@@ -299,16 +369,15 @@ class Orchestrator:
         except Exception as e:
             log.info("[PRESENCE] look_at failed for %s: %s", name, e)
 
-    async def _handle_enrollment(self, name: str, used_speaker_fallback: bool) -> None:
+    async def _handle_enrollment(self, name: str) -> None:
         """Voice-triggered face enrollment.
 
         Speaks acknowledgment, calls streamerpi /face_db/enroll over HTTP,
         speaks the result. Returns when TTS finishes; the caller is expected
         to early-return from process_speech to skip the normal LLM/memory path.
         """
-        log.info("[ENROLL] voice-triggered for '%s' (speaker_fallback=%s)",
-                 name, used_speaker_fallback)
-        await self.tts.speak(
+        log.info("[ENROLL] voice-triggered for '%s'", name)
+        await self._speak_direct(
             f"Sure thing. Hold still and look at me for about ten seconds, {name}."
         )
 
@@ -324,7 +393,7 @@ class Orchestrator:
                     data = {"error": resp.text[:200]}
         except Exception:
             log.exception("[ENROLL] HTTP call failed")
-            await self.tts.speak(
+            await self._speak_direct(
                 "Sorry, something went wrong with my camera. Try again later."
             )
             return
@@ -334,47 +403,140 @@ class Orchestrator:
             skipped = data.get("samples_skipped", 0)
             log.info("[ENROLL] saved %s (captured=%d, skipped=%d, total=%d)",
                      name, captured, skipped, len(data.get("enrolled", [])))
-            await self.tts.speak(f"Got it. I'll remember you, {name}.")
+            await self._speak_direct(f"Got it. I'll remember you, {name}.")
         else:
             err = data.get("error", "I couldn't get a clear look at your face.")
             log.warning("[ENROLL] failed for %s: %s", name, err)
-            await self.tts.speak(
+            await self._speak_direct(
                 f"Sorry, I couldn't get a clear look. Try again with better lighting?"
             )
 
-    async def _handle_unified_enroll(self, name: str, scope: str,
-                                     speaker_name: str, speaker_result) -> None:
-        """Phase B dual-modality enroll via commit_identity (okDemerzel stores).
+    async def _gather_enroll_samples(
+            self, speaker_name: str, scope: str) -> tuple[list, list | None]:
+        """Resolve (face_crops, voice_embs) for ``speaker_name`` per scope.
 
-        Binds ``name`` to a face and/or voice under one shared speaker_id, using
-        the PASSIVELY co-sampled sole-face crop(s) for this speaker plus the
-        tracked unknown-voice embeddings — no separate capture dialog. Scoped by
-        what the user asked (``face`` / ``voice`` / ``both``). Speaks the result;
-        the caller early-returns to skip the normal turn.
-        """
-        name = (name or "").strip().lower()
-        key = speaker_name
+        Face: the passively co-sampled sole-face crops, with a live grab
+        fallback (crop-buffer starvation fix, 2026-07-02 — the buffer only
+        fills on NORMAL turns and clears on success, so back-to-back enrolls
+        found it empty). Voice: the tracked unknown buffer for unknown_N, or
+        the rolling confident-match buffer for a recognized speaker (test A
+        fix). Shared by ask-time snapshotting and commit-time fallback."""
         want_face = scope in ("both", "face")
         want_voice = scope in ("both", "voice")
 
-        face_crops = self._cosample.crops_for(key) if want_face else []
+        face_crops = self._cosample.crops_for(speaker_name) if want_face else []
+        if want_face and not face_crops:
+            obs = await self._fetch_face_safe()
+            if obs is not None and obs.sole_face_crops:
+                face_crops = list(obs.sole_face_crops)
+
         voice_embs = None
-        if want_voice and speaker_name.startswith("unknown_"):
-            us = self.speaker_id_module.get_unknown_for_name_ask(speaker_name)
-            if us is not None and us.embeddings:
-                voice_embs = list(us.embeddings)
+        if want_voice:
+            if speaker_name.startswith("unknown_"):
+                us = self.speaker_id_module.get_unknown_for_name_ask(speaker_name)
+                if us is not None and us.embeddings:
+                    voice_embs = list(us.embeddings)
+            else:
+                recent = self.speaker_id_module.recent_embeddings_for(speaker_name)
+                if recent:
+                    voice_embs = recent
+        return face_crops, voice_embs
+
+    async def _ask_enroll_confirm(self, name: str, scope: str,
+                                  speaker_name: str,
+                                  snapshot: dict | None = None) -> None:
+        """Speak the parsed name back and latch for a yes/no next turn
+        (2026-07-02, tests E/F/G): STT homophones ("Jon"->"John") and garbled
+        names must never bind silently. One extra turn, max.
+
+        Captures the biometric snapshot from the ENROLL turn's speaker key
+        (code review C2): the confirm turn's short reply is the utterance
+        most likely to be mis-attributed, so samples must come from the turn
+        where the requester actually spoke a full sentence. When the enroll
+        turn was earlier in the dialog (name-ask latch, correction loop) the
+        caller passes its latch as ``snapshot`` and we reuse it verbatim
+        (code review R2) — re-gathering here would source from the short
+        reply turn, exactly what C2 forbids."""
+        name = (name or "").strip().lower()
+        if snapshot is None:
+            # Direct path: THIS turn is the requester's rich enroll sentence.
+            face_crops, voice_embs = await self._gather_enroll_samples(
+                speaker_name, scope)
+            snapshot = {"scope": scope, "speaker_key": speaker_name,
+                        "voice_embs": voice_embs, "face_crops": face_crops}
+        # Reserved/malformed name check BEFORE latching (2026-07-02 P1): test 1
+        # burned a confirm turn on "Timmy" then refused. Refuse up front so we
+        # never latch on a name we'd reject anyway. _handle_unified_enroll keeps
+        # its own copy as belt-and-suspenders.
+        from presence.prototype_base import is_valid_enroll_name
+        if not is_valid_enroll_name(name):
+            # Re-arm the name ask (code review C3): the refusal invites
+            # "pick another name", so the next turn must be read as a name
+            # reply — without this the dialog dead-ended after e.g. "Timmy".
+            # Carry the requester's snapshot through the re-ask (R2).
+            self._pending_enroll = {**snapshot, "scope": scope}
+            self._enroll_latch_ts = time.time()
+            await self._speak_direct(
+                f"I can't enroll anyone as {self._display_name(name)} — "
+                f"pick another name.")
+            return
+        self._pending_enroll_confirm = {**snapshot, "name": name,
+                                        "scope": scope}
+        self._enroll_latch_ts = time.time()
+        await self._speak_direct(
+            f"{self._display_name(name)} — did I get that right?")
+
+    async def _handle_unified_enroll(self, name: str, scope: str,
+                                     speaker_name: str, speaker_result,
+                                     snapshot: dict | None = None) -> None:
+        """Phase B dual-modality enroll via commit_identity (okDemerzel stores).
+
+        Binds ``name`` to a face and/or voice under one shared speaker_id.
+        Samples come from the ask-time ``snapshot`` when the confirm latch
+        provides one (code review C2 — the requester's own turn, not the
+        possibly-misattributed confirm turn), with a live re-resolve as
+        fallback for any modality the snapshot lacks. Scoped by what the user
+        asked (``face`` / ``voice`` / ``both``). Speaks the result; the caller
+        early-returns to skip the normal turn.
+        """
+        name = (name or "").strip().lower()
+        disp = self._display_name(name)
+        # Prefer the enroll-turn's speaker key for buffer bookkeeping.
+        key = (snapshot or {}).get("speaker_key") or speaker_name
+        want_face = scope in ("both", "face")
+        want_voice = scope in ("both", "voice")
+
+        # Cheap name validation BEFORE the "hold on" ack (test B: the old flow
+        # said "Okay Timmy, hold on" and then masked invalid_name behind the
+        # generic look/listen apology).
+        from presence.prototype_base import is_valid_enroll_name
+        if not is_valid_enroll_name(name):
+            await self._speak_direct(
+                f"I can't enroll anyone as {disp} — pick another name.")
+            return
+
+        face_crops = list((snapshot or {}).get("face_crops") or [])
+        voice_embs = (snapshot or {}).get("voice_embs") or None
+        if (want_face and not face_crops) or (want_voice and not voice_embs):
+            live_crops, live_embs = await self._gather_enroll_samples(key, scope)
+            face_crops = face_crops or live_crops
+            voice_embs = voice_embs or live_embs
+        if not want_face:
+            face_crops = []
+        if not want_voice:
+            voice_embs = None
 
         if not face_crops and not voice_embs:
-            # Nothing co-sampled yet for the requested scope.
+            # Nothing available for the requested scope.
             if want_face:
-                await self.tts.speak(
+                await self._speak_direct(
                     "I can't get a clear look at you just now — face me and say that again.")
             else:
-                await self.tts.speak(
+                await self._speak_direct(
                     "I haven't heard enough of your voice yet — say a bit more and try again.")
             return
 
-        await self.tts.speak(f"Okay {name.title()}, hold on while I remember you.")
+        await self._speak_direct(f"Okay {disp}, hold on while I remember you.")
         try:
             from presence.identity_commit import commit_identity
             res = await commit_identity(
@@ -385,17 +547,27 @@ class Orchestrator:
             )
         except Exception:
             log.exception("[ENROLL] unified commit failed for %s", name)
-            await self.tts.speak(
+            await self._speak_direct(
                 "Sorry, something went wrong saving that. Try again in a moment.")
             return
 
         if res.status == "mismatch":
-            await self.tts.speak(
-                f"Hmm — you don't quite match the {name.title()} I already know, so I'll "
+            await self._speak_direct(
+                f"Hmm — you don't quite match the {disp} I already know, so I'll "
                 "hold off for now.")
             return
+        if res.status == "lookalike":
+            who = self._display_name(res.lookalike_of or "someone I know")
+            await self._speak_direct(
+                f"Hold on — you look and sound like {who} to me, so I won't file "
+                f"you as {disp}. If I've got that wrong, tell Dan.")
+            return
+        if res.status == "invalid_name":
+            await self._speak_direct(
+                f"I can't enroll anyone as {disp} — pick another name.")
+            return
         if not (res.voice_committed or res.face_committed):
-            await self.tts.speak(
+            await self._speak_direct(
                 "Sorry, I couldn't get a good enough look or listen just then. Try again?")
             return
 
@@ -407,8 +579,8 @@ class Orchestrator:
             got.append("voice")
         log.info("[ENROLL] unified %s -> id=%s (%s) status=%s warnings=%s",
                  res.name, res.speaker_id, "+".join(got), res.status, res.warnings)
-        await self.tts.speak(
-            f"Got it — I'll recognize your {' and '.join(got)} now, {name.title()}.")
+        await self._speak_direct(
+            f"Got it — I'll recognize your {' and '.join(got)} now, {disp}.")
 
     async def _enroll_stream(self, name: str, count: int, interval_s: float, mode: str):
         """Async generator over streamerpi's SSE /face_db/enroll/stream.
@@ -596,15 +768,62 @@ class Orchestrator:
         _unified = bool(runtime_toggles.get("unified_enroll_enabled")) or \
             config.UNIFIED_ENROLL_ENABLED
 
+        # Latch lifecycle guards (code review C4): expire stale latches (TTL —
+        # _enroll_latch_pending clears them as a side effect), and clear both
+        # when the unified toggle was flipped OFF mid-dialog — the clearing
+        # blocks below are _unified-gated, so without this a latch armed
+        # before the flip could never be cleared (and would permanently mute
+        # proactive speech via _dialog_owns_turn).
+        _latch_live = self._enroll_latch_pending()
+        if not _unified and _latch_live:
+            log.info("[ENROLL] unified toggle off with latch pending — dropping")
+            self._pending_enroll = None
+            self._pending_enroll_confirm = None
+            _latch_live = False
+
+        # Confirm-before-commit latch (2026-07-02, tests E/F/G): a parsed name
+        # was spoken back last turn; an explicit yes commits it, an explicit
+        # no re-opens the name ask, anything else drops the latch silently
+        # (same contract as the name-ask latch below).
+        if _unified and _latch_live and self._pending_enroll_confirm is not None:
+            from conversation.enroll_intent import is_affirmation, is_negation
+            _latch = self._pending_enroll_confirm
+            self._pending_enroll_confirm = None
+            if is_affirmation(user_text):
+                await self._handle_unified_enroll(
+                    _latch["name"], _latch["scope"], speaker_name,
+                    speaker_result, snapshot=_latch)
+                return
+            if is_negation(user_text):
+                # Re-arm carrying the ORIGINAL snapshot + speaker key (code
+                # review R2): the correction reply is another short turn —
+                # re-snapshotting from it is the C2 hole all over again.
+                self._pending_enroll = {
+                    k: _latch[k] for k in
+                    ("scope", "speaker_key", "voice_embs", "face_crops")}
+                self._enroll_latch_ts = time.time()
+                await self._speak_direct(
+                    "Okay, scratch that — what name should I go with?")
+                return
+            # Unrelated utterance -> abandon silently, continue as normal.
+
         # Two-turn latch: a prior "enroll me" without a name is waiting for one.
-        # This turn supplies it -> commit dually and consume the latch.
-        if _unified and self._pending_enroll is not None:
-            from conversation.introductions import _extract_name_from_response
-            _nm = _extract_name_from_response(user_text)
-            _scope = self._pending_enroll
+        # This turn supplies it -> speak it back for confirmation (NOT a direct
+        # commit — a bare name utterance is where STT homophones bite hardest).
+        if _unified and _latch_live and self._pending_enroll is not None:
+            from conversation.enroll_intent import extract_reply_name
+            # Multi-word-capable, evasive-aware reply parsing (code review
+            # C5/C6): the old inline extractor-first order truncated "My name
+            # is Mary Jane" to 'mary' and canonicalized "not telling".
+            _nm = extract_reply_name(user_text)
+            _latch = self._pending_enroll
             self._pending_enroll = None
             if _nm:
-                await self._handle_unified_enroll(_nm, _scope, speaker_name, speaker_result)
+                # Pass the arm-time latch as the snapshot (code review R2):
+                # samples + speaker key come from the "enroll me" turn, not
+                # this bare-name reply.
+                await self._ask_enroll_confirm(_nm, _latch["scope"],
+                                               speaker_name, snapshot=_latch)
                 return
             # No name heard -> abandon the latch silently and continue as normal.
 
@@ -616,27 +835,40 @@ class Orchestrator:
         if self._face_enroller.awaiting:
             ae = await self._face_enroller.handle(user_text, speaker_name)
             if ae.handled:
+                # The FSM speaks through its own machinery, which never resets
+                # the eye — clear THINKING here (2026-07-02).
+                asyncio.create_task(eye_led.notify("AI_CONNECTED"))
                 return
 
         # voice-enroll-shortcut
         enroll = detect_enroll_intent(user_text, speaker_name)
         if _unified:
             # Phase B: route through commit_identity (okDemerzel stores), scoped
-            # to what the user asked (face / voice / both). A keyword with no name
-            # latches a one-turn name ask instead of the dead Pi POST.
+            # to what the user asked (face / voice / both). A parsed name is
+            # confirmed on the next turn before committing; a keyword with no
+            # name latches a one-turn name ask instead of the dead Pi POST.
             if enroll.matched:
-                await self._handle_unified_enroll(
-                    enroll.name, enroll.scope, speaker_name, speaker_result)
+                await self._ask_enroll_confirm(enroll.name, enroll.scope,
+                                               speaker_name)
                 return
             if enroll.keyword_present:
-                self._pending_enroll = enroll.scope
-                await self.tts.speak("Sure — what name should I remember you by?")
+                # Capture the requester's biometric snapshot NOW (code review
+                # R2): the "enroll me" sentence is the rich, reliably-
+                # attributed turn; the upcoming bare-name reply is not.
+                _crops, _embs = await self._gather_enroll_samples(
+                    speaker_name, enroll.scope)
+                self._pending_enroll = {
+                    "scope": enroll.scope, "speaker_key": speaker_name,
+                    "voice_embs": _embs, "face_crops": _crops}
+                self._enroll_latch_ts = time.time()
+                await self._speak_direct(
+                    "Sure — what name should I remember you by?")
                 return
         elif enroll.matched:
             # Legacy path (flag OFF): the Pi SFace gallery enroll. NOTE this
             # gallery is retired (Pi recognition disabled) so this is effectively
             # a no-op until the unified flag is flipped — Phase B is the fix.
-            await self._handle_enrollment(enroll.name, enroll.used_speaker_fallback)
+            await self._handle_enrollment(enroll.name)
             return
 
         # --- Handle name solicitation for unknown speakers ---
@@ -785,6 +1017,14 @@ class Orchestrator:
             return
         if self.capture.hearing_muted:
             return  # a muted Timmy that still talks is surprising
+        # Dialog gate (2026-07-02 P1, generalized by code review C8): a pending
+        # enroll latch OR a face-consent FSM dialog owns the next turn.
+        # [PROACTIVE] interjected 50s into a pending confirm (01:47), derailing
+        # the enroll dialog. Stay silent until the dialog resolves (latches
+        # self-expire after ENROLL_LATCH_TTL_SEC, so a walked-away user can't
+        # wedge this gate — code review C4).
+        if self._dialog_owns_turn():
+            return
         # Turn-taking / barge-in guard. The reactive _turn_lock (acquired in the
         # main loop only when a *finalized* segment lands on speech_queue) does
         # NOT cover an in-progress utterance, so without this the proactive path
