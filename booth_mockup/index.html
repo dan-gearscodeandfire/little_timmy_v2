@@ -874,19 +874,26 @@
     }
 
     function renderFaces(faces) {
-      // Identified faces = named (not "unknown") with a valid bbox.
-      const known = (faces || []).filter(f =>
-        Array.isArray(f.bbox) && f.bbox.length === 4 &&
+      // Any detection with a valid bbox draws a reticle. Since Phase 0/A the
+      // Pi never names faces (SFace disabled; okDemerzel is the identity
+      // authority), so unnamed detections render too — labeled UNKNOWN —
+      // rather than leaving the display blank while detection works fine.
+      const valid = (faces || []).filter(f =>
+        Array.isArray(f.bbox) && f.bbox.length === 4);
+      const known = valid.filter(f =>
         f.name && !String(f.name).toLowerCase().startsWith('unknown'));
-      // Primary = the behavior-locked face if present, else the biggest face.
+      // Primary = the behavior-locked face if present, else the biggest
+      // named face, else the biggest detection.
       let primary = null;
       if (lockedIdentity)
         primary = known.find(f => String(f.name).toLowerCase() === lockedIdentity) || null;
       if (!primary && known.length)
         primary = known.reduce((a, b) => bboxArea(b.bbox) > bboxArea(a.bbox) ? b : a);
+      if (!primary && valid.length)
+        primary = valid.reduce((a, b) => bboxArea(b.bbox) > bboxArea(a.bbox) ? b : a);
       updateReticle(faceidEl, primary);
-      // Secondaries = every other identified face, scan-less.
-      const others = known.filter(f => f !== primary);
+      // Secondaries = every other detection, scan-less.
+      const others = valid.filter(f => f !== primary);
       ensureReticlePool(others.length);
       others.forEach((f, i) => updateReticle(reticlePool[i], f));
     }
