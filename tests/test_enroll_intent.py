@@ -248,6 +248,54 @@ def test_conjunction_still_stops_span():
     assert r.matched and r.name == "dan"
 
 
+# ---- 2026-07-05 code-review fixes (false-yes / false-cancel / junk names) ----
+
+def test_confirm_verdict_questions_are_not_confirms():
+    # Review 7-05: optional-tail anchors read questions as yes — the
+    # wrong-biometrics commit C1 exists to prevent. Declarative forms only.
+    from conversation.enroll_intent import confirm_verdict
+    assert confirm_verdict("where did you get that name") == "unclear"
+    assert confirm_verdict("can you get it right this time") == "unclear"
+    assert confirm_verdict("do you have it saved") == "unclear"
+    assert confirm_verdict("did you get that right") == "unclear"
+    assert confirm_verdict("you got me confused with someone") == "unclear"
+
+
+def test_confirm_verdict_positive_idioms_not_no():
+    # "no worries/no problem" carry a surface negation cue but are positive.
+    from conversation.enroll_intent import confirm_verdict
+    assert confirm_verdict("no worries, you got it right") == "yes"
+    assert confirm_verdict("no problem, that's correct") == "yes"
+    # ...but a real negation elsewhere still wins.
+    assert confirm_verdict("no worries, but that is wrong") == "no"
+
+
+def test_affirmative_with_cancel_fragment_commits():
+    # "yes, leave it as it is" is a confirm; "leave it" must not abort it.
+    from conversation.enroll_intent import confirm_verdict, is_enroll_cancel
+    assert confirm_verdict("yeah just leave it as Dan") == "yes"
+    assert not is_enroll_cancel("yeah just leave it as Dan")
+    assert not is_enroll_cancel("yes, leave it as it is")
+
+
+def test_bare_verb_replies_not_names():
+    # "leave it" -> 'leave' and "call me buddy" -> 'call'/'buddy' regressions.
+    # (NOT covered: "this is weird" -> 'weird' via the pre-existing
+    # this-is pattern — indistinguishable from "this is Bob" without
+    # semantics; the confirm turn is the guard for that class.)
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("leave it") is None
+    assert extract_reply_name("call me buddy") is None
+    assert extract_reply_name("I'm buddy") is None      # vocative frame stays weak
+
+
+def test_incidental_it_is_clause_not_a_name():
+    # "it is X" is a bare-reply lead-in only, never a full-utterance pattern.
+    r = detect_enroll_intent("remember my face when it is dark in here")
+    assert not r.matched
+    assert r.keyword_present and r.scope == "face"
+
+
 def test_name_turn_miss_shapes_2026_07_02():
     # The four live miss shapes get sane parses instead of garbage.
     from conversation.enroll_intent import extract_reply_name

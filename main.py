@@ -167,6 +167,11 @@ class Orchestrator:
             speaker_id_module=self.speaker_id_module,
             turn=self._turn,
         )
+        # When the name-ask was last armed. Introductions has no expiry of
+        # its own, so _dialog_owns_turn bounds its term with this stamp
+        # (review 7-05) — a walked-away visitor must not mute proactive
+        # speech forever.
+        self._introductions_asked_ts: float = 0.0
 
         # Interactive auto-enrollment for *faces* (distinct from FaceHintStreak,
         # which is voiceprint->known-face binding). Owns the consent/name/guided-
@@ -242,9 +247,19 @@ class Orchestrator:
         finding #5, 2026-07-05 — introductions was left out of this gate the
         same way the FSM originally was, code review C8). Used by the
         proactive gate so an unprompted remark never interjects into a
-        pending dialog."""
+        pending dialog.
+
+        The introductions term is TIME-BOUNDED here (review 7-05): unlike the
+        enroll latches (TTL) and the FSM (deadline), Introductions has no
+        expiry of its own — its pending state only clears when the same
+        unknown_* speaker talks again, so a walked-away visitor would mute
+        proactive speech for the process lifetime."""
+        intro_fresh = (
+            self._introductions.awaiting and
+            time.time() - self._introductions_asked_ts
+            <= self.ENROLL_LATCH_TTL_SEC)
         return (self._enroll_latch_pending() or self._face_enroller.awaiting
-                or self._introductions.awaiting)
+                or intro_fresh)
 
     async def _speak_direct(self, text: str) -> None:
         """Speak a doorway/handler reply with full turn visibility (2026-07-02).
@@ -798,22 +813,24 @@ class Orchestrator:
         # no-answer exit is the walk-away TTL.
         if _unified and _latch_live and self._pending_enroll_confirm is not None:
             from conversation.enroll_intent import (
-                is_affirmation, is_negation, is_enroll_cancel,
-                confirm_reask_line)
+                confirm_verdict, is_enroll_cancel, confirm_reask_line)
             _latch = self._pending_enroll_confirm
             self._pending_enroll_confirm = None
-            if is_enroll_cancel(user_text):
-                # Checked before the verdict: "never mind" contains a
-                # negation cue and would otherwise re-open the name ask.
-                self._pending_enroll = None
-                await self._speak_direct("Okay, dropping it.")
-                return
-            if is_affirmation(user_text):
+            _verdict = confirm_verdict(user_text)
+            # Order matters (review 7-05): yes BEFORE cancel ("yeah, don't
+            # bother re-asking" must commit, not abort), cancel BEFORE no
+            # ("never mind" contains a negation cue and would otherwise
+            # re-open the name ask instead of aborting).
+            if _verdict == "yes":
                 await self._handle_unified_enroll(
                     _latch["name"], _latch["scope"], speaker_name,
                     speaker_result, snapshot=_latch)
                 return
-            if is_negation(user_text):
+            if is_enroll_cancel(user_text):
+                self._pending_enroll = None
+                await self._speak_direct("Okay, dropping it.")
+                return
+            if _verdict == "no":
                 # Re-arm carrying the ORIGINAL snapshot + speaker key (code
                 # review R2): the correction reply is another short turn —
                 # re-snapshotting from it is the C2 hole all over again.
@@ -823,6 +840,17 @@ class Orchestrator:
                 self._enroll_latch_ts = time.time()
                 await self._speak_direct(
                     "Okay, scratch that — what name should I go with?")
+                return
+            # A restated enroll intent is a CORRECTION, not an unclear reply
+            # (review 7-05): "Actually, enroll me as Sarah" has no yes/no cue
+            # and used to loop 'is the name Joe?' with no escape short of a
+            # cancel. Re-route to confirm the new name/scope, keeping the
+            # original arm-time snapshot (R2).
+            _restated = detect_enroll_intent(user_text, speaker_name)
+            if _restated.matched:
+                await self._ask_enroll_confirm(
+                    _restated.name, _restated.scope, speaker_name,
+                    snapshot=_latch)
                 return
             # Unclear -> re-arm and escalate. Refreshing the TTL stamp keeps
             # "walk-away" semantics: expiry measures silence since the last
@@ -919,6 +947,7 @@ class Orchestrator:
             if unknown_info:
                 self.speaker_id_module.mark_name_asked(speaker_result.name)
                 await self._introductions.ask_name(unknown_info)
+                self._introductions_asked_ts = time.time()
                 return
 
         # Speculative coref (2026-06-22, "speculative_coref_enabled", default OFF):

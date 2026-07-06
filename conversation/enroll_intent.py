@@ -37,15 +37,22 @@ _BOTH_RE = re.compile(
 # Trailing non-name tokens are trimmed in _clean_name_tokens.
 _NAME_TOKEN = r"[A-Za-z][a-zA-Z']{1,20}"
 _NAME_SPAN = rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,3}})"
+# Each entry is (pattern, strong). ``strong`` marks non-vocative frames where
+# the capture is unambiguously in name position ("my name is X", "... as X") —
+# only those may lead with a soft filler token ("My name is Buddy"). Vocative-
+# capable frames ("call me, buddy" / "I'm... man") stay weak (review 7-05).
+# NOTE "it is X" is handled ONLY in extract_reply_name's bare-reply lead-in —
+# as a full-utterance pattern it turned incidental clauses into names
+# ("remember my face when it is dark in here" -> 'dark_in', review 7-05).
 _NAME_PATTERNS = [
     # "my name is X" / "my name's X" / STT-flattened "my names X" — the
     # contraction miss truncated "My name's Mary Jane" to 'mary' via the
     # shared single-token extractor (name-turn miss #3, 2026-07-02).
-    re.compile(rf"\bmy\s+name(?:\s+is|\s+was|'?s)\s+{_NAME_SPAN}\b", re.IGNORECASE),
-    re.compile(rf"\bcall\s+me\s+{_NAME_SPAN}\b", re.IGNORECASE),
-    re.compile(rf"\b(?:enroll|remember|learn|save)\s+(?:me\s+|my\s+(?:face|voice)\s+)?as\s+{_NAME_SPAN}\b", re.IGNORECASE),
-    re.compile(rf"\bI(?:'m|\s+am)\s+{_NAME_SPAN}\b", re.IGNORECASE),
-    re.compile(rf"\b(?:this|it)\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE),
+    (re.compile(rf"\bmy\s+name(?:\s+is|\s+was|'?s)\s+{_NAME_SPAN}\b", re.IGNORECASE), True),
+    (re.compile(rf"\bcall\s+me\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
+    (re.compile(rf"\b(?:enroll|remember|learn|save)\s+(?:me\s+|my\s+(?:face|voice)\s+)?as\s+{_NAME_SPAN}\b", re.IGNORECASE), True),
+    (re.compile(rf"\bI(?:'m|\s+am)\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
+    (re.compile(rf"\bthis\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
 ]
 
 # Words that look like names but aren't.
@@ -58,6 +65,9 @@ _NON_NAMES = frozenset({
     # (name-turn miss #3, 2026-07-02)
     "hang", "wait", "hold", "um", "uh", "hmm", "well", "so", "just",
     "second", "minute", "moment",
+    # verbs the bare-reply fallback can lead with ("leave it" -> 'leave',
+    # "call me buddy" -> 'call' once the vocative frame is rejected — 7-05)
+    "leave", "call",
     # connectives/verbs: stop the multi-token span from fusing identities
     # ("I'm Dan and Sarah is here" must parse 'dan', not 'dan_and_sarah' —
     # code review C7) and from canonicalizing evasive replies ("not telling",
@@ -127,10 +137,10 @@ def _extract_name(text: str) -> Optional[str]:
     None. Tries the local enroll-specific patterns first (they parse
     "... as X" and multi-word names), then the shared conversational
     extractor."""
-    for pat in _NAME_PATTERNS:
+    for pat, strong in _NAME_PATTERNS:
         m = pat.search(text)
         if m:
-            cand = _clean_name_tokens(m.group(1), explicit=True)
+            cand = _clean_name_tokens(m.group(1), explicit=strong)
             if cand:
                 return cand
     if _extract_name_from_response is not None:
@@ -203,14 +213,20 @@ _NO_RE = re.compile(
     r"don'?t|isn'?t|didn'?t|wasn'?t)\b", re.IGNORECASE)
 _YES_STRONG_RE = re.compile(
     r"\b(?:yes|yeah|yep|yup|affirmative|"
-    r"that'?s\s+(?:right|it|me|correct)|that\s+is\s+(?:right|it|me|correct)|"
+    r"that(?:'?s|\s+is)\s+(?:right|it|me|correct|my\s+name)|"
     # paraphrased confirms, live-proven misses 2026-07-02 ("You did get that
     # right" -> unclear -> silent drop -> LLM confabulated the commit). STT
-    # drops one-word turns, so EVERY confirm reply is a paraphrase — widen
-    # hard. _NO_RE still runs first, so "you did NOT get that right" is safe.
-    r"that'?s\s+my\s+name|that\s+is\s+my\s+name|"
-    r"you\s+(?:did\s+)?(?:get|got)\s+(?:it|that)(?:\s+(?:right|correct))?|"
-    r"you\s+(?:got|heard)\s+me\s+right|you\s+have\s+it(?:\s+right)?|"
+    # drops one-word turns, so EVERY confirm reply is a paraphrase.
+    # DECLARATIVE forms only (review 7-05): present-tense/inverted forms with
+    # optional tails read questions as confirms ("where did you get that
+    # name", "can you get it right this time", "do you have it saved" all
+    # classified yes — the wrong-biometrics commit C1 exists to prevent).
+    # "you did get X" requires the right/correct tail; interrogative
+    # inversion ("did you get...") never matches the declarative order.
+    # _NO_RE still runs first, so "you did NOT get that right" is safe.
+    r"you\s+did\s+get\s+(?:it|that|me)\s+(?:right|correct)|"
+    r"you\s+got\s+(?:it|that)(?:\s+(?:right|correct))?|"
+    r"you\s+(?:got|heard)\s+me\s+right|you\s+have\s+it\s+right|"
     r"nailed\s+it|spot\s+on)\b", re.IGNORECASE)
 _YES_WEAK = frozenset({
     "correct", "right", "exactly", "sure", "ok", "okay", "alright", "fine",
@@ -219,12 +235,19 @@ _YES_WEAK = frozenset({
 _YES_WEAK_MAX_TOKENS = 4
 
 
+# Positive idioms whose surface contains a negation cue ("no worries, you got
+# it right" read as 'no' and re-opened the name ask — review 7-05). Stripped
+# before the verdict scan so the rest of the utterance decides.
+_POSITIVE_IDIOM_RE = re.compile(
+    r"\b(?:no\s+worries|no\s+problem|no\s+doubt)\b", re.IGNORECASE)
+
+
 def confirm_verdict(text: str) -> str:
     """Classify a reply to "NAME — did I get that right?" as 'yes' | 'no' |
     'unclear'. Negation always wins; see ordering rationale above."""
     if not text:
         return "unclear"
-    lower = text.strip().lower()
+    lower = _POSITIVE_IDIOM_RE.sub(" ", text.strip().lower())
     if _NO_RE.search(lower):
         return "no"
     if _YES_STRONG_RE.search(lower):
@@ -255,9 +278,12 @@ def is_negation(text: str) -> bool:
 # Explicit abort of the whole enroll dialog. Distinct from a "no" verdict —
 # "no" re-opens the name ask, cancel drops everything. Checked BEFORE
 # confirm_verdict because "never mind" contains a _NO_RE cue.
+# NO "leave it": "yes, leave it as it is" is a CONFIRM, not an abort
+# (review 7-05). The caller must also check the yes-verdict BEFORE cancel so
+# "yeah, don't bother re-asking" commits instead of aborting.
 _CANCEL_RE = re.compile(
     r"\b(?:never\s*mind|forget\s+(?:about\s+)?(?:it|that|this)|cancel|abort|"
-    r"skip\s+it|drop\s+it|leave\s+it|stop\s+(?:it|that|asking)|"
+    r"skip\s+it|drop\s+it|stop\s+(?:it|that|asking)|"
     r"don'?t\s+bother|no\s+thanks)\b", re.IGNORECASE)
 
 
