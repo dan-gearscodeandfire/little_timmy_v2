@@ -808,15 +808,27 @@ class Orchestrator:
         _unified = bool(runtime_toggles.get("unified_enroll_enabled")) or \
             config.UNIFIED_ENROLL_ENABLED
 
+        # EXPO identity-dialog gate (Dan 2026-07-06): ONE gate for the whole
+        # dialog class (enroll latches, misID correction, introductions
+        # name-ask, face consent FSM — every multi-turn identity FSM that
+        # seizes turns and can end in a store write). Gated == FULLY SILENT:
+        # the blocks below are skipped wholesale so the utterance falls
+        # through to the LLM as ordinary speech. Read live per turn, same as
+        # _unified. See runtime_toggles.identity_dialogs_allowed().
+        _dialogs_ok = runtime_toggles.identity_dialogs_allowed()
+
         # Latch lifecycle guards (code review C4): expire stale latches (TTL —
         # _enroll_latch_pending clears them as a side effect), and clear both
-        # when the unified toggle was flipped OFF mid-dialog — the clearing
-        # blocks below are _unified-gated, so without this a latch armed
-        # before the flip could never be cleared (and would permanently mute
-        # proactive speech via _dialog_owns_turn).
+        # when the unified toggle was flipped OFF — or the identity-dialog
+        # gate closed — mid-dialog. The clearing blocks below are gated on
+        # both flags, so without this a latch armed before the flip could
+        # never be cleared (and would permanently mute proactive speech via
+        # _dialog_owns_turn).
         _latch_live = self._enroll_latch_pending()
-        if not _unified and _latch_live:
-            log.info("[ENROLL] unified toggle off with latch pending — dropping")
+        if _latch_live and (not _unified or not _dialogs_ok):
+            log.info("[ENROLL] %s with latch pending — dropping",
+                     "unified toggle off" if not _unified
+                     else "identity-dialog gate closed")
             self._pending_enroll = None
             self._pending_enroll_confirm = None
             _latch_live = False
@@ -930,43 +942,55 @@ class Orchestrator:
         # "yes", so consent replies are necessarily long ("yes, you can remember
         # my face") and keyword-laden — exactly what trips detect_enroll_intent.
         if self._face_enroller.awaiting:
-            ae = await self._face_enroller.handle(user_text, speaker_name)
-            if ae.handled:
-                # The FSM speaks through its own machinery, which never resets
-                # the eye — clear THINKING here (2026-07-02).
-                asyncio.create_task(eye_led.notify("AI_CONNECTED"))
-                return
+            if not _dialogs_ok:
+                # Identity-dialog gate closed with a consent dialog armed
+                # pre-flip: drop it silently and let this turn fall through
+                # to the normal pipeline as ordinary speech.
+                self._face_enroller.drop_gated()
+            else:
+                ae = await self._face_enroller.handle(user_text, speaker_name)
+                if ae.handled:
+                    # The FSM speaks through its own machinery, which never
+                    # resets the eye — clear THINKING here (2026-07-02).
+                    asyncio.create_task(eye_led.notify("AI_CONNECTED"))
+                    return
 
-        # voice-enroll-shortcut
-        enroll = detect_enroll_intent(user_text, speaker_name)
-        if _unified:
-            # Phase B: route through commit_identity (okDemerzel stores), scoped
-            # to what the user asked (face / voice / both). A parsed name is
-            # confirmed on the next turn before committing; a keyword with no
-            # name latches a one-turn name ask instead of the dead Pi POST.
-            if enroll.matched:
-                await self._ask_enroll_confirm(enroll.name, enroll.scope,
-                                               speaker_name)
+        # voice-enroll-shortcut — skipped wholesale (detector included) under
+        # the identity-dialog gate: "enroll me as Bob" at the booth becomes
+        # ordinary speech for the LLM, no latch, no reply about enrollment.
+        if _dialogs_ok:
+            enroll = detect_enroll_intent(user_text, speaker_name)
+            if _unified:
+                # Phase B: route through commit_identity (okDemerzel stores),
+                # scoped to what the user asked (face / voice / both). A parsed
+                # name is confirmed on the next turn before committing; a
+                # keyword with no name latches a one-turn name ask instead of
+                # the dead Pi POST.
+                if enroll.matched:
+                    await self._ask_enroll_confirm(enroll.name, enroll.scope,
+                                                   speaker_name)
+                    return
+                if enroll.keyword_present:
+                    # Capture the requester's biometric snapshot NOW (code
+                    # review R2): the "enroll me" sentence is the rich,
+                    # reliably-attributed turn; the upcoming bare-name reply
+                    # is not.
+                    _crops, _embs = await self._gather_enroll_samples(
+                        speaker_name, enroll.scope)
+                    self._pending_enroll = {
+                        "scope": enroll.scope, "speaker_key": speaker_name,
+                        "voice_embs": _embs, "face_crops": _crops}
+                    self._enroll_latch_ts = time.time()
+                    await self._speak_direct(
+                        "Sure — what name should I remember you by?")
+                    return
+            elif enroll.matched:
+                # Legacy path (flag OFF): the Pi SFace gallery enroll. NOTE
+                # this gallery is retired (Pi recognition disabled) so this is
+                # effectively a no-op until the unified flag is flipped —
+                # Phase B is the fix.
+                await self._handle_enrollment(enroll.name)
                 return
-            if enroll.keyword_present:
-                # Capture the requester's biometric snapshot NOW (code review
-                # R2): the "enroll me" sentence is the rich, reliably-
-                # attributed turn; the upcoming bare-name reply is not.
-                _crops, _embs = await self._gather_enroll_samples(
-                    speaker_name, enroll.scope)
-                self._pending_enroll = {
-                    "scope": enroll.scope, "speaker_key": speaker_name,
-                    "voice_embs": _embs, "face_crops": _crops}
-                self._enroll_latch_ts = time.time()
-                await self._speak_direct(
-                    "Sure — what name should I remember you by?")
-                return
-        elif enroll.matched:
-            # Legacy path (flag OFF): the Pi SFace gallery enroll. NOTE this
-            # gallery is retired (Pi recognition disabled) so this is effectively
-            # a no-op until the unified flag is flipped — Phase B is the fix.
-            await self._handle_enrollment(enroll.name)
-            return
 
         # Identity-correction protest (Dan 2026-07-06): a misidentified user
         # says "No, my name is not Walter, my name is Flynn" — or a bare
@@ -977,8 +1001,12 @@ class Orchestrator:
         # at commit, so a stranger can't talk their way into an enrolled
         # identity. Runs AFTER detect_enroll_intent (enroll keywords win) and
         # only under the unified flag. Bare claims from unknown_N speakers
-        # stay with introductions below.
-        if _unified:
+        # stay with introductions below. Skipped (detector included) under
+        # the identity-dialog gate — at the booth "my name is Bob" is every
+        # visitor's self-intro, and the off-mic chain collapses visitors
+        # onto enrolled voiceprints, so a normal self-intro reads as a misID
+        # protest; worse, confirm-yes is an identity-MUTATION surface.
+        if _unified and _dialogs_ok:
             corr = detect_identity_correction(
                 user_text, speaker_name,
                 speaker_enrolled=self.speaker_id_module.is_known_speaker(
@@ -1014,7 +1042,11 @@ class Orchestrator:
                 return
 
         # --- Handle name solicitation for unknown speakers ---
-        if speaker_result.should_ask_name:
+        # Gated with the rest of the identity-dialog class: at the booth
+        # every visitor is a stable unknown, and the name-ask both seizes
+        # the turn and feeds assign_name (a store write). The unknown stays
+        # un-marked so the ask can still happen post-show.
+        if speaker_result.should_ask_name and _dialogs_ok:
             unknown_info = self.speaker_id_module.get_unknown_for_name_ask(
                 speaker_result.name
             )
@@ -1286,21 +1318,34 @@ class Orchestrator:
         result (resolved in parallel with the classifier) into the turn's
         retrieval. Both stay at their OFF defaults on the text path."""
 
+        # EXPO identity-dialog gate (Dan 2026-07-06): recomputed here (not
+        # threaded from process_speech) because this is also the text-input /
+        # injected-turn entry point. When closed, any dialog state armed
+        # pre-flip is dropped SILENTLY and the turn proceeds as ordinary
+        # speech — a latch must not survive the flip.
+        _dialogs_ok = runtime_toggles.identity_dialogs_allowed()
+        if not _dialogs_ok:
+            self._introductions.drop_pending()
+            self._face_enroller.drop_gated()
+
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
         # If we're mid-introduction, this may speak a follow-up (handled=True ->
         # we're done) or promote the speaker to a just-confirmed name and fall
         # through to a normal turn.
-        intro = await self._introductions.handle(user_text, speaker_name)
-        if intro.handled:
-            return
-        speaker_name = intro.speaker_name
+        if _dialogs_ok:
+            intro = await self._introductions.handle(user_text, speaker_name)
+            if intro.handled:
+                return
+            speaker_name = intro.speaker_name
 
-        # --- Face auto-enroll consent dialog (FaceEnroller owns the state) ---
-        # If we're mid-offer ("mind if I remember your face?"), this consumes the
-        # yes/no/name reply and speaks the follow-up; a no-op when not in flight.
-        enroll_outcome = await self._face_enroller.handle(user_text, speaker_name)
-        if enroll_outcome.handled:
-            return
+            # --- Face auto-enroll consent dialog (FaceEnroller owns state) ---
+            # If we're mid-offer ("mind if I remember your face?"), this
+            # consumes the yes/no/name reply and speaks the follow-up; a no-op
+            # when not in flight.
+            enroll_outcome = await self._face_enroller.handle(
+                user_text, speaker_name)
+            if enroll_outcome.handled:
+                return
 
         # --- THINKING window (filler + eye-pulse + body wobble) ---
         # We've committed to a brain reply (past the Timmy-voice/empty/tool/
@@ -2081,6 +2126,13 @@ async def main():
                     and not orch.capture.user_speaking
                     and (now - speech_ts) < orch._face_enroller.cfg.engagement_window_s
                 )
+                # EXPO identity-dialog gate (Dan 2026-07-06): at the booth a
+                # stable stranger is EVERY visitor — no new consent offers,
+                # and an offer armed pre-flip is dropped silently. Read per
+                # tick so a webui flip applies without a restart.
+                if not runtime_toggles.identity_dialogs_allowed():
+                    orch._face_enroller.drop_gated()
+                    continue
                 await orch._face_enroller.observe_faces(
                     full["faces"], full["image_size"], engaged=engaged,
                 )

@@ -219,6 +219,19 @@ class FaceEnroller:
     def busy(self) -> bool:
         return self.state != State.IDLE
 
+    def drop_gated(self) -> None:
+        """Silently drop an in-flight consent dialog when the identity-dialog
+        gate closes mid-dialog (EXPO regime, Dan 2026-07-06). SILENT on
+        purpose — no "maybe another time" line; gated behavior must not
+        signal the machinery exists. Cooldown applies so the same track
+        doesn't immediately re-trigger if the gate re-opens. A consented
+        CAPTURING pass is left to finish (consent predates the flip);
+        only the awaiting dialog states are dropped."""
+        if self.awaiting:
+            log.info("[AUTOENROLL] identity-dialog gate closed at %s -> "
+                     "silent drop", self.state.value)
+            self._reset(cooldown=True)
+
     def _reset(self, cooldown: bool = True) -> None:
         if cooldown:
             self._cooldown_until = self._now() + self.cfg.cooldown_s

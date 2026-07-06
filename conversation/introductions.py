@@ -47,6 +47,17 @@ class Introductions:
     def awaiting(self) -> bool:
         return self._pending_capture is not None or self._pending_confirm is not None
 
+    def drop_pending(self) -> None:
+        """Silently drop an in-flight name exchange when the identity-dialog
+        gate closes mid-dialog (EXPO regime, Dan 2026-07-06). SILENT on
+        purpose — the visitor's next utterance falls through to the LLM as
+        ordinary speech with no sign a name-ask was ever pending."""
+        if self.awaiting:
+            log.info("[INTRO] identity-dialog gate closed with name exchange "
+                     "pending -> silent drop")
+            self._pending_capture = None
+            self._pending_confirm = None
+
     async def ask_name(self, unknown_info) -> None:
         """Ask an unknown speaker for their name, then await it next utterance."""
         known_names = [ks.name for ks in self._spk._known_speakers]

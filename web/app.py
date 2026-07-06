@@ -1282,6 +1282,38 @@ async def set_situation(payload: dict | None = None):
     }
 
 
+@app.get("/api/identity_dialogs")
+async def get_identity_dialogs():
+    """Read the EXPO identity-dialog gate. `allowed` is the live derived
+    verdict (regime + override); `override` is the supervised-enroll
+    force-on knob, meaningful only under a crowd regime."""
+    from persistence import runtime_toggles
+    return {
+        "allowed": runtime_toggles.identity_dialogs_allowed(),
+        "override": bool(runtime_toggles.get("identity_dialogs_override")),
+        "situation_regime": runtime_toggles.get("situation_regime"),
+    }
+
+
+@app.post("/api/identity_dialogs")
+async def set_identity_dialogs(payload: dict | None = None):
+    """Flip the supervised-enroll override live ({"enabled": bool} — the
+    standard toggle-POST contract). Persisted by runtime_toggles, read per
+    turn, so it applies to the next utterance without a restart. Turning it
+    on mid-show re-enables the whole identity-dialog class (enroll latches,
+    misID correction, introductions, face consent) despite the EXPO regime;
+    turning it off drops any dialog armed while it was on."""
+    from persistence import runtime_toggles
+    on = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("identity_dialogs_override", on)
+    return {
+        "ok": True,
+        "override": on,
+        "allowed": runtime_toggles.identity_dialogs_allowed(),
+        "situation_regime": runtime_toggles.get("situation_regime"),
+    }
+
+
 @app.get("/api/proactive")
 async def get_proactive():
     """Read the proactive-speech runtime toggle. `enabled` is the live operator

@@ -108,6 +108,19 @@ _DEFAULTS: dict = {
     # no line emitted (changes nothing until Dan sets it). Whitelist enforced
     # at the web/app.py /api/situation boundary, NOT here. Re-read per turn.
     "situation_regime": "",
+    # --- EXPO identity-dialog gate override (2026-07-06) ---------------------
+    # The identity-dialog CLASS (enroll latches, misID-correction protest,
+    # introductions name-ask, face auto-enroll consent — every multi-turn
+    # identity FSM that seizes turns and can end in a store write) is gated
+    # OFF when situation_regime is a crowd regime (see
+    # identity_dialogs_allowed() below): booth triggers are ordinary speech
+    # ("my name is Bob" = every self-introduction), the off-mic chain defeats
+    # the contradiction gate, and confirm-yes is an identity-MUTATION surface.
+    # At the show: mutation surfaces dark, recognition read-only. This
+    # override forces dialogs back ON under a crowd regime for a SUPERVISED
+    # enroll mid-show (webui-flippable live, read per turn). No effect when
+    # the regime is Shop ('') — dialogs are already allowed there.
+    "identity_dialogs_override": False,
     # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
     # All default-OFF / today's-behavior. Prototype — enable only after Dan's
     # live review. Read live per turn by presence.identity.IdentityFusion.
@@ -262,6 +275,33 @@ def get(key: str):
     """
     with _lock:
         return _load().get(key, _DEFAULTS.get(key))
+
+
+# Crowd regimes in which identity dialogs are gated. Mirrors
+# speaker/identifier.py CONTINUITY_DISABLED_REGIMES (same crowd rationale,
+# same legacy-value tolerance — the /api/situation whitelist is binary
+# ''/'EXPO' since 2026-07-05, but a stale on-disk 'PARTY' must still gate).
+IDENTITY_DIALOG_GATED_REGIMES = frozenset({"PARTY", "EXPO"})
+
+
+def identity_dialogs_allowed() -> bool:
+    """THE one gate for the identity-dialog class (Dan 2026-07-06).
+
+    True when multi-turn identity dialogs (enroll latches, misID-correction
+    protest, introductions name-ask, face auto-enroll consent) may start or
+    continue. False under a crowd regime unless the supervised-enroll
+    override is on. Gated behavior is FULLY SILENT: consumers skip their
+    detectors/triggers so the utterance falls through to the LLM as ordinary
+    speech — no deflection line, no signal the machinery exists.
+
+    Read live per call (like the regime itself) so a webui flip applies to
+    the very next turn without a restart. Consumers must also drop any
+    dialog state armed BEFORE the flip (latches, FSM pendings) — a latch
+    must not survive the flip.
+    """
+    if get("situation_regime") not in IDENTITY_DIALOG_GATED_REGIMES:
+        return True
+    return bool(get("identity_dialogs_override"))
 
 
 def set(key: str, value) -> None:
