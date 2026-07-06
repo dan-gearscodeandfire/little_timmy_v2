@@ -353,6 +353,15 @@ class SpeakerIdentifier:
         sync that used to RESURRECT a deleted row now retires it."""
         return self._id_map.retired()
 
+    def is_known_speaker(self, name: str) -> bool:
+        """True when ``name`` is live in THIS process's recognizer — loaded
+        voiceprints AND session-promoted (T1) speakers the on-disk IdMap
+        won't see until restart. Zero I/O; the per-turn membership check
+        (code review 7-06: enrolled_speaker_ids() was an eager file read
+        every turn AND gated the correction path off for exactly the
+        freshly-introduced, likeliest-misheard identities)."""
+        return any(ks.name == name for ks in self._known_speakers)
+
     def load_voiceprints(self):
         """Load every ``*_wespeaker.npy`` in VOICEPRINT_DIR.
 
@@ -649,6 +658,15 @@ class SpeakerIdentifier:
             return False
         if any(ks.name == clean for ks in self._known_speakers):
             log.warning("Refusing to assign name %r: already a known speaker", clean)
+            return False
+        # Tombstone guard (review 7-06): retirement REMOVES the name from
+        # _known_speakers, so without this check the introductions path was
+        # the one door left open for re-minting a retired identity — and its
+        # fresh .npy would block the archived original at revive time
+        # ('exists_skipped').
+        if self._id_map.is_retired(clean):
+            log.warning("Refusing to assign name %r: identity is retired "
+                        "(revive_identity to restore)", clean)
             return False
 
         for us in self._unknown_speakers:

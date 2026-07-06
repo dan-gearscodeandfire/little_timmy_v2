@@ -422,3 +422,59 @@ def test_correction_bare_denial_weak_claim_goes_to_name_ask():
     r = detect_identity_correction(
         "That's not my name, I'm Flynn.", "dan", True)
     assert r.matched and r.name is None and r.denied == "dan"
+
+
+# ---- 2026-07-06 code-review fixes (post-live-test) ----
+
+def test_correction_weak_denial_unpunctuated_stt():
+    # Review 7-06: greedy span swallowed the claim — "i'm not walter i'm
+    # flynn" (STT drops commas) captured 'walter i'm flynn' != spk and the
+    # flagship protest was silently dropped. Weak frame now matches the
+    # attribution directly.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("i'm not walter i'm flynn", "walter", True)
+    assert r.matched and r.name == "flynn" and r.denied == "walter"
+    # Punctuated variant keeps working.
+    r2 = detect_identity_correction("I'm not Walter, I'm Flynn", "walter", True)
+    assert r2.matched and r2.name == "flynn" and r2.denied == "walter"
+
+
+def test_correction_weak_denial_multiword_attribution():
+    # Direct-attribution matching handles multi-word canonical names a
+    # captured span (greedy OR lazy) could not.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "I'm not Dan the Barbarian, I'm Flynn", "dan_the_barbarian", True)
+    assert r.matched and r.name == "flynn" and r.denied == "dan_the_barbarian"
+
+
+def test_correction_names_not_contraction():
+    # Review 7-06: "name's not" was missing from the strong denial lexicon
+    # and the first-match-only claim walk never reached "my name is flynn".
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "My name's not Walter, my name is Flynn", "walter", True)
+    assert r.matched and r.name == "flynn" and r.denied == "walter"
+    r2 = detect_identity_correction(
+        "no my names not walter my name is flynn", "walter", True)
+    assert r2.matched and r2.name == "flynn" and r2.denied == "walter"
+
+
+def test_correction_non_name_predicates_inert():
+    # Review 7-06: predicates in name position hijacked the FSM as claims
+    # ('hard_to_pronounce', 'on_the_whiteboard_behind', denied='important').
+    from conversation.enroll_intent import detect_identity_correction
+    for utt in ("my name is hard to pronounce",
+                "my name is on the whiteboard behind you",
+                "my name is not important, just turn the lights on",
+                "my name is kind of long",
+                "my name is spelled with two n's"):
+        r = detect_identity_correction(utt, "dan", True)
+        assert not r.matched, (utt, r)
+
+
+def test_correction_real_claims_survive_stoplist():
+    # The stoplist must trim trailing filler without killing the name.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("My name is Flynn actually", "dan", True)
+    assert r.matched and r.name == "flynn"

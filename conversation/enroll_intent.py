@@ -75,6 +75,16 @@ _NON_NAMES = frozenset({
     "and", "or", "but", "with", "plus", "also", "is", "are", "was", "were",
     "the", "a", "an", "not", "never", "telling", "mind", "nothing", "nobody",
     "none", "guys", "everyone", "everybody",
+    # prepositions/predicates in name position — "my name is hard to
+    # pronounce" / "on the whiteboard" / "not important" hijacked the
+    # correction FSM as claims 'hard_to_pronounce' etc. (review 7-06)
+    "to", "on", "in", "of", "at", "for", "from", "by", "about", "behind",
+    "under", "over", "off", "out", "up", "down", "into", "onto", "written",
+    "hard", "easy", "difficult", "weird", "funny", "strange", "unusual",
+    "common", "important", "irrelevant", "secret", "private", "long",
+    "short", "simple", "complicated", "spelled", "spelt", "pronounced",
+    "supposed", "gonna", "going", "trying", "actually", "really", "kind",
+    "sort", "like", "still", "already", "only", "even",
 })
 
 # Filler words that ARE plausible names ("Buddy"): rejected in bare replies
@@ -388,13 +398,26 @@ _DENY_SPAN = rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,3}}?)"
 # when X matches the attributed speaker; the "my name is not X" / "stop
 # calling me X" frames are unambiguous identity statements and count as-is.
 _DENY_NAMED_STRONG_RES = [
-    re.compile(rf"\bmy\s+name\s+(?:is\s+not|isn'?t|ain'?t|was\s+not|wasn'?t)"
-               rf"\s+{_DENY_SPAN}\b", re.IGNORECASE),
+    # name(?:s|'s)? absorbs the STT contraction/flattening ("my name's not
+    # walter", "my names not walter") — review 7-06: the contraction miss
+    # dropped the whole protest, even punctuated.
+    re.compile(rf"\bmy\s+name(?:s|'s)?\s+(?:is\s+not|isn'?t|ain'?t"
+               rf"|was\s+not|wasn'?t|not)\s+{_DENY_SPAN}\b", re.IGNORECASE),
     re.compile(rf"\b(?:stop|quit|don'?t)\s+call(?:ing)?\s+me\s+{_DENY_SPAN}\b",
                re.IGNORECASE),
 ]
-_DENY_NAMED_WEAK_RE = re.compile(
-    rf"\bI(?:'m|\s+am)\s+not\s+{_NAME_SPAN}\b", re.IGNORECASE)
+
+
+def _deny_weak_re(spk: str) -> re.Pattern:
+    """Compile "I'm not <attributed name>" for the CURRENT speaker. The frame
+    only ever counts when the denied name equals the attribution, so matching
+    the attribution directly sidesteps span-capture pitfalls entirely: the
+    greedy _NAME_SPAN swallowed the claim in unpunctuated STT ("i'm not
+    walter i'm flynn" -> capture 'walter i'm flynn' != spk -> protest
+    silently dropped, review 7-06), and a lazy span would under-capture
+    multi-word attributions ("dan the barbarian" -> 'dan' != spk)."""
+    toks = r"\s+".join(re.escape(t) for t in spk.split("_") if t)
+    return re.compile(rf"\bI(?:'m|\s+am)\s+not\s+{toks}\b", re.IGNORECASE)
 # Frameless denials. No bare "wrong name" — too loose outside this frame.
 _DENY_BARE_RE = re.compile(
     r"\bthat(?:'s|\s+is)\s+not\s+my\s+name\b|"
@@ -411,8 +434,10 @@ def _claim_name(text: str, allow_weak: bool) -> Optional[str]:
     for pat, strong in _NAME_PATTERNS:
         if not strong and not allow_weak:
             continue
-        m = pat.search(text)
-        if m:
+        # ALL matches, not just the first: in "no my names not walter my
+        # name is flynn" the first "my name(s)..." hit cleans to None and
+        # the claim lives at the SECOND match of the same pattern (7-06).
+        for m in pat.finditer(text):
             cand = _clean_name_tokens(m.group(1), explicit=strong)
             if cand:
                 return cand
@@ -455,13 +480,11 @@ def detect_identity_correction(
                 denied = cand
                 stripped = stripped[:m.start()] + " , " + stripped[m.end():]
                 break
-    if denied is None:
-        m = _DENY_NAMED_WEAK_RE.search(stripped)
+    if denied is None and spk:
+        m = _deny_weak_re(spk).search(stripped)
         if m:
-            cand = _clean_name_tokens(m.group(1))
-            if cand and spk and cand == spk:
-                denied = cand
-                stripped = stripped[:m.start()] + " , " + stripped[m.end():]
+            denied = spk
+            stripped = stripped[:m.start()] + " , " + stripped[m.end():]
     bare_denial = bool(_DENY_BARE_RE.search(stripped))
     has_denial = denied is not None or bare_denial
 

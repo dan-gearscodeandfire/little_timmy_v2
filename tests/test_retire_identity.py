@@ -113,9 +113,13 @@ def test_retire_unknown_not_found(stores, tmp_path):
 def test_retire_exact_suffix_never_sweeps_prefix_names(stores, tmp_path):
     """`dan_the_barbarian`'s files must survive retiring a hypothetical `dan_the`."""
     id_map, voice, face = stores
-    for nm in ("dan_the", "dan_the_barbarian"):
+    # Deterministic, ACOUSTICALLY DISTANT seeds (1 vs 3: d≈1.0): hash() is
+    # per-process randomized, and a mod-100 collision gave both names the
+    # SAME embedding — the second enroll then flaked out as a lookalike
+    # refusal (d=0.000, review 7-06).
+    for seed, nm in ((1, "dan_the"), (3, "dan_the_barbarian")):
         commit_identity_stores(nm, id_map=id_map, voice_store=voice,
-                               voice_embeddings=[_unit(hash(nm) % 100)])
+                               voice_embeddings=[_unit(seed)])
     retire_identity_stores("dan_the", id_map=id_map, voice_store=voice,
                            face_store=face, trash_root=tmp_path / "trash")
     assert not voice.path_for("dan_the").exists()
@@ -245,3 +249,111 @@ def test_ledger_forget_survives_reload(tmp_path):
     assert not any(p["name"] == "sarah" for p in led2.current_state()["present"])
     # Forgetting a missing record is a clean no-op.
     assert led.forget("sarah") is False
+
+
+# ── 2026-07-06 code-review fixes ─────────────────────────────────────────────
+
+def test_id_map_read_tolerates_malformed_entries(stores):
+    """Review 7-06: one malformed tombstone (hand edit, partial write) made
+    read() return {} — every active binding AND every tombstone silently
+    gone, ids re-allocated at next startup. Decode per entry instead."""
+    import json
+    id_map, voice, face = stores
+    id_map.path.write_text(json.dumps({
+        "flynn": 23,
+        "bad_active": "not-an-int",
+        "_next_id": 24,
+        "_retired": {
+            "john": {"id": 7, "at": 123.0},
+            "broken": {"at": 456.0},          # missing 'id'
+        },
+    }))
+    m = id_map.read()
+    assert m["flynn"] == 23                    # actives survive
+    assert "bad_active" not in m               # only the bad entry dropped
+    assert m["_retired"]["john"]["id"] == 7    # good tombstones survive
+    assert "broken" not in m["_retired"]       # only the bad tombstone dropped
+    assert id_map.is_retired("john")
+
+
+def test_partial_archive_failure_rolls_back(enrolled, tmp_path, monkeypatch):
+    """Review 7-06: a mid-loop rename failure left files SPLIT between the
+    live dirs and trash (voice archived, face live) with no tombstone, while
+    the log claimed 'stores unchanged'. Now the partial archive rolls back."""
+    (id_map, voice, face), sid = enrolled
+    trash = tmp_path / "trash"
+
+    real_rename = Path.rename
+    fails = {"n": 0}
+
+    def flaky(self, target):
+        # Fail the SECOND move INTO the archive; moves back out (the
+        # rollback) pass through untouched.
+        if str(trash) in str(target):
+            fails["n"] += 1
+            if fails["n"] >= 2:
+                raise PermissionError("disk says no")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", flaky)
+    res = retire_identity_stores("sarah", id_map=id_map, voice_store=voice,
+                                 face_store=face, trash_root=trash, at=1000.0)
+    assert res.status == "error"
+    # Both files back in the live stores, nothing stranded, no tombstone.
+    assert voice.path_for("sarah").exists()
+    assert face.path_for("sarah").exists()
+    assert res.files_moved == []
+    assert not any("rollback_incomplete" in w for w in res.warnings)
+    assert not id_map.is_retired("sarah")
+    assert "sarah" in id_map.enrolled_ids()
+
+
+def test_refused_retire_restores_live_recognition(stores):
+    """Review 7-06: retire_identity purged the live in-memory recognizers
+    BEFORE the store guards ran — a REFUSED retire (reserved name) left the
+    running process blind to the persona until restart."""
+    import asyncio
+    from types import SimpleNamespace
+    from presence.identity_commit import retire_identity
+
+    id_map, voice, face = stores
+    spk = SimpleNamespace(
+        _known_speakers=[SimpleNamespace(name="dan", speaker_id=1)],
+        _recent_confident_embs={"dan": [np.zeros(8, dtype=np.float32)]},
+        _drift_buffers={"dan": ["buf"]},
+        _active_reenrollment={"name": "dan"},
+        _store=voice,
+    )
+    fid = SimpleNamespace(_known=[SimpleNamespace(name="dan", speaker_id=1)],
+                          _id_map=id_map, _store=face)
+
+    res = asyncio.run(retire_identity(
+        "dan", speaker_identifier=spk, face_identifier=fid, db_sync=False))
+    assert res.status == "reserved"
+    # Live recognition fully restored — the refusal must be a no-op.
+    assert [ks.name for ks in spk._known_speakers] == ["dan"]
+    assert [kf.name for kf in fid._known] == ["dan"]
+    assert "dan" in spk._recent_confident_embs
+    assert "dan" in spk._drift_buffers
+    assert spk._active_reenrollment == {"name": "dan"}
+
+
+def test_lookalike_scan_ignores_stray_retired_file(enrolled, tmp_path):
+    """Review 7-06: a stray/hand-restored prototype file for a RETIRED name
+    still participated in the lookalike scan, so an enroll could be refused
+    in a deleted persona's name (the loaders already skip this class)."""
+    import shutil
+    (id_map, voice, face), sid = enrolled
+    trash = tmp_path / "trash"
+    res = retire_identity_stores("sarah", id_map=id_map, voice_store=voice,
+                                 face_store=face, trash_root=trash, at=1000.0)
+    assert res.ok
+    # Hand-restore the archived voice file (the documented bad habit).
+    shutil.copy(trash / "sarah.1000" / "sarah_wespeaker.npy",
+                voice.path_for("sarah"))
+    # New name, sarah's exact embeddings: must NOT refuse as lookalike-of-
+    # sarah (she's retired); with no other identity close, it enrolls.
+    res2 = commit_identity_stores(
+        "walter", id_map=id_map, voice_store=voice, face_store=face,
+        voice_embeddings=[_unit(i) for i in range(3)])
+    assert res2.status == "ok", (res2.status, res2.error)

@@ -429,7 +429,8 @@ class Orchestrator:
             )
 
     async def _gather_enroll_samples(
-            self, speaker_name: str, scope: str) -> tuple[list, list | None]:
+            self, speaker_name: str, scope: str,
+            newest_voice_only: bool = False) -> tuple[list, list | None]:
         """Resolve (face_crops, voice_embs) for ``speaker_name`` per scope.
 
         Face: the passively co-sampled sole-face crops, with a live grab
@@ -455,6 +456,14 @@ class Orchestrator:
                     voice_embs = list(us.embeddings)
             else:
                 recent = self.speaker_id_module.recent_embeddings_for(speaker_name)
+                # The rolling buffer is per-NAME, session-long: after a misID
+                # it holds the real owner's earlier embeddings alongside this
+                # turn's (code review 7-06). Correction snapshots take only
+                # the newest entry — appended by THIS turn's identify, so it
+                # is the protester's own voice (and still the rich protest
+                # sentence, C2).
+                if newest_voice_only and recent:
+                    recent = recent[-1:]
                 if recent:
                     voice_embs = recent
         return face_crops, voice_embs
@@ -588,6 +597,14 @@ class Orchestrator:
         if res.status == "invalid_name":
             await self._speak_direct(
                 f"I can't enroll anyone as {disp} — pick another name.")
+            return
+        if res.status == "retired_name":
+            # Tombstoned identity (code review 7-06): the generic sensor
+            # apology coached an impossible retry — the refusal is by name,
+            # not by sample quality, and only revive_identity clears it.
+            await self._speak_direct(
+                f"The name {disp} is retired on my end — Dan has to bring "
+                "it back before I can use it.")
             return
         if not (res.voice_committed or res.face_committed):
             await self._speak_direct(
@@ -964,9 +981,8 @@ class Orchestrator:
         if _unified:
             corr = detect_identity_correction(
                 user_text, speaker_name,
-                speaker_enrolled=(
-                    speaker_name in
-                    self.speaker_id_module.enrolled_speaker_ids()))
+                speaker_enrolled=self.speaker_id_module.is_known_speaker(
+                    speaker_name))
             if corr.matched:
                 log.info("[ENROLL] misID correction: denied=%s claim=%s "
                          "(attributed %s)", corr.denied, corr.name,
@@ -974,9 +990,12 @@ class Orchestrator:
                 # Snapshot THIS turn (the protest sentence is the rich,
                 # reliably-voiced turn — C2): its embeddings are both the
                 # confirm-time commit samples and, on a known-Y augment,
-                # the effective re-bind.
+                # the effective re-bind. newest_voice_only: the rolling
+                # buffer under the DENIED name may hold the real owner's
+                # earlier voice (code review 7-06) — only this turn's entry
+                # is provably the protester's.
                 _crops, _embs = await self._gather_enroll_samples(
-                    speaker_name, "voice")
+                    speaker_name, "voice", newest_voice_only=True)
                 _snap = {"scope": "voice", "speaker_key": speaker_name,
                          "voice_embs": _embs, "face_crops": _crops,
                          "correction": True,

@@ -131,13 +131,18 @@ def _face_store(face_dir: Path | None = None) -> PrototypeFileStore:
 
 
 def _nearest_identity(store: PrototypeFileStore, embeddings: list,
-                      exclude: str) -> tuple[str, float] | None:
-    """Scan every enrolled identity in ``store`` (except ``exclude``) and
-    return (name, best_min_cosine_distance) for the closest one, or None if
-    the store has no other identities. Cheap: ~20 small .npy loads."""
+                      exclude: str,
+                      retired: frozenset = frozenset(),
+                      ) -> tuple[str, float] | None:
+    """Scan every enrolled identity in ``store`` (except ``exclude`` and any
+    ``retired`` tombstoned name — a stray/hand-restored file must not refuse
+    an enroll in a deleted persona's name, review 7-06; the loaders skip the
+    same class) and return (name, best_min_cosine_distance) for the closest
+    one, or None if the store has no other identities. Cheap: ~20 small
+    .npy loads."""
     best: tuple[str, float] | None = None
     for nm, path in store.iter_prototype_files():
-        if nm == exclude:
+        if nm == exclude or nm in retired:
             continue
         try:
             protos = store.load(path)
@@ -157,17 +162,19 @@ def find_lookalike(name: str, v_embs: list, f_embs: list, *,
                    face_store: PrototypeFileStore | None,
                    voice_thr: float = KNOWN_SPEAKER_THRESHOLD,
                    face_thr: float = KNOWN_FACE_THRESHOLD,
+                   retired: frozenset = frozenset(),
                    ) -> tuple[str, float] | None:
     """Return (existing_name, distance) if any supplied sample matches an
     EXISTING identity other than ``name`` below its modality threshold, else
-    None. Shared by the core (hermetic refusal) and the live wrapper (which
+    None. ``retired`` tombstoned names are excluded from the scan (review
+    7-06). Shared by the core (hermetic refusal) and the live wrapper (which
     must refuse BEFORE the S2 id/DB pre-allocation, or a refused new name
     still leaks into the id-map and resurrects at every startup sync)."""
     for embs, store, thr in ((v_embs, voice_store, voice_thr),
                              (f_embs, face_store, face_thr)):
         if not embs or store is None:
             continue
-        near = _nearest_identity(store, embs, exclude=name)
+        near = _nearest_identity(store, embs, exclude=name, retired=retired)
         if near is not None and near[1] < thr:
             return near
     return None
@@ -314,7 +321,8 @@ def commit_identity_stores(
         hit = find_lookalike(
             clean, scan_v, scan_f,
             voice_store=voice_store, face_store=face_store,
-            voice_thr=voice_match_thr, face_thr=face_match_thr) \
+            voice_thr=voice_match_thr, face_thr=face_match_thr,
+            retired=frozenset(id_map.retired())) \
             if (scan_v or scan_f) else None
         if hit is not None:
             res.status = "lookalike"
@@ -473,7 +481,8 @@ async def commit_identity(
             clean, _v, _f, voice_store, face_store)
         hit = find_lookalike(
             clean, scan_v, scan_f, voice_store=voice_store,
-            face_store=face_store, face_thr=accept_threshold()) \
+            face_store=face_store, face_thr=accept_threshold(),
+            retired=frozenset(id_map.retired())) \
             if (scan_v or scan_f) else None
         if hit is not None:
             res = CommitResult(name=clean, status="lookalike",
@@ -623,20 +632,45 @@ def retire_identity_stores(
             res.warnings.append("no_trash_root:files_left_in_place")
         else:
             dest = dest_root / f"{clean}.{int(ts)}"
+            moved: list[tuple[Path, Path]] = []
             try:
                 dest.mkdir(parents=True, exist_ok=True)
                 for p in files:
                     target = dest / p.name
                     p.rename(target)
+                    moved.append((p, target))
                     res.files_moved.append(p.name)
                 res.trash_dir = str(dest)
                 log.info("[RETIRE] archived %d file(s) for %s -> %s",
                          len(res.files_moved), clean, dest)
             except Exception as e:
+                # Roll the partial archive back (review 7-06): a mid-loop
+                # failure used to leave files split between the live dirs
+                # and trash — voice archived, face live — with no tombstone,
+                # while the log claimed 'stores unchanged'.
+                stuck: list[str] = []
+                for orig, target in moved:
+                    try:
+                        target.rename(orig)
+                    except Exception:
+                        stuck.append(target.name)
                 res.status = "error"
                 res.error = f"archive failed: {e}"
-                log.warning("[RETIRE] archive failed for %s: %s (aborting "
-                            "before tombstone; stores unchanged)", clean, e)
+                if stuck:
+                    res.trash_dir = str(dest)
+                    res.files_moved = [n for n in res.files_moved
+                                       if n in stuck]
+                    res.warnings.append(
+                        "rollback_incomplete:" + ",".join(stuck))
+                    log.warning("[RETIRE] archive failed for %s: %s — "
+                                "ROLLBACK INCOMPLETE, %d file(s) stranded "
+                                "in %s (no tombstone written)",
+                                clean, e, len(stuck), dest)
+                else:
+                    res.files_moved.clear()
+                    log.warning("[RETIRE] archive failed for %s: %s "
+                                "(rolled back; stores unchanged, no "
+                                "tombstone)", clean, e)
                 return res
 
     if sid is not None and not already:
@@ -718,15 +752,24 @@ async def retire_identity(
     face_store = face_identifier._store
 
     # (1) In-memory first — recognition stops immediately, and a concurrent
-    # identify() can't re-observe the persona mid-retire.
+    # identify() can't re-observe the persona mid-retire. Capture what we
+    # remove: the guards (reserved/not_found/archive-error) live in the
+    # store core below, and a REFUSED retire must put recognition back —
+    # review 7-06: retire('dan') was refused as reserved yet left the live
+    # process blind to Dan until restart.
+    _removed_ks = [ks for ks in speaker_identifier._known_speakers
+                   if ks.name == clean]
+    _removed_kf = [kf for kf in face_identifier._known if kf.name == clean]
     speaker_identifier._known_speakers = [
         ks for ks in speaker_identifier._known_speakers if ks.name != clean]
     face_identifier._known = [
         kf for kf in face_identifier._known if kf.name != clean]
-    speaker_identifier._recent_confident_embs.pop(clean, None)
-    speaker_identifier._drift_buffers.pop(clean, None)
+    _removed_embs = speaker_identifier._recent_confident_embs.pop(clean, None)
+    _removed_drift = speaker_identifier._drift_buffers.pop(clean, None)
+    _removed_reenroll = None
     active_re = speaker_identifier._active_reenrollment
     if active_re and active_re.get("name") == clean:
+        _removed_reenroll = active_re
         speaker_identifier._active_reenrollment = None
 
     # (2) Stores: archive + tombstone.
@@ -735,6 +778,15 @@ async def retire_identity(
         clean, id_map=id_map, voice_store=voice_store, face_store=face_store,
         trash_root=trash_root)
     if not res.ok:
+        # Refused or failed — restore live recognition to match the stores.
+        speaker_identifier._known_speakers.extend(_removed_ks)
+        face_identifier._known.extend(_removed_kf)
+        if _removed_embs is not None:
+            speaker_identifier._recent_confident_embs[clean] = _removed_embs
+        if _removed_drift is not None:
+            speaker_identifier._drift_buffers[clean] = _removed_drift
+        if _removed_reenroll is not None:
+            speaker_identifier._active_reenrollment = _removed_reenroll
         return res
 
     # (3) Postgres: mark retired (facts/memories FKs stay intact as history).

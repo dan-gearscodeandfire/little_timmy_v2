@@ -223,13 +223,29 @@ class IdMap:
                 if k == self._NEXT_KEY:
                     out[k] = int(v)
                 elif k == self._RETIRED_KEY:
-                    out[k] = {
-                        str(n).lower(): {"id": int(info["id"]),
-                                         "at": float(info.get("at", 0.0))}
-                        for n, info in dict(v).items()
-                    }
+                    # Decode tombstones PER ENTRY (review 7-06): one
+                    # malformed entry (hand edit, partial write) used to
+                    # throw into the whole-file except and return {} —
+                    # every active binding AND every tombstone silently
+                    # gone, ids re-allocated at next startup.
+                    tombs = {}
+                    for n, info in dict(v).items():
+                        try:
+                            tombs[str(n).lower()] = {
+                                "id": int(info["id"]),
+                                "at": float(info.get("at", 0.0))}
+                        except Exception as te:
+                            log.warning(
+                                "Skipping malformed tombstone %r in %s: %s",
+                                n, self.path.name, te)
+                    out[k] = tombs
                 else:
-                    out[k.lower()] = int(v)
+                    try:
+                        out[k.lower()] = int(v)
+                    except Exception as ae:
+                        log.warning(
+                            "Skipping malformed id-map entry %r in %s: %s",
+                            k, self.path.name, ae)
             return out
         except Exception as e:
             log.warning("Failed to read %s: %s; treating as empty", self.path.name, e)

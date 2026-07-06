@@ -73,12 +73,21 @@ def _pi_scrub(name: str) -> None:
     try:
         listing = requests.get(f"{PI_BASE}/face_db/list", verify=False,
                                timeout=10).json()
-        names = listing.get("names") or list(
-            (listing.get("enrolled") or {}).keys())
-        if name not in names:
+        # Live payload is {"enrolled": [names], "count": N} — a LIST, as
+        # enroll_face_remote.cmd_list already parses it. The dict assumption
+        # here raised AttributeError into the broad except below, so every
+        # --pi scrub silently no-oped (review 7-06, verified against the Pi).
+        enrolled = listing.get("names") or listing.get("enrolled") or []
+        names = list(enrolled.keys()) if isinstance(enrolled, dict) \
+            else list(enrolled)
+        # Pi enrollment preserves case ("Thea"); match canonically but
+        # delete the name AS STORED.
+        stored = next((str(n) for n in names
+                       if str(n).lower() == name.lower()), None)
+        if stored is None:
             print(f"[pi] {name!r} not in Pi face_db — nothing to scrub")
             return
-        r = requests.post(f"{PI_BASE}/face_db/delete", json={"name": name},
+        r = requests.post(f"{PI_BASE}/face_db/delete", json={"name": stored},
                           verify=False, timeout=10)
         r.raise_for_status()
         print(f"[pi] deleted {name!r} from Pi face_db")
