@@ -48,7 +48,8 @@ from web.app import (app, init as web_init, broadcast_event, update_metrics,
                      record_turn_stats, latency_stats_snapshot)
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
-from conversation.enroll_intent import detect_enroll_intent, detect_identity_correction
+from conversation.enroll_intent import (
+    detect_enroll_intent, detect_identity_correction, detect_self_intro)
 from presence.cosample import CoSampleBuffer
 from conversation import tool_router
 from vision.supervisor import BehaviorSupervisor
@@ -60,6 +61,7 @@ from presence import (
     FaceHintStreak,
     LookAtPolicy,
 )
+from presence import anchor
 from presence.face_enroller import FaceEnroller
 from presence.new_face_trigger import NewFaceTrigger, TriggerConfig
 from vision.face_remote import RemoteFaceClient
@@ -161,11 +163,21 @@ class Orchestrator:
             on_event=broadcast_event,
         )
 
+        # Phase B: passive dual-modality co-sampling. Buffers the SOLE in-frame
+        # face crop each speaking turn (keyed by the turn's speaker) so a later
+        # "enroll me" — or a confirmed name-tell (2026-07-06) — can bind the
+        # face that has been talking without a separate capture dialog.
+        # Bounded ring; crops embed only at commit. Consumed by
+        # _handle_unified_enroll and Introductions._maybe_commit_face.
+        # (Constructed before Introductions, which takes it.)
+        self._cosample = CoSampleBuffer()
+
         # The "what's your name?" sub-dialog owns its own cross-turn state and
         # speaks via the turn's say(). The doorway consults it each turn.
         self._introductions = Introductions(
             speaker_id_module=self.speaker_id_module,
             turn=self._turn,
+            cosample=self._cosample,
         )
         # When the name-ask was last armed. Introductions has no expiry of
         # its own, so _dialog_owns_turn bounds its term with this stamp
@@ -195,12 +207,6 @@ class Orchestrator:
             trigger=NewFaceTrigger(TriggerConfig(), knobs=runtime_toggles.get),
         )
 
-        # Phase B: passive dual-modality co-sampling. Buffers the SOLE in-frame
-        # face crop each speaking turn (keyed by the turn's speaker) so a later
-        # "enroll me" can bind the face that has been talking without a separate
-        # capture dialog. Bounded ring; crops embed only at commit. Consumed by
-        # _handle_unified_enroll when the unified-enroll flag is on.
-        self._cosample = CoSampleBuffer()
         # A two-turn latch: armed when the user says "enroll me" without a
         # name, so the next turn's name completes the enroll. Dict while
         # waiting, None otherwise:
@@ -815,7 +821,17 @@ class Orchestrator:
         # the blocks below are skipped wholesale so the utterance falls
         # through to the LLM as ordinary speech. Read live per turn, same as
         # _unified. See runtime_toggles.identity_dialogs_allowed().
-        _dialogs_ok = runtime_toggles.identity_dialogs_allowed()
+        #
+        # LED-mic anchor split (Dan 2026-07-06, second ruling): a fresh anchor
+        # (lit mic in a visitor's hand — presence/anchor.py) un-darks the
+        # SPEECH identity dialogs for the mic-holder (_dialogs_ok), but NOT
+        # the face-consent FSM (_consent_ok stays pure regime+override):
+        # mic-in-hand is IMPLIED consent, so the anchored face is stored via
+        # the cosample->commit path on the name-tell — offering a consent
+        # dialog whose answer changes nothing would be noise. No anchor (or
+        # feature off) -> both predicates are identical to the shipped gate.
+        _consent_ok = runtime_toggles.identity_dialogs_allowed()
+        _dialogs_ok = _consent_ok or anchor.gate_disjunct()
 
         # Latch lifecycle guards (code review C4): expire stale latches (TTL —
         # _enroll_latch_pending clears them as a side effect), and clear both
@@ -942,10 +958,12 @@ class Orchestrator:
         # "yes", so consent replies are necessarily long ("yes, you can remember
         # my face") and keyword-laden — exactly what trips detect_enroll_intent.
         if self._face_enroller.awaiting:
-            if not _dialogs_ok:
+            if not _consent_ok:
                 # Identity-dialog gate closed with a consent dialog armed
                 # pre-flip: drop it silently and let this turn fall through
-                # to the normal pipeline as ordinary speech.
+                # to the normal pipeline as ordinary speech. Keyed on
+                # _consent_ok, NOT _dialogs_ok — the LED anchor never
+                # un-darks the consent FSM (implied consent).
                 self._face_enroller.drop_gated()
             else:
                 ae = await self._face_enroller.handle(user_text, speaker_name)
@@ -1039,6 +1057,26 @@ class Orchestrator:
                     await self._speak_direct(
                         "My mistake — what name should I go with? "
                         "Say 'my name is', then the name.")
+                return
+
+        # Passive self-intro (LED-mic anchor, 2026-07-06): an UNKNOWN speaker
+        # volunteering "my name is Flynn" arms the introductions confirm flow
+        # without an ask. Runs AFTER enroll keywords and misID (both return
+        # on match, so they keep priority); enrolled speakers never reach it
+        # (unknown_ guard — a known speaker's bare claim is misID's turf).
+        # Toggle-gated (default OFF) + the same _dialogs_ok as the rest of
+        # the dialog class, so at EXPO it fires only for the anchored
+        # mic-holder.
+        if (_dialogs_ok and speaker_name.startswith("unknown_")
+                and not self._introductions.awaiting
+                and runtime_toggles.get("passive_self_intro_enabled")):
+            _intro_name = detect_self_intro(user_text)
+            if _intro_name:
+                log.info("[INTRO] passive self-intro: %r from %s",
+                         _intro_name, speaker_name)
+                await self._introductions.offer_confirm(
+                    speaker_name, _intro_name)
+                self._introductions_asked_ts = time.time()
                 return
 
         # --- Handle name solicitation for unknown speakers ---
@@ -1322,10 +1360,15 @@ class Orchestrator:
         # threaded from process_speech) because this is also the text-input /
         # injected-turn entry point. When closed, any dialog state armed
         # pre-flip is dropped SILENTLY and the turn proceeds as ordinary
-        # speech — a latch must not survive the flip.
-        _dialogs_ok = runtime_toggles.identity_dialogs_allowed()
+        # speech — a latch must not survive the flip. Same anchor split as
+        # the doorway: a fresh LED-mic anchor un-darks the speech dialogs
+        # (_dialogs_ok) but never the face-consent FSM (_consent_ok —
+        # mic-in-hand is implied consent, the offer would be noise).
+        _consent_ok = runtime_toggles.identity_dialogs_allowed()
+        _dialogs_ok = _consent_ok or anchor.gate_disjunct()
         if not _dialogs_ok:
             self._introductions.drop_pending()
+        if not _consent_ok:
             self._face_enroller.drop_gated()
 
         # --- Name-confirmation sub-dialog (Introductions owns the state) ---
@@ -1338,10 +1381,11 @@ class Orchestrator:
                 return
             speaker_name = intro.speaker_name
 
-            # --- Face auto-enroll consent dialog (FaceEnroller owns state) ---
-            # If we're mid-offer ("mind if I remember your face?"), this
-            # consumes the yes/no/name reply and speaks the follow-up; a no-op
-            # when not in flight.
+        # --- Face auto-enroll consent dialog (FaceEnroller owns state) ---
+        # If we're mid-offer ("mind if I remember your face?"), this
+        # consumes the yes/no/name reply and speaks the follow-up; a no-op
+        # when not in flight. Keyed on _consent_ok (see split above).
+        if _consent_ok:
             enroll_outcome = await self._face_enroller.handle(
                 user_text, speaker_name)
             if enroll_outcome.handled:
@@ -1414,8 +1458,14 @@ class Orchestrator:
         # voice name (temp_id for an unknown) so crops stay per-person. Cheap
         # (bounded ring, no embedding here) so we buffer even with the flag off,
         # keeping the buffer warm for the moment it's flipped on.
-        if face_obs is not None and face_obs.sole_face_crops:
-            self._cosample.add(speaker_name, list(face_obs.sole_face_crops))
+        # LED-mic anchor (2026-07-06): anchored_face_crops (the face directly
+        # above the lit mic — unambiguous even in a crowd, close-talk means
+        # the mic-holder IS this turn's speaker) win over the sole-face rule
+        # when present; the sole-face predicate stays intact for Shop.
+        if face_obs is not None:
+            _crops = face_obs.anchored_face_crops or face_obs.sole_face_crops
+            if _crops:
+                self._cosample.add(speaker_name, list(_crops))
 
         # --- Presence: voice + face fusion ---
         fusion_source = None
@@ -2130,6 +2180,9 @@ async def main():
                 # stable stranger is EVERY visitor — no new consent offers,
                 # and an offer armed pre-flip is dropped silently. Read per
                 # tick so a webui flip applies without a restart.
+                # Deliberately the PURE predicate (no anchor disjunct): the
+                # LED-mic anchor never un-darks the consent FSM — mic-in-hand
+                # is implied consent, stored via the name-tell commit instead.
                 if not runtime_toggles.identity_dialogs_allowed():
                     orch._face_enroller.drop_gated()
                     continue

@@ -121,6 +121,50 @@ _DEFAULTS: dict = {
     # enroll mid-show (webui-flippable live, read per turn). No effect when
     # the regime is Shop ('') — dialogs are already allowed there.
     "identity_dialogs_override": False,
+    # --- LED-mic anchor (2026-07-06, Dan's booth engagement token) ------------
+    # A green-LED handheld mic marks the person Timmy is engaged with at EXPO;
+    # the face directly above the lit LED is the speaker's. State (who/when)
+    # lives IN-PROCESS in presence/anchor.py — a restart wipes it back to the
+    # dark gate on purpose. These are just the live-tunable knobs.
+    # Master switch: gates the identity-dialog disjunct (anchor.gate_disjunct),
+    # anchored-crop selection, and the CV LED detector. Default OFF — every
+    # deploy is behavior-neutral until flipped at the booth.
+    "anchor_enabled": False,
+    # Freshness window (s): the anchor is "active" only while refreshed within
+    # this. A racked mic / occluded LED decays back to the dark gate.
+    "anchor_ttl_s": 30.0,
+    # Horizontal tolerance for "face directly above the LED", as a fraction of
+    # frame width. Two candidate faces inside the tolerance = ABSTAIN (never
+    # guess which face holds the mic — sole-face rule's ambiguity contract).
+    "anchor_x_tol_frac": 0.25,
+    # Name-tell writes the full triple (2026-07-06): when True, a confirmed
+    # introductions name-tell ALSO commits the co-sampled face crops through
+    # commit_identity (name<->voiceprint<->faceprint), closing the voice-only
+    # gap in the introductions path. At EXPO the crops are the LED-anchored
+    # face (implied consent, Dan's ruling); in Shop they're the sole-face
+    # crops. Default OFF — flip with the anchor at the booth (or in Shop to
+    # close the gap there too). Read live at the confirm; no restart.
+    "intro_face_commit_enabled": False,
+    # Passive self-intro (2026-07-06): an UNKNOWN speaker volunteering
+    # "my name is X" (framed only — never bare tokens or "I'm X") arms the
+    # introductions confirm flow without Timmy asking first. Runs AFTER the
+    # enroll-keyword and misID detectors (they win) and only when the
+    # identity dialogs are effectively allowed (regime/override/anchor).
+    # Default OFF. Read live per turn.
+    "passive_self_intro_enabled": False,
+    # CV green-LED detection knobs (presence/led_detect.py) — HSV mask +
+    # blob-size bounds, all live-tunable at the booth (lighting varies).
+    # OpenCV hue is 0-179; 40-85 spans green. The V floor is high on purpose:
+    # a LIT LED is one of the brightest things in frame. Area bounds are in
+    # px at /capture resolution — reject a green shirt (huge) and sensor
+    # speckle (tiny). Exactly ONE surviving blob anchors; zero or 2+ abstain
+    # (two green lights = no anchor, same ambiguity contract as the faces).
+    "anchor_led_h_lo": 40,
+    "anchor_led_h_hi": 85,
+    "anchor_led_s_min": 80,
+    "anchor_led_v_min": 200,
+    "anchor_led_min_area_px": 4,
+    "anchor_led_max_area_px": 400,
     # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
     # All default-OFF / today's-behavior. Prototype — enable only after Dan's
     # live review. Read live per turn by presence.identity.IdentityFusion.

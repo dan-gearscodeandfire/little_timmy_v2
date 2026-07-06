@@ -68,6 +68,10 @@ _NON_NAMES = frozenset({
     # verbs the bare-reply fallback can lead with ("leave it" -> 'leave',
     # "call me buddy" -> 'call' once the vocative frame is rejected — 7-05)
     "leave", "call",
+    # temporal fillers the "call me X" frame drags in once it doubles as a
+    # passive self-intro trigger ("call me later/back tomorrow" — 7-06)
+    "later", "soon", "tomorrow", "tonight", "today", "anytime", "whenever",
+    "sometime",
     # connectives/verbs: stop the multi-token span from fusing identities
     # ("I'm Dan and Sarah is here" must parse 'dan', not 'dan_and_sarah' —
     # code review C7) and from canonicalizing evasive replies ("not telling",
@@ -508,3 +512,38 @@ def detect_identity_correction(
     if has_denial:
         return CorrectionIntent(matched=True, denied=denied or (spk or None))
     return CorrectionIntent(matched=False)
+
+
+# --- Passive self-introduction (LED-mic anchor, 2026-07-06) -----------------
+# An UNKNOWN speaker volunteering their name ("my name is Flynn") feeds the
+# introductions confirm flow without Timmy having to ask first. Deliberately
+# NOT folded into detect_identity_correction: its bare-claim branch is
+# contractually scoped to CONTRADICTING an enrolled attribution (Dan 7-06 —
+# "fire on contradiction, not on every self-introduction"); unknown-speaker
+# self-intro is the Introductions FSM's turf. Framed names ONLY — no bare
+# tokens and no weak "I'm X" frame ("I'm tired" is the false-positive
+# vector). The caller gates on speaker_name.startswith("unknown_") and runs
+# detect_enroll_intent / detect_identity_correction FIRST (keywords and
+# denials win).
+_SELF_INTRO_PATTERNS = [
+    # "my name is X" / "my name's X" (strong: soft filler may lead)
+    (re.compile(rf"\bmy\s+name(?:\s+is|'?s)\s+{_NAME_SPAN}\b", re.IGNORECASE), True),
+    (re.compile(rf"\bcall\s+me\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
+    (re.compile(rf"\bI\s+go\s+by\s+{_NAME_SPAN}\b", re.IGNORECASE), True),
+]
+
+
+def detect_self_intro(text: str) -> Optional[str]:
+    """Canonical name from an unsolicited self-introduction, or None.
+
+    Negated frames fail safe through _clean_name_tokens ("my name is not
+    Walter" -> first token 'not' is a non-name -> None), so a denial never
+    reads as an intro even when the correction detector didn't run."""
+    if not text or _EVASIVE_RE.search(text):
+        return None
+    for pat, strong in _SELF_INTRO_PATTERNS:
+        for m in pat.finditer(text):
+            cand = _clean_name_tokens(m.group(1), explicit=strong)
+            if cand:
+                return cand
+    return None

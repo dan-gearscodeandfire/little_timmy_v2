@@ -17,6 +17,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from persistence import runtime_toggles
+
 log = logging.getLogger("timmy")
 
 _AFFIRMATIVE = ("yes", "yeah", "yep", "correct", "that's right",
@@ -37,9 +39,16 @@ class IntroOutcome:
 
 
 class Introductions:
-    def __init__(self, *, speaker_id_module, turn):
+    def __init__(self, *, speaker_id_module, turn, cosample=None, committer=None):
         self._spk = speaker_id_module
         self._turn = turn               # ConversationTurn, for .say()
+        # Three-way link on a name-tell (2026-07-06): the passively co-sampled
+        # face crops (CoSampleBuffer) + commit_identity turn a confirmed name
+        # into name<->voiceprint<->faceprint instead of voice-only. `committer`
+        # is injectable for tests; None -> lazy presence.identity_commit import
+        # at the confirm (keeps this module import-light).
+        self._cosample = cosample
+        self._committer = committer
         self._pending_capture: str | None = None          # temp_id awaiting a name
         self._pending_confirm: dict | None = None         # {"temp_id", "name"}
 
@@ -73,6 +82,16 @@ class Introductions:
         # Next utterance from this unknown triggers name capture.
         self._pending_capture = unknown_info.temp_id
 
+    async def offer_confirm(self, temp_id: str, name: str) -> None:
+        """Arm the confirm flow from a PASSIVE self-intro (2026-07-06): an
+        unknown speaker volunteered "my name is X" without being asked, so
+        skip the ask and go straight to the spoken confirm. The visitor's
+        "yes" then flows through the existing confirm branch in handle() —
+        assign_name, and (toggle-gated) the co-sampled face commit."""
+        self._pending_capture = None
+        self._pending_confirm = {"temp_id": temp_id, "name": name}
+        await self._say_confirm(name)
+
     async def handle(self, user_text: str, speaker_name: str) -> IntroOutcome:
         """Process a heard utterance against any in-progress name exchange."""
         # --- waiting for yes/no on a guessed name ---
@@ -80,10 +99,20 @@ class Introductions:
             lower = user_text.lower().strip().rstrip(".!?,")
             if any(w in lower for w in _AFFIRMATIVE):
                 name = self._pending_confirm["name"]
-                self._spk.assign_name(self._pending_confirm["temp_id"], name)
-                log.info("Confirmed name: %s for %s", name,
-                         self._pending_confirm["temp_id"])
+                temp_id = self._pending_confirm["temp_id"]
+                # assign_name's verdict is load-bearing (2026-07-06): a
+                # tombstoned / reserved / already-taken name returns False,
+                # and a refused name must NOT get a face committed under it.
+                ok = self._spk.assign_name(temp_id, name)
+                log.info("Confirmed name: %s for %s (assign ok=%s)",
+                         name, temp_id, ok)
                 self._pending_confirm = None
+                if ok:
+                    # Name-tell -> full triple: also bind the co-sampled face
+                    # crops (LED-anchored at EXPO — implied consent; sole-face
+                    # in Shop) so the name links voice AND face, not voice
+                    # only. Never blocks or breaks the promotion.
+                    await self._maybe_commit_face(temp_id, name)
                 # Promote the speaker and continue into a normal turn.
                 return IntroOutcome(handled=False, speaker_name=name)
             elif any(w in lower for w in _NEGATIVE):
@@ -123,6 +152,62 @@ class Introductions:
             self._pending_capture = None
 
         return IntroOutcome(handled=False, speaker_name=speaker_name)
+
+    async def _maybe_commit_face(self, temp_id: str, name: str) -> None:
+        """Bind co-sampled face crops to a just-confirmed name (the triple).
+
+        Fires only when the intro_face_commit_enabled toggle is on and the
+        cosample buffer holds crops for this speaker — buffered under the
+        temp_id before the promotion, or under the name after it. Errors and
+        refusals (commit_identity's mismatch/lookalike/tombstone guards) are
+        logged and swallowed: a failed face bind must never break the name
+        promotion that already happened."""
+        if not runtime_toggles.get("intro_face_commit_enabled"):
+            return
+        if self._cosample is None:
+            return
+        crops = (self._cosample.crops_for(temp_id)
+                 or self._cosample.crops_for(name))
+        if not crops:
+            log.info("[INTRO] no co-sampled crops for %s/%s — voice-only "
+                     "promotion", temp_id, name)
+            return
+        try:
+            committer = self._committer
+            if committer is None:
+                from presence.identity_commit import commit_identity
+                committer = commit_identity
+            res = await committer(name, face_crops=crops,
+                                  speaker_identifier=self._spk)
+            if getattr(res, "face_committed", False):
+                self._cosample.clear_speaker(temp_id)
+                self._cosample.clear_speaker(name)
+                # id split-brain sync (2026-07-06): assign_name minted a
+                # session-local _next_known_id(), but commit_identity just
+                # allocated the AUTHORITATIVE shared id (id-map + Postgres
+                # speakers row — the facts.speaker_id FK). Face-only commits
+                # skip identity_commit's _refresh_voice, so refresh the
+                # in-memory KnownSpeaker here or facts stored this session
+                # key off the wrong id.
+                sid = getattr(res, "speaker_id", None)
+                if sid is not None:
+                    for ks in self._spk._known_speakers:
+                        if ks.name == name and getattr(ks, "speaker_id",
+                                                       sid) != sid:
+                            log.info("[INTRO] speaker_id sync %s: %s -> %s",
+                                     name, ks.speaker_id, sid)
+                            ks.speaker_id = sid
+                            break
+                log.info("[INTRO] name-tell triple: %s face committed "
+                         "(id=%s, %d crops)", name,
+                         getattr(res, "speaker_id", None), len(crops))
+            else:
+                log.info("[INTRO] face commit declined for %s (status=%s) — "
+                         "voice-only promotion stands", name,
+                         getattr(res, "status", "?"))
+        except Exception:
+            log.exception("[INTRO] face commit failed for %s — voice-only "
+                          "promotion stands", name)
 
     async def _say_confirm(self, name: str) -> None:
         confirm_prompt = (

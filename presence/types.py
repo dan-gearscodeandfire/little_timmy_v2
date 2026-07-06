@@ -52,6 +52,14 @@ class FaceObservation:
     # unambiguously the speaker. Empty otherwise. Excluded from eq/repr (numpy
     # arrays + heavy) so FaceObservation stays a clean frozen value object.
     sole_face_crops: tuple = field(default=(), compare=False, repr=False)
+    # LED-mic anchor crops (2026-07-06): aligned 112x112 RGB crop(s) of the face
+    # the anchor geometry unambiguously selected this grab — the face directly
+    # above the lit mic LED (presence/anchor.pick_anchored_face; per-frame
+    # abstain on ambiguity). Populated only when the anchor is enabled+fresh and
+    # a frame produced an unambiguous pick; empty otherwise. Unlike
+    # sole_face_crops there is NO ==1-face requirement — the anchor is exactly
+    # what disambiguates a crowd. Wins over sole_face_crops at the cosample feed.
+    anchored_face_crops: tuple = field(default=(), compare=False, repr=False)
 
 
 @dataclass(frozen=True)

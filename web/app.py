@@ -1284,12 +1284,20 @@ async def set_situation(payload: dict | None = None):
 
 @app.get("/api/identity_dialogs")
 async def get_identity_dialogs():
-    """Read the EXPO identity-dialog gate. `allowed` is the live derived
-    verdict (regime + override); `override` is the supervised-enroll
-    force-on knob, meaningful only under a crowd regime."""
+    """Read the EXPO identity-dialog gate. `allowed` is the pure regime+
+    override verdict (also the face-consent FSM's gate); `effective_allowed`
+    ORs in the LED-mic anchor — the verdict the SPEECH identity dialogs
+    (introductions, misID correction, enroll intent) actually run on.
+    `override` is the supervised-enroll force-on knob, meaningful only
+    under a crowd regime."""
     from persistence import runtime_toggles
+    from presence import anchor
+    allowed = runtime_toggles.identity_dialogs_allowed()
+    anchor_ok = anchor.gate_disjunct()
     return {
-        "allowed": runtime_toggles.identity_dialogs_allowed(),
+        "allowed": allowed,
+        "anchor_active": anchor_ok,
+        "effective_allowed": allowed or anchor_ok,
         "override": bool(runtime_toggles.get("identity_dialogs_override")),
         "situation_regime": runtime_toggles.get("situation_regime"),
     }
@@ -1312,6 +1320,55 @@ async def set_identity_dialogs(payload: dict | None = None):
         "allowed": runtime_toggles.identity_dialogs_allowed(),
         "situation_regime": runtime_toggles.get("situation_regime"),
     }
+
+
+@app.get("/api/anchor")
+async def get_anchor():
+    """Read the LED-mic anchor: `active` is the live TTL-fresh verdict,
+    `enabled` the master toggle (both must hold for the gate disjunct).
+    State is in-process (presence/anchor.py) — a service restart reads
+    active=false, i.e. the dark gate, by design."""
+    from persistence import runtime_toggles
+    from presence import anchor
+    st = anchor.get_anchor()
+    return {
+        "enabled": bool(runtime_toggles.get("anchor_enabled")),
+        "active": anchor.anchor_active(),
+        "source": st.source if st else None,
+        "age_s": round(time.time() - st.captured_at, 1) if st else None,
+        "led_xy": list(st.led_xy) if st and st.led_xy else None,
+        "anchored_bbox": list(st.anchored_bbox) if st and st.anchored_bbox else None,
+        "ttl_s": (st.ttl_s if st and st.ttl_s is not None
+                  else float(runtime_toggles.get("anchor_ttl_s"))),
+    }
+
+
+@app.post("/api/anchor")
+async def set_anchor(payload: dict | None = None):
+    """Declare or clear a STUB anchor (pre-hardware bench driving; the CV LED
+    detector writes the same state with source="cv" once built).
+    {"active": true, "led_xy": [x,y]?, "ttl_s": float?} sets/refreshes;
+    {"active": false} clears immediately. led_xy lets the geometry+crop
+    pipeline run live before the detector exists."""
+    from presence import anchor
+    p = payload or {}
+    if not bool(p.get("active", False)):
+        anchor.clear_anchor()
+        return {"ok": True, "active": False}
+    led_xy = p.get("led_xy")
+    if led_xy is not None:
+        if (not isinstance(led_xy, (list, tuple)) or len(led_xy) != 2
+                or not all(isinstance(v, (int, float)) for v in led_xy)):
+            return {"ok": False, "error": "led_xy must be [x, y] numbers"}
+        led_xy = (float(led_xy[0]), float(led_xy[1]))
+    ttl_s = p.get("ttl_s")
+    if ttl_s is not None:
+        if not isinstance(ttl_s, (int, float)) or ttl_s <= 0:
+            return {"ok": False, "error": "ttl_s must be a positive number"}
+        ttl_s = float(ttl_s)
+    anchor.set_anchor(led_xy, source="stub", ttl_s=ttl_s)
+    return {"ok": True, "active": anchor.anchor_active(),
+            "led_xy": list(led_xy) if led_xy else None, "ttl_s": ttl_s}
 
 
 @app.get("/api/proactive")

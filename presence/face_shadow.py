@@ -24,7 +24,10 @@ def _recognize(jpeg: bytes) -> list:
     """Blocking: JPEG bytes -> [FacePrediction] via okDemerzel recognition.
     Runs behind asyncio.to_thread. Delegates to the shared recognizer."""
     from presence.face_recognize import recognize_frame
-    preds, _size, _n = recognize_frame(jpeg)
+    # First element only — recognize_frame's tuple has grown (sole_crop
+    # Phase B, anchored_crop 2026-07-06) and the 3-way unpack here had been
+    # silently broken since the 4th element landed (shadow is default-off).
+    preds = recognize_frame(jpeg)[0]
     return preds
 
 
