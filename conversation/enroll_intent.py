@@ -357,3 +357,131 @@ def detect_enroll_intent(text: str, speaker_name: Optional[str] = None) -> Enrol
         return EnrollIntent(matched=False, scope=scope, keyword_present=True)
 
     return EnrollIntent(matched=True, name=name, scope=scope, keyword_present=True)
+
+
+# --- Identity-correction protest (Dan 2026-07-06) ---------------------------
+# A misidentified user pushes back on the name Timmy used: "No, my name is
+# not Walter, my name is Flynn", "stop calling me Walter", or a bare
+# "My name is Flynn" that CONTRADICTS the current attribution. Deterministic
+# regex like detect_enroll_intent above; the caller routes a match into the
+# SAME never-silent confirm FSM, and commit_identity's mismatch/lookalike
+# guards do the biometric gating at commit time — a stranger cannot talk
+# their way into an enrolled identity. Lexicon kept TIGHT; expect live
+# phrasing tuning (feedback: green suites miss what people actually say).
+
+@dataclass
+class CorrectionIntent:
+    matched: bool
+    name: Optional[str] = None    # claimed replacement name (canonical), if any
+    denied: Optional[str] = None  # the rejected name, when the phrase named it
+
+
+# LAZY name span for denial frames. The greedy _NAME_SPAN would swallow the
+# following claim in unpunctuated STT ("my name is not walter my name is
+# flynn" -> denied 'walter_my') and the strip below would then delete the
+# claim too. Lazy keeps the denied capture minimal (first token) — cosmetic
+# loss on multi-word denied names, but the claim survives.
+_DENY_SPAN = rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,3}}?)"
+
+# Denial frames that NAME the rejected identity. "I'm not X" is vocative-
+# loose ("I'm not patting myself on the back", live 7-06) so it only counts
+# when X matches the attributed speaker; the "my name is not X" / "stop
+# calling me X" frames are unambiguous identity statements and count as-is.
+_DENY_NAMED_STRONG_RES = [
+    re.compile(rf"\bmy\s+name\s+(?:is\s+not|isn'?t|ain'?t|was\s+not|wasn'?t)"
+               rf"\s+{_DENY_SPAN}\b", re.IGNORECASE),
+    re.compile(rf"\b(?:stop|quit|don'?t)\s+call(?:ing)?\s+me\s+{_DENY_SPAN}\b",
+               re.IGNORECASE),
+]
+_DENY_NAMED_WEAK_RE = re.compile(
+    rf"\bI(?:'m|\s+am)\s+not\s+{_NAME_SPAN}\b", re.IGNORECASE)
+# Frameless denials. No bare "wrong name" — too loose outside this frame.
+_DENY_BARE_RE = re.compile(
+    r"\bthat(?:'s|\s+is)\s+not\s+my\s+name\b|"
+    r"\byou(?:'ve|\s+have)?\s+got\s+my\s+name\s+wrong\b", re.IGNORECASE)
+
+
+def _claim_name(text: str, allow_weak: bool) -> Optional[str]:
+    """Claimed-name extraction for correction turns. Reuses _NAME_PATTERNS
+    but (unlike extract_reply_name) has NO bare-token fallback — a correction
+    rides inside a full sentence, so only framed names count. Weak (vocative-
+    capable) frames like "I'm Y" are honored only after a NAMED denial
+    ("Stop calling me Walter, I'm Flynn") — a bare "that's not my name"
+    doesn't qualify (live 7-06: "I'm supposed to..." became the claim)."""
+    for pat, strong in _NAME_PATTERNS:
+        if not strong and not allow_weak:
+            continue
+        m = pat.search(text)
+        if m:
+            cand = _clean_name_tokens(m.group(1), explicit=strong)
+            if cand:
+                return cand
+    return None
+
+
+def detect_identity_correction(
+        text: str, speaker_name: Optional[str] = None,
+        speaker_enrolled: bool = False) -> CorrectionIntent:
+    """Detect a misidentification protest.
+
+    Args:
+        text: ASR transcript of the user turn.
+        speaker_name: current voiceprint attribution (canonical), or None.
+        speaker_enrolled: True when speaker_name is an enrolled identity —
+            gates the bare-claim path (unknown speakers are introductions'
+            turf; enroll keywords are detect_enroll_intent's, which the
+            caller must run FIRST).
+
+    Matches:
+      * denial + claim  ("no, my name is not Walter, my name is Flynn")
+        -> matched, name=claim — any speaker state.
+      * bare claim      ("My name is Flynn") -> matched ONLY when it
+        contradicts an enrolled attribution (Dan 7-06: fire on
+        contradiction, not on every self-introduction).
+      * denial only     ("that's not my name") -> matched, name=None —
+        caller routes to the ask-name latch.
+    """
+    if not text:
+        return CorrectionIntent(matched=False)
+    spk = (speaker_name or "").strip().lower()
+
+    denied: Optional[str] = None
+    stripped = text
+    for pat in _DENY_NAMED_STRONG_RES:
+        m = pat.search(stripped)
+        if m:
+            cand = _clean_name_tokens(m.group(1))
+            if cand:
+                denied = cand
+                stripped = stripped[:m.start()] + " , " + stripped[m.end():]
+                break
+    if denied is None:
+        m = _DENY_NAMED_WEAK_RE.search(stripped)
+        if m:
+            cand = _clean_name_tokens(m.group(1))
+            if cand and spk and cand == spk:
+                denied = cand
+                stripped = stripped[:m.start()] + " , " + stripped[m.end():]
+    bare_denial = bool(_DENY_BARE_RE.search(stripped))
+    has_denial = denied is not None or bare_denial
+
+    # Weak "I'm Y" claims unlock only on a NAMED denial ("Stop calling me
+    # Walter, I'm Flynn"). A bare denial must NOT unlock them: "So I'm
+    # supposed to just say to you, that's not my name" (live 7-06) had the
+    # weak frame swallow "supposed to" as the claim. Bare-denial turns route
+    # to the ask-name latch instead — never-silent, one extra turn at worst.
+    claim = _claim_name(stripped, allow_weak=denied is not None)
+    if claim and spk and claim == spk:
+        # Claiming the CURRENT attribution corrects nothing ("My name is
+        # Dan" while attributed dan) — stay out of the LLM's way.
+        return CorrectionIntent(matched=False)
+
+    if claim:
+        if has_denial:
+            return CorrectionIntent(matched=True, name=claim, denied=denied)
+        if speaker_enrolled and spk and not spk.startswith("unknown_"):
+            return CorrectionIntent(matched=True, name=claim, denied=spk)
+        return CorrectionIntent(matched=False)
+    if has_denial:
+        return CorrectionIntent(matched=True, denied=denied or (spk or None))
+    return CorrectionIntent(matched=False)

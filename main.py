@@ -48,7 +48,7 @@ from web.app import (app, init as web_init, broadcast_event, update_metrics,
                      record_turn_stats, latency_stats_snapshot)
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
-from conversation.enroll_intent import detect_enroll_intent
+from conversation.enroll_intent import detect_enroll_intent, detect_identity_correction
 from presence.cosample import CoSampleBuffer
 from conversation import tool_router
 from vision.supervisor import BehaviorSupervisor
@@ -503,8 +503,10 @@ class Orchestrator:
         # Coach multi-word phrasing from turn one (Dan 2026-07-05): STT
         # filters one-word turns, so an uncoached "Yes." never even arrives —
         # every uncoached confirm reply is a paraphrase the verdict may miss.
+        # A misID-correction latch owns the mistake out loud (Dan 7-06).
+        _prefix = "My mistake. " if snapshot.get("correction") else ""
         await self._speak_direct(
-            f"{self._display_name(name)} — did I get that right? "
+            f"{_prefix}{self._display_name(name)} — did I get that right? "
             f"Say 'yes that is right' or 'no that is wrong'.")
 
     async def _handle_unified_enroll(self, name: str, scope: str,
@@ -822,6 +824,15 @@ class Orchestrator:
             # ("never mind" contains a negation cue and would otherwise
             # re-open the name ask instead of aborting).
             if _verdict == "yes":
+                if _latch.get("correction"):
+                    # MisID protest confirmed (Dan 7-06). Commit mechanics are
+                    # identical — commit_identity augments a matching known Y
+                    # (the augmented prototypes ARE the re-bind: next turn's
+                    # nearest-prototype match flips to Y) and its mismatch/
+                    # lookalike guards refuse a claim the biometrics reject.
+                    log.info("[ENROLL] identity correction confirmed: "
+                             "%s -> %s (attributed %s)",
+                             _latch.get("denied"), _latch["name"], speaker_name)
                 await self._handle_unified_enroll(
                     _latch["name"], _latch["scope"], speaker_name,
                     speaker_result, snapshot=_latch)
@@ -836,7 +847,8 @@ class Orchestrator:
                 # re-snapshotting from it is the C2 hole all over again.
                 self._pending_enroll = {
                     k: _latch[k] for k in
-                    ("scope", "speaker_key", "voice_embs", "face_crops")}
+                    ("scope", "speaker_key", "voice_embs", "face_crops",
+                     "correction", "denied") if k in _latch}
                 self._enroll_latch_ts = time.time()
                 await self._speak_direct(
                     "Okay, scratch that — what name should I go with?")
@@ -938,6 +950,49 @@ class Orchestrator:
             # a no-op until the unified flag is flipped — Phase B is the fix.
             await self._handle_enrollment(enroll.name)
             return
+
+        # Identity-correction protest (Dan 2026-07-06): a misidentified user
+        # says "No, my name is not Walter, my name is Flynn" — or a bare
+        # "My name is Flynn" contradicting an enrolled attribution. Routes
+        # into the SAME never-silent confirm FSM as enroll (scope=voice —
+        # misID is a close-talk voice problem; face has its own consent FSM).
+        # commit_identity's mismatch/lookalike guards distance-gate the claim
+        # at commit, so a stranger can't talk their way into an enrolled
+        # identity. Runs AFTER detect_enroll_intent (enroll keywords win) and
+        # only under the unified flag. Bare claims from unknown_N speakers
+        # stay with introductions below.
+        if _unified:
+            corr = detect_identity_correction(
+                user_text, speaker_name,
+                speaker_enrolled=(
+                    speaker_name in
+                    self.speaker_id_module.enrolled_speaker_ids()))
+            if corr.matched:
+                log.info("[ENROLL] misID correction: denied=%s claim=%s "
+                         "(attributed %s)", corr.denied, corr.name,
+                         speaker_name)
+                # Snapshot THIS turn (the protest sentence is the rich,
+                # reliably-voiced turn — C2): its embeddings are both the
+                # confirm-time commit samples and, on a known-Y augment,
+                # the effective re-bind.
+                _crops, _embs = await self._gather_enroll_samples(
+                    speaker_name, "voice")
+                _snap = {"scope": "voice", "speaker_key": speaker_name,
+                         "voice_embs": _embs, "face_crops": _crops,
+                         "correction": True,
+                         "denied": corr.denied or speaker_name}
+                if corr.name:
+                    await self._ask_enroll_confirm(
+                        corr.name, "voice", speaker_name, snapshot=_snap)
+                else:
+                    # Denial without a claim ("that's not my name") ->
+                    # ask-name latch, same never-silent semantics.
+                    self._pending_enroll = _snap
+                    self._enroll_latch_ts = time.time()
+                    await self._speak_direct(
+                        "My mistake — what name should I go with? "
+                        "Say 'my name is', then the name.")
+                return
 
         # --- Handle name solicitation for unknown speakers ---
         if speaker_result.should_ask_name:

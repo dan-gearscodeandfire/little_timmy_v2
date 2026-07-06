@@ -305,3 +305,120 @@ def test_name_turn_miss_shapes_2026_07_02():
     assert extract_reply_name("Buddy") is None                 # bare filler
     # ...but a real Buddy can enroll via the coached explicit phrasing.
     assert extract_reply_name("My name is Buddy") == "buddy"
+
+
+# ---- 2026-07-06 identity-correction protest (misID pushback) ----
+
+def test_correction_denial_plus_claim():
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "No, my name is not Walter, my name is Flynn.", "walter", True)
+    assert r.matched and r.name == "flynn" and r.denied == "walter"
+
+
+def test_correction_denial_plus_claim_unpunctuated_stt():
+    # STT drops commas; the lazy denial span must not swallow the claim.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "no my name is not walter my name is flynn", "walter", True)
+    assert r.matched and r.name == "flynn" and r.denied == "walter"
+
+
+def test_correction_stop_calling_me_with_weak_claim():
+    # "I'm Y" is honored as the claim only AFTER an explicit denial.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "Stop calling me Walter, I'm Flynn.", "walter", True)
+    assert r.matched and r.name == "flynn" and r.denied == "walter"
+
+
+def test_correction_bare_claim_contradicting_enrolled():
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("My name is Flynn.", "dan", True)
+    assert r.matched and r.name == "flynn" and r.denied == "dan"
+
+
+def test_correction_bare_claim_matching_attribution_inert():
+    from conversation.enroll_intent import detect_identity_correction
+    assert not detect_identity_correction("My name is Dan.", "dan", True).matched
+
+
+def test_correction_bare_claim_unknown_speaker_inert():
+    # Unknown speakers are introductions' turf, not a correction.
+    from conversation.enroll_intent import detect_identity_correction
+    assert not detect_identity_correction(
+        "My name is Flynn.", "unknown_3", False).matched
+
+
+def test_correction_denial_only_routes_to_name_ask():
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("That's not my name.", "dan", True)
+    assert r.matched and r.name is None and r.denied == "dan"
+    r2 = detect_identity_correction("You've got my name wrong.", "dan", True)
+    assert r2.matched and r2.name is None
+
+
+def test_correction_im_not_gated_to_attribution():
+    from conversation.enroll_intent import detect_identity_correction
+    # Live 7-06: idioms must stay inert.
+    assert not detect_identity_correction(
+        "I'm not patting myself on the back", "dan", True).matched
+    assert not detect_identity_correction("I'm not sure", "dan", True).matched
+    assert not detect_identity_correction(
+        "I am not hungry today", "dan", True).matched
+    # ...but denying the ATTRIBUTED name counts.
+    r = detect_identity_correction("I'm not Walter.", "walter", True)
+    assert r.matched and r.name is None and r.denied == "walter"
+
+
+def test_correction_weak_claim_without_denial_inert():
+    # A casual "I'm Flynn" (no denial) must not hijack the turn.
+    from conversation.enroll_intent import detect_identity_correction
+    assert not detect_identity_correction("I'm Flynn", "dan", True).matched
+
+
+def test_correction_full_name_claim():
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "No, my name is not Dan, my name is Dan the Barbarian.", "dan", True)
+    assert r.matched and r.name == "dan_the_barbarian" and r.denied == "dan"
+
+
+def test_correction_plain_talk_inert():
+    from conversation.enroll_intent import detect_identity_correction
+    for utt in ("Today I played Legend of Zelda.",
+                "Can you get it right this time?",
+                "Never mind.",
+                "What's the weather like?"):
+        assert not detect_identity_correction(utt, "dan", True).matched, utt
+
+
+def test_correction_bare_denial_does_not_unlock_weak_claim():
+    # Live 7-06 false positive: "So I'm supposed to just say to you, that's
+    # not my name." — the bare denial unlocked the weak "I'm Y" frame, which
+    # swallowed "supposed to" as the claim ("My mistake. Supposed To — did I
+    # get that right?"). Bare denials route to the name-ask latch instead.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "So I'm supposed to just say to you, that's not my name.",
+        "dan", True)
+    assert r.matched and r.name is None and r.denied == "dan"
+
+
+def test_correction_bare_denial_plus_strong_claim_still_extracts():
+    # A STRONG frame after a bare denial is still an in-turn claim. The
+    # bare denial names nobody, so denied stays None at the detector level
+    # (the caller falls back to the current attribution).
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "That's not my name, my name is Flynn.", "dan", True)
+    assert r.matched and r.name == "flynn" and r.denied is None
+
+
+def test_correction_bare_denial_weak_claim_goes_to_name_ask():
+    # Cost of the gate: "That's not my name, I'm Flynn" takes the name-ask
+    # path (one extra never-silent turn) instead of extracting flynn.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction(
+        "That's not my name, I'm Flynn.", "dan", True)
+    assert r.matched and r.name is None and r.denied == "dan"
