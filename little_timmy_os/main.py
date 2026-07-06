@@ -1355,15 +1355,17 @@ header .uptime {
   </span>
 </header>
 
-<!-- PARTY MODE: one-tap situation_regime=PARTY. Disables the risky matcher
-     continuity path + sets the 'assume strangers' prompt prior. The single
-     most important control during the Open Sauce party. -->
-<div id="party-banner" onclick="togglePartyMode()" title="Tap to toggle PARTY mode (situation_regime)">
+<!-- OPEN SAUCE MODE (binary regime, 2026-07-05): one-tap situation_regime
+     Shop ('') <-> Open Sauce ('EXPO'). Disables the risky matcher continuity
+     path + sets the 'show floor, assume strangers' prompt prior. Persisted
+     across reboots — THE gameday flag. (DOM ids keep the party-banner names
+     so the existing CSS applies unchanged.) -->
+<div id="party-banner" onclick="toggleOpenSauceMode()" title="Tap to toggle Open Sauce mode (situation_regime)">
   <div>
-    <div class="pb-label" id="party-label">🎉 Party Mode — Off</div>
-    <div class="pb-sub" id="party-sub">Tap to assume strangers + disable speaker auto-continuity</div>
+    <div class="pb-label" id="party-label">🔧 Shop Mode</div>
+    <div class="pb-sub" id="party-sub">Tap for Open Sauce: assume strangers + disable speaker auto-continuity</div>
   </div>
-  <div class="pb-state" id="party-state">OFF</div>
+  <div class="pb-state" id="party-state">SHOP</div>
 </div>
 
 <div class="main-content">
@@ -1582,22 +1584,19 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <!-- Slice A: manual situational-awareness regime (2026-06-12). Injects
-             an NL [SITUATION] line into Timmy's prompt; "Off" emits nothing.
-             Live (read per-turn) — no restart needed. -->
+        <!-- Binary mode (2026-07-05, was the 5-value Situation Regime):
+             Shop ('') vs Open Sauce ('EXPO'). Injects the [SITUATION] show-
+             floor line into Timmy's prompt; Shop emits nothing. Live (read
+             per-turn), persisted across reboots. -->
         <div class="service-card" id="situation-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
           <div class="service-info" style="margin-bottom:6px;">
-            <div class="service-name">Situation Regime</div>
+            <div class="service-name">Mode</div>
             <div class="service-detail" id="situation-status">Loading…</div>
           </div>
           <select id="situation-select" onchange="commitSituation(this.value)"
                   style="width:100%; background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:6px; font-size:12px;">
-            <option value="">Off (no situation prior)</option>
-            <option value="SOLO">Solo — alone with Dan</option>
-            <option value="GUEST">Guest — one visitor</option>
-            <option value="SMALL_GROUP">Small group — a few, some unknown</option>
-            <option value="PARTY">Party — crowd of strangers</option>
-            <option value="EXPO">Expo — show floor, constant strangers</option>
+            <option value="">Shop — home base, normal behavior</option>
+            <option value="EXPO">Open Sauce — show floor, assume strangers</option>
           </select>
         </div>
         <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
@@ -3283,7 +3282,7 @@ async function commitFaceTuning(scope, key, value) {
 loadFaceTuning();
 setInterval(loadFaceTuning, 15000);
 
-// Slice A: situational-awareness regime select (live, read per-turn).
+// Binary mode select (2026-07-05): Shop ('') vs Open Sauce ('EXPO').
 async function loadSituation() {
   const st = document.getElementById('situation-status');
   const sel = document.getElementById('situation-select');
@@ -3295,9 +3294,9 @@ async function loadSituation() {
     }
     if (sel && document.activeElement !== sel) sel.value = d.situation_regime || '';
     if (st) {
-      const on = (d.situation_regime || '') !== '';
-      st.textContent = on ? ('active: ' + d.situation_regime) : 'off (no situation prior)';
-      st.style.color = on ? '#3fb950' : '#8b949e';
+      const on = (d.situation_regime || '').toUpperCase() === 'EXPO';
+      st.textContent = on ? 'OPEN SAUCE mode' : 'Shop mode';
+      st.style.color = on ? '#ff2d95' : '#8b949e';
     }
   } catch (e) {
     if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
@@ -3318,52 +3317,54 @@ async function commitSituation(value) {
     if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
   }
   loadSituation();  // re-sync (also restores a rejected select to server truth)
-  loadPartyMode();  // keep the PARTY banner in sync with the granular select
+  loadOpenSauceMode();  // keep the banner in sync with the select
 }
 
 loadSituation();
 setInterval(loadSituation, 15000);
 
-// PARTY MODE banner — one-tap situation_regime=PARTY (the key party control).
-function applyPartyBanner(regime) {
-  const on = (regime || '').toUpperCase() === 'PARTY';
+// OPEN SAUCE banner — one-tap Shop ('') <-> Open Sauce ('EXPO'). THE gameday
+// flag: persisted in runtime toggles, survives reboots. (DOM ids retain the
+// party-banner names so the existing CSS applies unchanged.)
+function applyOpenSauceBanner(regime) {
+  const on = (regime || '').toUpperCase() === 'EXPO';
   const banner = document.getElementById('party-banner');
   const label = document.getElementById('party-label');
   const sub = document.getElementById('party-sub');
   const state = document.getElementById('party-state');
   if (banner) banner.classList.toggle('on', on);
-  if (label) label.textContent = on ? '🎉 PARTY MODE — ON' : '🎉 Party Mode — Off';
-  if (state) state.textContent = on ? 'ON' : 'OFF';
+  if (label) label.textContent = on ? '🔥 OPEN SAUCE MODE' : '🔧 Shop Mode';
+  if (state) state.textContent = on ? 'OPEN SAUCE' : 'SHOP';
   if (sub) sub.textContent = on
-    ? 'Assuming strangers · speaker auto-continuity DISABLED · prompt prior set'
-    : 'Tap to assume strangers + disable speaker auto-continuity';
+    ? 'Show floor: assuming strangers · speaker auto-continuity DISABLED · prompt prior set'
+    : 'Tap for Open Sauce: assume strangers + disable speaker auto-continuity';
 }
 
-async function loadPartyMode() {
+async function loadOpenSauceMode() {
   try {
     const d = await (await fetch('/api/timmy/situation')).json();
-    if (!d.error) applyPartyBanner(d.situation_regime);
+    if (!d.error) applyOpenSauceBanner(d.situation_regime);
   } catch (e) { /* keep last state */ }
 }
 
-async function togglePartyMode() {
-  // Read current, flip PARTY <-> "" (off). Optimistic UI, then reconcile.
+async function toggleOpenSauceMode() {
+  // Read current, flip EXPO <-> '' (Shop). Optimistic UI, then reconcile.
   let cur = '';
   try { cur = (await (await fetch('/api/timmy/situation')).json()).situation_regime || ''; }
   catch (e) {}
-  const target = cur.toUpperCase() === 'PARTY' ? '' : 'PARTY';
-  applyPartyBanner(target);
+  const target = cur.toUpperCase() === 'EXPO' ? '' : 'EXPO';
+  applyOpenSauceBanner(target);
   try {
     await fetch('/api/timmy/situation', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ situation_regime: target }) });
   } catch (e) {}
-  loadPartyMode();
-  loadSituation();   // keep the granular regime <select> in sync
+  loadOpenSauceMode();
+  loadSituation();   // keep the mode <select> in sync
 }
 
-loadPartyMode();
-setInterval(loadPartyMode, 15000);
+loadOpenSauceMode();
+setInterval(loadOpenSauceMode, 15000);
 
 // Mouth-mute (lab) toggle. Silences replies + fillers; announce still speaks.
 async function loadTtsMute() {

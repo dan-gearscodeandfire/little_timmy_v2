@@ -1142,12 +1142,17 @@ async def set_vision_tuning(payload: dict | None = None):
 # Live knob (LT-OS-set) injecting an NL [SITUATION] line into the ephemeral
 # prompt. Empty string == OFF (no line). Enum-validated here; prompt_builder
 # also fails safe on an unknown value.
-_SITUATION_REGIMES = {"", "SOLO", "GUEST", "SMALL_GROUP", "PARTY", "EXPO"}
+# Binary since 2026-07-05 (Dan): the 5-value regime set (SOLO/GUEST/
+# SMALL_GROUP/PARTY/EXPO) collapsed to Shop ('') vs Open Sauce ('EXPO').
+# 'EXPO' stays the wire value so every downstream consumer (identifier
+# continuity gate, identity_regime lockstep, prompt [SITUATION] text) works
+# unchanged; the UI labels it "Open Sauce". Legacy values are rejected.
+_SITUATION_REGIMES = {"", "EXPO"}
 
 
 @app.get("/api/situation")
 async def get_situation():
-    """Read the live situational-awareness regime ('' == OFF)."""
+    """Read the live regime: '' == Shop (OFF), 'EXPO' == Open Sauce."""
     from persistence import runtime_toggles
     return {
         "situation_regime": runtime_toggles.get("situation_regime"),
@@ -1157,9 +1162,9 @@ async def get_situation():
 
 @app.post("/api/situation")
 async def set_situation(payload: dict | None = None):
-    """Set the regime. Whitelisted; '' disables (emits no [SITUATION] line).
-    Persisted by runtime_toggles and read per-turn, so it applies live without
-    a restart."""
+    """Set the regime. Binary whitelist; '' (Shop) disables (emits no
+    [SITUATION] line). Persisted by runtime_toggles and read per-turn, so it
+    applies live without a restart — and survives reboots (gameday flag)."""
     from persistence import runtime_toggles
     v = (payload or {}).get("situation_regime", "")
     if not isinstance(v, str):
@@ -1169,10 +1174,10 @@ async def set_situation(payload: dict | None = None):
         return {"ok": False,
                 "error": f"situation_regime must be one of {sorted(_SITUATION_REGIMES)}"}
     runtime_toggles.set("situation_regime", v)
-    # Keep Slice B's identity_regime in lockstep: PARTY/EXPO must also disable
-    # the symmetric/temporal identity fusion (a wrong bind beats an abstain in
-    # a crowd). One banner tap flips both; any other regime restores 'normal'.
-    runtime_toggles.set("identity_regime", "party" if v in ("PARTY", "EXPO") else "normal")
+    # Keep Slice B's identity_regime in lockstep: Open Sauce (EXPO) must also
+    # disable the symmetric/temporal identity fusion (a wrong bind beats an
+    # abstain in a crowd). One banner tap flips both; Shop restores 'normal'.
+    runtime_toggles.set("identity_regime", "party" if v == "EXPO" else "normal")
     return {
         "ok": True,
         "situation_regime": runtime_toggles.get("situation_regime"),
