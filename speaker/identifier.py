@@ -347,6 +347,12 @@ class SpeakerIdentifier:
         to the shared IdMap so face + voice share ONE id space."""
         return self._id_map.enrolled_ids()
 
+    def retired_speaker_ids(self) -> dict:
+        """``name -> {"id", "at"}`` tombstones (see IdMap). ``db/speakers.py``
+        propagates these to ``speakers.retired_at`` at every startup — the
+        sync that used to RESURRECT a deleted row now retires it."""
+        return self._id_map.retired()
+
     def load_voiceprints(self):
         """Load every ``*_wespeaker.npy`` in VOICEPRINT_DIR.
 
@@ -370,9 +376,16 @@ class SpeakerIdentifier:
             id_map[name] = sid
         dirty = False
 
+        retired = self._id_map.retired()
         paths = sorted(VOICEPRINT_DIR.glob("*_wespeaker.npy"))
         for path in paths:
             name = path.stem.replace("_wespeaker", "").lower()
+            if name in retired:
+                # Tombstoned identity: a manually restored/stray file must not
+                # re-adopt the name (the resurrection class). Revive explicitly.
+                log.warning("Skipping voiceprint %s: %r is retired "
+                            "(revive_identity to restore)", path.name, name)
+                continue
             if name in self._RESERVED_IDS:
                 speaker_id = self._RESERVED_IDS[name]
             elif name in id_map and isinstance(id_map[name], int):

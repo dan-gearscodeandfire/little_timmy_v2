@@ -124,7 +124,15 @@ class FaceIdentifier:
         """Load every ``<name>_edgeface.npy`` into memory, id from the shared map."""
         self._known = []
         ids = self._id_map.enrolled_ids()
+        retired = self._id_map.retired()
         for name, path in self._store.iter_prototype_files():
+            if name in retired:
+                # Tombstoned identity: a stray/restored file must not re-adopt
+                # the name (allocate() would raise RetiredNameError; skipping
+                # keeps startup alive). Revive explicitly to restore.
+                log.warning("Skipping face prototypes %s: %r is retired "
+                            "(revive_identity to restore)", path.name, name)
+                continue
             try:
                 protos = self._store.load(path)
             except Exception as e:

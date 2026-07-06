@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS speakers (
 INSERT INTO speakers (id, name) VALUES (1, 'dan'), (2, 'timmy')
 ON CONFLICT (id) DO NOTHING;
 
+-- Persona retirement (2026-07-06): soft-delete mark mirroring the id-map
+-- ``_retired`` tombstones (presence/prototype_base.IdMap). The row is KEPT --
+-- facts.speaker_id / memories.speaker_id FKs stay intact as history -- but a
+-- retired persona never resolves at runtime, so its facts never surface.
+-- db/speakers.py propagates tombstones here at every startup.
+ALTER TABLE speakers ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ;
+
 -- Memory types
 DO $$ BEGIN
     CREATE TYPE memory_type AS ENUM (

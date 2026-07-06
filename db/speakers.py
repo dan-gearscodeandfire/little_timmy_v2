@@ -39,8 +39,10 @@ async def sync_speakers_from_id_map(conn: asyncpg.Connection | None = None) -> i
     Pass an existing ``conn`` to run on it (e.g. from the live pool at startup);
     otherwise a pooled connection is acquired. The caller owns pool lifecycle.
     """
-    mapping = SpeakerIdentifier().enrolled_speaker_ids()  # name -> id, no encoder load
-    if not mapping:
+    ident = SpeakerIdentifier()
+    mapping = ident.enrolled_speaker_ids()   # name -> id, no encoder load
+    retired = ident.retired_speaker_ids()    # name -> {"id", "at"} tombstones
+    if not mapping and not retired:
         return 0
 
     async def _run(c: asyncpg.Connection) -> int:
@@ -62,6 +64,20 @@ async def sync_speakers_from_id_map(conn: asyncpg.Connection | None = None) -> i
             if tag.endswith(" 1"):
                 inserted += 1
                 log.info("speakers sync: inserted id=%d name=%s", sid, name)
+        # Propagate tombstones (retire) and their absence (revive). This is
+        # the sync that used to RESURRECT a deleted row -- with the id-map
+        # carrying a positive "deleted" state, restart now converges the DB
+        # to deleted instead of alive. COALESCE keeps the original mark time.
+        for name, info in sorted(retired.items()):
+            await c.execute(
+                "UPDATE speakers SET retired_at = "
+                "COALESCE(retired_at, to_timestamp($2), NOW()) WHERE id = $1",
+                info["id"], info.get("at") or None)
+        if mapping:
+            await c.execute(
+                "UPDATE speakers SET retired_at = NULL "
+                "WHERE retired_at IS NOT NULL AND id = ANY($1::int[])",
+                list(mapping.values()))
         # Keep the SERIAL sequence ahead of every explicit id we wrote so a
         # later plain INSERT (without an id) can't reuse one.
         await c.execute(

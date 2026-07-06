@@ -978,6 +978,103 @@ async def presence_state():
     return state
 
 
+# ── Persona lifecycle (retire / revive) ──────────────────────────────────────
+# The webui/API surface for presence/identity_commit.retire_identity — the
+# sole cross-store deleter. Must run IN the live process (in-memory identifier
+# removal + room-ledger forget), which is why ops/retire_identity.py prefers
+# this endpoint over direct store surgery whenever the service is up.
+
+def _live_identifiers():
+    """The live recognizer singletons. The face identifier is a module-global
+    singleton either way; the speaker identifier must come from the
+    orchestrator (a fresh SpeakerIdentifier would miss the in-memory state)."""
+    from presence.face_identifier import get_shared_identifier
+    face = get_shared_identifier()
+    spk = getattr(_orchestrator, "speaker_id_module", None) if _orchestrator else None
+    if spk is None:
+        from speaker.identifier import SpeakerIdentifier
+        spk = SpeakerIdentifier()
+    return spk, face
+
+
+@app.get("/api/identity/list")
+async def identity_list(since: float | None = None):
+    """Persona inventory from the shared id-map: speaker_id, on-disk
+    modalities, DB timestamps, and tombstones. ``since`` (unix ts) filters
+    ACTIVE identities to those whose speakers row was created after it — the
+    post-EXPO "what got minted at the booth" sweep feeding bulk retire."""
+    spk, face = _live_identifiers()
+    id_map = face._id_map
+    voice_store, face_store = spk._store, face._store
+
+    rows = {}
+    try:
+        from db.connection import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for r in await conn.fetch(
+                    "SELECT id, created_at, retired_at FROM speakers"):
+                rows[r["id"]] = r
+    except Exception as e:
+        log.warning("identity_list: speakers query failed: %s", e)
+
+    reserved = set(id_map.reserved_ids)
+    out = []
+    for name, sid in sorted(id_map.enrolled_ids().items(), key=lambda kv: kv[1]):
+        db = rows.get(sid)
+        created = db["created_at"].timestamp() if db and db["created_at"] else None
+        if since is not None and (created is None or created < since):
+            continue
+        out.append({
+            "name": name, "speaker_id": sid, "retired": False,
+            "reserved": name in reserved,
+            "voice": voice_store.path_for(name).exists(),
+            "face": face_store.path_for(name).exists(),
+            "created_at": created,
+        })
+    for name, info in sorted(id_map.retired().items()):
+        out.append({
+            "name": name, "speaker_id": info["id"], "retired": True,
+            "reserved": False, "voice": False, "face": False,
+            "retired_at": info.get("at"),
+        })
+    return {"identities": out, "count": len(out)}
+
+
+@app.post("/api/identity/retire")
+async def identity_retire(payload: dict | None = None):
+    """Retire a persona: stop recognition now, archive biometrics to
+    models/trash/, tombstone the id-map, mark speakers.retired_at, forget the
+    room-ledger record. Reversible via /api/identity/revive.
+    ``{"name": ..., "purge_facts": false}`` — purge_facts HARD-deletes the
+    persona's facts rows (test junk only; real people keep inert history)."""
+    from dataclasses import asdict
+    from presence.identity_commit import retire_identity
+    name = ((payload or {}).get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    spk, face = _live_identifiers()
+    ledger = getattr(_orchestrator, "room_ledger", None) if _orchestrator else None
+    res = await retire_identity(
+        name, speaker_identifier=spk, face_identifier=face, room_ledger=ledger,
+        purge_facts=bool((payload or {}).get("purge_facts", False)))
+    return {"ok": res.ok, **asdict(res)}
+
+
+@app.post("/api/identity/revive")
+async def identity_revive(payload: dict | None = None):
+    """Reverse a retirement: restore the newest models/trash/ archive, clear
+    the tombstone + DB mark, reload prototypes into the live recognizers."""
+    from dataclasses import asdict
+    from presence.identity_commit import revive_identity
+    name = ((payload or {}).get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    spk, face = _live_identifiers()
+    res = await revive_identity(name, speaker_identifier=spk, face_identifier=face)
+    return {"ok": res.ok, **asdict(res)}
+
+
 @app.get("/api/vision/auto_poll")
 async def get_vision_auto_poll():
     """Read the periodic-poll-loop toggle. Event-driven trigger_capture

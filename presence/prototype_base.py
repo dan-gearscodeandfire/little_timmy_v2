@@ -47,6 +47,14 @@ def is_valid_enroll_name(name: str) -> bool:
     return clean not in RESERVED_NAMES and bool(NAME_RE.match(clean))
 
 
+class RetiredNameError(ValueError):
+    """Raised when ``IdMap.allocate`` is asked to mint an id for a RETIRED
+    name. Retirement is a positive, persisted state (a tombstone) — not mere
+    absence — precisely so no sync/loader path can silently resurrect a
+    deleted identity (the 2026-07-02 "john" lesson). Revive explicitly via
+    ``IdMap.revive`` if the name should come back."""
+
+
 # ── Pure vector-space helpers ────────────────────────────────────────────────
 
 def min_cosine_distance(emb: np.ndarray, prototypes: np.ndarray) -> float:
@@ -180,9 +188,20 @@ class IdMap:
     Backed by a JSON file (default the existing ``models/speaker/_id_map.json``
     to avoid a migration). Reserved names keep fixed ids regardless of the file;
     a ``_next_id`` key tracks the next free id. Writes are atomic (tmp + fsync +
-    rename)."""
+    rename).
+
+    **Tombstones (2026-07-06):** a ``_retired`` section holds
+    ``name -> {"id": int, "at": unix_ts}`` for deleted identities. Deletion
+    used to be representable only as *absence*, and every healer
+    (``db/speakers.py`` startup sync, ``load_voiceprints`` stray-file
+    allocation, room-ledger reload) read absence-in-one-store as damage to
+    repair — the 4-store resurrection class. A tombstone makes "deleted" a
+    positive fact that syncs *propagate* instead of undo. Retired ids are
+    NEVER reused (S1: ``facts``/``memories`` FKs stay unambiguous forever)
+    and ``allocate`` refuses a retired name with :class:`RetiredNameError`."""
 
     _NEXT_KEY = "_next_id"
+    _RETIRED_KEY = "_retired"
 
     def __init__(self, path: Path, *, reserved_ids: dict, first_free_id: int):
         self.path = Path(path)
@@ -190,7 +209,10 @@ class IdMap:
         self.first_free_id = int(first_free_id)
 
     def read(self) -> dict:
-        """name(lower) -> int id (plus the ``_next_id`` bookkeeping key), or {}."""
+        """name(lower) -> int id (plus the ``_next_id`` / ``_retired``
+        bookkeeping keys), or {}. ``_retired`` round-trips as a dict so a
+        caller that read()s, mutates names, and write()s back (e.g.
+        ``load_voiceprints``) can never drop tombstones."""
         if not self.path.exists():
             return {}
         try:
@@ -200,6 +222,12 @@ class IdMap:
             for k, v in raw.items():
                 if k == self._NEXT_KEY:
                     out[k] = int(v)
+                elif k == self._RETIRED_KEY:
+                    out[k] = {
+                        str(n).lower(): {"id": int(info["id"]),
+                                         "at": float(info.get("at", 0.0))}
+                        for n, info in dict(v).items()
+                    }
                 else:
                     out[k.lower()] = int(v)
             return out
@@ -223,9 +251,57 @@ class IdMap:
         This is the source of truth the Postgres ``speakers`` table is reconciled
         against, so an enrolled biometric can never FK-fail a facts insert."""
         mapping = {n: i for n, i in self.read().items()
-                   if n != self._NEXT_KEY and isinstance(i, int)}
+                   if n not in (self._NEXT_KEY, self._RETIRED_KEY)
+                   and isinstance(i, int)}
         mapping.update(self.reserved_ids)
         return mapping
+
+    # ── Retirement (tombstones) ──────────────────────────────────────────────
+
+    def retired(self) -> dict:
+        """``name -> {"id": int, "at": unix_ts}`` for every retired identity."""
+        return self.read().get(self._RETIRED_KEY, {})
+
+    def is_retired(self, name: str) -> bool:
+        clean = (name or "").strip().lower()
+        return clean in self.retired()
+
+    def retire(self, name: str, *, at: float | None = None) -> int | None:
+        """Move ``name`` from the active map into the ``_retired`` tombstone
+        section, preserving its id (never reused). Idempotent: an already
+        retired name returns its tombstoned id. Reserved names refuse
+        (ValueError). Returns the retired id, or None if the name has no id
+        anywhere (nothing to tombstone)."""
+        clean = (name or "").strip().lower()
+        if clean in self.reserved_ids:
+            raise ValueError(f"refusing to retire reserved identity {clean!r}")
+        m = self.read()
+        retired = m.setdefault(self._RETIRED_KEY, {})
+        if clean in retired:
+            return retired[clean]["id"]
+        sid = m.pop(clean, None)
+        if not isinstance(sid, int):
+            return None
+        retired[clean] = {"id": sid, "at": float(at if at is not None else time.time())}
+        self.write(m)
+        log.info("Retired speaker_id=%d for %s (tombstoned)", sid, clean)
+        return sid
+
+    def revive(self, name: str) -> int | None:
+        """Move ``name`` back from ``_retired`` to the active map under its
+        ORIGINAL id. Returns the id, or None if no tombstone exists (an
+        already-active name returns its active id, idempotently)."""
+        clean = (name or "").strip().lower()
+        m = self.read()
+        retired = m.get(self._RETIRED_KEY, {})
+        if clean not in retired:
+            existing = m.get(clean)
+            return existing if isinstance(existing, int) else None
+        sid = retired.pop(clean)["id"]
+        m[clean] = sid
+        self.write(m)
+        log.info("Revived speaker_id=%d for %s", sid, clean)
+        return sid
 
     def id_for(self, name: str) -> int | None:
         """Return the existing id for ``name`` (reserved or mapped), else None."""
@@ -238,18 +314,31 @@ class IdMap:
     def allocate(self, name: str) -> int:
         """Return the id for ``name``, allocating + persisting a new one if needed.
         Reserved names return their fixed id without touching the file. Idempotent:
-        the FK-precondition step of a cross-store identity commit."""
+        the FK-precondition step of a cross-store identity commit.
+
+        Raises :class:`RetiredNameError` for a tombstoned name — deletion must
+        never be silently undone by an allocation path (startup sync, stray-file
+        load, re-enroll). Callers that can legitimately re-create the identity
+        go through :meth:`revive` explicitly."""
         clean = (name or "").strip().lower()
         if clean in self.reserved_ids:
             return self.reserved_ids[clean]
         m = self.read()
+        retired = m.get(self._RETIRED_KEY, {})
+        if clean in retired:
+            raise RetiredNameError(
+                f"{clean!r} is retired (id={retired[clean]['id']}); "
+                "revive explicitly before re-enrolling")
         existing = m.get(clean)
         if isinstance(existing, int):
             return existing
         next_id = max(int(m.get(self._NEXT_KEY, self.first_free_id)), self.first_free_id)
-        # Skip any id already taken by a reserved or mapped name.
+        # Skip any id already taken by a reserved, mapped, or RETIRED name —
+        # a tombstoned id is burnt forever (S1: FK history stays unambiguous).
         taken = set(self.reserved_ids.values()) | {
-            v for k, v in m.items() if k != self._NEXT_KEY and isinstance(v, int)}
+            v for k, v in m.items()
+            if k not in (self._NEXT_KEY, self._RETIRED_KEY) and isinstance(v, int)}
+        taken |= {info["id"] for info in retired.values()}
         while next_id in taken:
             next_id += 1
         m[clean] = next_id

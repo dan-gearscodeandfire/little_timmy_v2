@@ -264,6 +264,23 @@ class RoomLedger:
             "unknown_voices_recent": unknown_voices,
         }
 
+    def forget(self, name: str) -> bool:
+        """Drop a person's record and flush — the runtime deletion path.
+
+        A raw disk edit of the save file loses to the next `_save_to_disk()`
+        (any face/voice update rewrites the full in-memory state), so persona
+        retirement (`presence/identity_commit.retire_identity`) must go
+        through the live ledger. Returns True if a record was removed.
+        """
+        canon = canonicalize(name) or (name or "").strip().lower()
+        if not canon:
+            return False
+        removed = self._records.pop(canon, None) is not None
+        if removed:
+            self._save_to_disk()
+            log.info("RoomLedger forgot %s", canon)
+        return removed
+
     def find_pose_for(self, name: str) -> Optional[dict]:
         """Look up the most recent recorded pose for a canonical name."""
         canon = canonicalize(name)

@@ -93,6 +93,9 @@ class CommitResult:
                              STT homophone forking a known person (test G,
                              2026-07-02). Caller should disambiguate.
       ``invalid_name``     — refused: reserved/malformed name.
+      ``retired_name``     — refused: the name is tombstoned (deleted); a
+                             retired identity never silently resurrects.
+                             Revive explicitly (``revive_identity``) first.
       ``nothing_to_commit``— no voice and no face samples supplied.
     """
 
@@ -245,6 +248,15 @@ def commit_identity_stores(
     if not is_valid_enroll_name(clean):
         res.status = "invalid_name"
         res.error = f"invalid or reserved name {clean!r}"
+        return res
+
+    # Tombstone guard: a retired name must not silently re-enroll (the
+    # deletion analogue of the lookalike guard — same "resurrection" class).
+    if id_map.is_retired(clean):
+        res.status = "retired_name"
+        res.error = (f"{clean!r} is retired; refusing to re-enroll — "
+                     "revive explicitly if intended")
+        log.warning("[COMMIT] retired_name: %s", res.error)
         return res
 
     v_embs = [np.asarray(e, dtype=np.float32) for e in (voice_embeddings or [])]
@@ -420,6 +432,16 @@ async def commit_identity(
     from presence.face_identifier import KnownFace, accept_threshold
     from speaker.identifier import KnownSpeaker
 
+    # Tombstone guard BEFORE any allocation or scan: a retired name refuses
+    # outright (and allocate() below would raise RetiredNameError anyway —
+    # this just turns it into a structured result the dialog can speak).
+    if id_map.is_retired(clean):
+        res = CommitResult(name=clean, status="retired_name")
+        res.error = (f"{clean!r} is retired; refusing to re-enroll — "
+                     "revive explicitly if intended")
+        log.warning("[COMMIT] retired_name (pre-alloc): %s", res.error)
+        return res
+
     def _refresh_voice(nm, sid, protos):
         for ks in speaker_identifier._known_speakers:
             if ks.name == nm:
@@ -496,5 +518,325 @@ async def commit_identity(
              res.name, res.speaker_id, res.status,
              res.voice_committed, res.voice_added,
              res.face_committed, res.face_added, res.db_synced,
+             (" warn=" + ",".join(res.warnings)) if res.warnings else "")
+    return res
+
+
+# ── Retirement: the mirror of the sole writer ────────────────────────────────
+#
+# ONE cross-store deleter, same shape as the commit: a pure hermetic core
+# (``retire_identity_stores``) plus a live async wrapper (``retire_identity``)
+# that adds the in-memory identifier removal, the Postgres ``retired_at`` mark,
+# and the room-ledger forget. Deletion is a TOMBSTONE (IdMap ``_retired``) plus
+# an ARCHIVE (prototypes move to ``models/trash/``, never destroyed), so it is
+# (a) propagated — every healer that used to resurrect-by-absence now sees a
+# positive "deleted" fact — and (b) reversible (``revive_identity``).
+
+# Every on-disk biometric suffix a persona may own. The PrototypeFileStore
+# pair covers the ACTIVE embedders (_wespeaker/_edgeface); legacy voice files
+# in VOICEPRINT_DIR would otherwise linger and confuse an audit.
+_LEGACY_VOICE_SUFFIXES = ("_resemblyzer", "_pyannote")
+
+
+@dataclass
+class RetireResult:
+    """Outcome of a persona retirement (or revival).
+
+    ``status``: ``ok`` | ``not_found`` (no id and no files anywhere) |
+    ``reserved`` (dan/timmy — refused) | ``error``.
+    """
+
+    name: str
+    speaker_id: int | None = None
+    status: str = "ok"
+    files_moved: list[str] = field(default_factory=list)
+    trash_dir: str | None = None
+    db_synced: bool = False
+    ledger_forgotten: bool = False
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def _persona_files(name: str, voice_store: PrototypeFileStore | None,
+                   face_store: PrototypeFileStore | None) -> list[Path]:
+    """Every on-disk file belonging to ``name``: active prototype sets, legacy
+    voice embeddings, and their ``.bak.*`` backups. Exact-suffix matches only —
+    ``dan`` must never sweep up ``dan_the_barbarian``'s files."""
+    paths: list[Path] = []
+    stores = [s for s in (voice_store, face_store) if s is not None]
+    for store in stores:
+        main = store.path_for(name)
+        paths.append(main)
+        paths.extend(store.dir.glob(f"{name}{store.suffix}.npy.bak.*"))
+    if voice_store is not None:
+        for suffix in _LEGACY_VOICE_SUFFIXES:
+            paths.append(voice_store.dir / f"{name}{suffix}.npy")
+            paths.extend(voice_store.dir.glob(f"{name}{suffix}.npy.bak.*"))
+    return [p for p in paths if p.exists()]
+
+
+def retire_identity_stores(
+    name: str, *,
+    id_map: IdMap,
+    voice_store: PrototypeFileStore | None = None,
+    face_store: PrototypeFileStore | None = None,
+    trash_root: Path | None = None,
+    at: float | None = None,
+) -> RetireResult:
+    """Pure-store core: archive the persona's biometric files into
+    ``trash_root/<name>.<ts>/`` and tombstone its id-map entry.
+
+    Hermetic (fs + json only). The tombstone is the root fix: with it in
+    place, ``db/speakers.py`` marks instead of re-inserts, ``allocate``
+    refuses instead of re-mints, and the loaders skip instead of re-adopt.
+    """
+    clean = (name or "").strip().lower()
+    res = RetireResult(name=clean)
+
+    if clean in id_map.reserved_ids:
+        res.status = "reserved"
+        res.error = f"refusing to retire reserved identity {clean!r}"
+        return res
+
+    already = id_map.is_retired(clean)
+    sid = id_map.retired().get(clean, {}).get("id") if already \
+        else id_map.id_for(clean)
+    files = _persona_files(clean, voice_store, face_store)
+    if sid is None and not files:
+        res.status = "not_found"
+        res.error = f"no id-map entry and no biometric files for {clean!r}"
+        return res
+    res.speaker_id = sid
+    if already:
+        res.warnings.append("already_retired")
+
+    import time as _time
+    ts = float(at if at is not None else _time.time())
+
+    if files:
+        dest_root = Path(trash_root) if trash_root else None
+        if dest_root is None:
+            res.warnings.append("no_trash_root:files_left_in_place")
+        else:
+            dest = dest_root / f"{clean}.{int(ts)}"
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                for p in files:
+                    target = dest / p.name
+                    p.rename(target)
+                    res.files_moved.append(p.name)
+                res.trash_dir = str(dest)
+                log.info("[RETIRE] archived %d file(s) for %s -> %s",
+                         len(res.files_moved), clean, dest)
+            except Exception as e:
+                res.status = "error"
+                res.error = f"archive failed: {e}"
+                log.warning("[RETIRE] archive failed for %s: %s (aborting "
+                            "before tombstone; stores unchanged)", clean, e)
+                return res
+
+    if sid is not None and not already:
+        id_map.retire(clean, at=ts)
+    return res
+
+
+def revive_identity_stores(
+    name: str, *,
+    id_map: IdMap,
+    trash_root: Path,
+) -> RetireResult:
+    """Reverse a retirement: restore the most recent ``<name>.<ts>`` archive
+    from ``trash_root`` and clear the tombstone (same id, per S1)."""
+    clean = (name or "").strip().lower()
+    res = RetireResult(name=clean)
+
+    archives = sorted(Path(trash_root).glob(f"{clean}.*"),
+                      key=lambda p: p.name)
+    latest = archives[-1] if archives else None
+
+    sid = id_map.revive(clean)
+    res.speaker_id = sid
+    if sid is None and latest is None:
+        res.status = "not_found"
+        res.error = f"no tombstone and no archive for {clean!r}"
+        return res
+
+    if latest is not None:
+        from presence.face_identifier import FACE_DIR
+        restored = 0
+        for p in sorted(latest.iterdir()):
+            # Restore by suffix: face files to the face dir, everything else
+            # to the voice dir (both trees are flat .npy stores).
+            target = FACE_DIR if "_edgeface" in p.name else VOICEPRINT_DIR
+            dest = target / p.name
+            if dest.exists():
+                res.warnings.append(f"exists_skipped:{p.name}")
+                continue
+            p.rename(dest)
+            res.files_moved.append(p.name)
+            restored += 1
+        if not any(latest.iterdir()):
+            latest.rmdir()
+        log.info("[REVIVE] restored %d file(s) for %s from %s",
+                 restored, clean, latest)
+    else:
+        res.warnings.append("no_archive:tombstone_cleared_only")
+    return res
+
+
+async def retire_identity(
+    name: str, *,
+    speaker_identifier=None,
+    face_identifier=None,
+    room_ledger=None,
+    db_sync: bool = True,
+    purge_facts: bool = False,
+) -> RetireResult:
+    """Live persona retirement: stop recognition NOW (in-memory removal),
+    archive + tombstone the stores, mark Postgres ``speakers.retired_at``,
+    and forget the room-ledger record.
+
+    ``purge_facts=True`` additionally HARD-DELETES the persona's ``facts``
+    rows (speaker_id or subject match) — for scrubbing test-minted junk, not
+    for real people (their facts stay as inert FK-intact history; a retired
+    persona never resolves again, so they never surface)."""
+    clean = (name or "").strip().lower()
+
+    if face_identifier is None:
+        from presence.face_identifier import get_shared_identifier
+        face_identifier = get_shared_identifier()
+    if speaker_identifier is None:
+        from speaker.identifier import SpeakerIdentifier
+        speaker_identifier = SpeakerIdentifier()
+
+    id_map = face_identifier._id_map
+    voice_store = speaker_identifier._store
+    face_store = face_identifier._store
+
+    # (1) In-memory first — recognition stops immediately, and a concurrent
+    # identify() can't re-observe the persona mid-retire.
+    speaker_identifier._known_speakers = [
+        ks for ks in speaker_identifier._known_speakers if ks.name != clean]
+    face_identifier._known = [
+        kf for kf in face_identifier._known if kf.name != clean]
+    speaker_identifier._recent_confident_embs.pop(clean, None)
+    speaker_identifier._drift_buffers.pop(clean, None)
+    active_re = speaker_identifier._active_reenrollment
+    if active_re and active_re.get("name") == clean:
+        speaker_identifier._active_reenrollment = None
+
+    # (2) Stores: archive + tombstone.
+    trash_root = VOICEPRINT_DIR.parent / "trash"
+    res = retire_identity_stores(
+        clean, id_map=id_map, voice_store=voice_store, face_store=face_store,
+        trash_root=trash_root)
+    if not res.ok:
+        return res
+
+    # (3) Postgres: mark retired (facts/memories FKs stay intact as history).
+    if db_sync and res.speaker_id is not None:
+        try:
+            from db.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE speakers SET retired_at = NOW() "
+                    "WHERE id = $1 AND retired_at IS NULL", res.speaker_id)
+                if purge_facts:
+                    # Clear self-FK references first, then delete.
+                    deleted = await conn.execute(
+                        "WITH doomed AS (SELECT id FROM facts "
+                        "  WHERE speaker_id = $1 OR lower(subject) = $2), "
+                        "unlinked AS (UPDATE facts SET superseded_by = NULL "
+                        "  WHERE superseded_by IN (SELECT id FROM doomed)) "
+                        "DELETE FROM facts WHERE id IN (SELECT id FROM doomed)",
+                        res.speaker_id, clean)
+                    res.warnings.append(f"facts_purged:{deleted}")
+            res.db_synced = True
+        except Exception as e:
+            res.warnings.append(f"db_failed:{e}")
+            log.warning("[RETIRE] speakers DB mark failed for %s: %s "
+                        "(tombstone holds; startup sync reconciles)", clean, e)
+
+    # (4) Presence: forget the ledger record so it can't re-mint at reload.
+    if room_ledger is not None:
+        try:
+            res.ledger_forgotten = room_ledger.forget(clean)
+        except Exception as e:
+            res.warnings.append(f"ledger_failed:{e}")
+
+    log.info("[RETIRE] %s -> id=%s status=%s files=%d db=%s ledger=%s%s",
+             res.name, res.speaker_id, res.status, len(res.files_moved),
+             res.db_synced, res.ledger_forgotten,
+             (" warn=" + ",".join(res.warnings)) if res.warnings else "")
+    return res
+
+
+async def revive_identity(
+    name: str, *,
+    speaker_identifier=None,
+    face_identifier=None,
+    db_sync: bool = True,
+) -> RetireResult:
+    """Reverse a retirement live: restore the archive, clear the tombstone
+    and the Postgres mark, and reload the restored prototypes into the
+    in-memory identifiers (no restart)."""
+    clean = (name or "").strip().lower()
+
+    if face_identifier is None:
+        from presence.face_identifier import get_shared_identifier
+        face_identifier = get_shared_identifier()
+    if speaker_identifier is None:
+        from speaker.identifier import SpeakerIdentifier
+        speaker_identifier = SpeakerIdentifier()
+
+    id_map = face_identifier._id_map
+    voice_store = speaker_identifier._store
+    face_store = face_identifier._store
+    trash_root = VOICEPRINT_DIR.parent / "trash"
+
+    res = revive_identity_stores(clean, id_map=id_map, trash_root=trash_root)
+    if not res.ok:
+        return res
+
+    from presence.face_identifier import KnownFace
+    from speaker.identifier import KnownSpeaker
+
+    sid = res.speaker_id
+    vpath = voice_store.path_for(clean)
+    if sid is not None and vpath.exists() and not any(
+            ks.name == clean for ks in speaker_identifier._known_speakers):
+        try:
+            speaker_identifier._known_speakers.append(KnownSpeaker(
+                speaker_id=sid, name=clean, prototypes=voice_store.load(vpath)))
+        except Exception as e:
+            res.warnings.append(f"voice_reload_failed:{e}")
+    fpath = face_store.path_for(clean)
+    if sid is not None and fpath.exists() and not any(
+            kf.name == clean for kf in face_identifier._known):
+        try:
+            face_identifier._known.append(KnownFace(
+                speaker_id=sid, name=clean, prototypes=face_store.load(fpath)))
+        except Exception as e:
+            res.warnings.append(f"face_reload_failed:{e}")
+
+    if db_sync and sid is not None:
+        try:
+            from db.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE speakers SET retired_at = NULL WHERE id = $1", sid)
+            res.db_synced = True
+        except Exception as e:
+            res.warnings.append(f"db_failed:{e}")
+
+    log.info("[REVIVE] %s -> id=%s status=%s files=%d db=%s%s",
+             res.name, res.speaker_id, res.status, len(res.files_moved),
+             res.db_synced,
              (" warn=" + ",".join(res.warnings)) if res.warnings else "")
     return res
