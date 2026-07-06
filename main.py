@@ -237,12 +237,14 @@ class Orchestrator:
         return True
 
     def _dialog_owns_turn(self) -> bool:
-        """A multi-turn dialog is mid-flight: enroll latches or the face
-        auto-enroll consent FSM. Used by the proactive gate so an unprompted
-        remark never interjects into a pending dialog (code review C8 — the
-        FSM was left out of the first gate and the P1-2 interjection bug was
-        still live for consent dialogs)."""
-        return self._enroll_latch_pending() or self._face_enroller.awaiting
+        """A multi-turn dialog is mid-flight: enroll latches, the face
+        auto-enroll consent FSM, or the introductions name-ask (review
+        finding #5, 2026-07-05 — introductions was left out of this gate the
+        same way the FSM originally was, code review C8). Used by the
+        proactive gate so an unprompted remark never interjects into a
+        pending dialog."""
+        return (self._enroll_latch_pending() or self._face_enroller.awaiting
+                or self._introductions.awaiting)
 
     async def _speak_direct(self, text: str) -> None:
         """Speak a doorway/handler reply with full turn visibility (2026-07-02).
@@ -483,8 +485,12 @@ class Orchestrator:
         self._pending_enroll_confirm = {**snapshot, "name": name,
                                         "scope": scope}
         self._enroll_latch_ts = time.time()
+        # Coach multi-word phrasing from turn one (Dan 2026-07-05): STT
+        # filters one-word turns, so an uncoached "Yes." never even arrives —
+        # every uncoached confirm reply is a paraphrase the verdict may miss.
         await self._speak_direct(
-            f"{self._display_name(name)} — did I get that right?")
+            f"{self._display_name(name)} — did I get that right? "
+            f"Say 'yes that is right' or 'no that is wrong'.")
 
     async def _handle_unified_enroll(self, name: str, scope: str,
                                      speaker_name: str, speaker_result,
@@ -783,12 +789,25 @@ class Orchestrator:
 
         # Confirm-before-commit latch (2026-07-02, tests E/F/G): a parsed name
         # was spoken back last turn; an explicit yes commits it, an explicit
-        # no re-opens the name ask, anything else drops the latch silently
-        # (same contract as the name-ask latch below).
+        # no re-opens the name ask, a cancel aborts. Anything else RE-ASKS
+        # with escalating scripted prompts (Dan 2026-07-05) — the old
+        # silent-drop handed the turn to the LLM, which confabulated
+        # enrollment success with zero [COMMIT] (live-proven 2x). STT filters
+        # one-word turns, so a paraphrased confirm is the DEFAULT reply, not
+        # an edge case. The dialog owns every turn until resolution; the only
+        # no-answer exit is the walk-away TTL.
         if _unified and _latch_live and self._pending_enroll_confirm is not None:
-            from conversation.enroll_intent import is_affirmation, is_negation
+            from conversation.enroll_intent import (
+                is_affirmation, is_negation, is_enroll_cancel,
+                confirm_reask_line)
             _latch = self._pending_enroll_confirm
             self._pending_enroll_confirm = None
+            if is_enroll_cancel(user_text):
+                # Checked before the verdict: "never mind" contains a
+                # negation cue and would otherwise re-open the name ask.
+                self._pending_enroll = None
+                await self._speak_direct("Okay, dropping it.")
+                return
             if is_affirmation(user_text):
                 await self._handle_unified_enroll(
                     _latch["name"], _latch["scope"], speaker_name,
@@ -805,19 +824,32 @@ class Orchestrator:
                 await self._speak_direct(
                     "Okay, scratch that — what name should I go with?")
                 return
-            # Unrelated utterance -> abandon silently, continue as normal.
+            # Unclear -> re-arm and escalate. Refreshing the TTL stamp keeps
+            # "walk-away" semantics: expiry measures silence since the last
+            # exchange, not since the original arm.
+            _tries = _latch.get("confirm_attempts", 0) + 1
+            self._pending_enroll_confirm = {**_latch,
+                                            "confirm_attempts": _tries}
+            self._enroll_latch_ts = time.time()
+            await self._speak_direct(confirm_reask_line(
+                self._display_name(_latch["name"]), _tries))
+            return
 
         # Two-turn latch: a prior "enroll me" without a name is waiting for one.
         # This turn supplies it -> speak it back for confirmation (NOT a direct
         # commit — a bare name utterance is where STT homophones bite hardest).
         if _unified and _latch_live and self._pending_enroll is not None:
-            from conversation.enroll_intent import extract_reply_name
+            from conversation.enroll_intent import (
+                extract_reply_name, is_enroll_cancel, name_reask_line)
             # Multi-word-capable, evasive-aware reply parsing (code review
             # C5/C6): the old inline extractor-first order truncated "My name
             # is Mary Jane" to 'mary' and canonicalized "not telling".
-            _nm = extract_reply_name(user_text)
             _latch = self._pending_enroll
             self._pending_enroll = None
+            if is_enroll_cancel(user_text):
+                await self._speak_direct("Okay, dropping it.")
+                return
+            _nm = extract_reply_name(user_text)
             if _nm:
                 # Pass the arm-time latch as the snapshot (code review R2):
                 # samples + speaker key come from the "enroll me" turn, not
@@ -825,7 +857,15 @@ class Orchestrator:
                 await self._ask_enroll_confirm(_nm, _latch["scope"],
                                                speaker_name, snapshot=_latch)
                 return
-            # No name heard -> abandon the latch silently and continue as normal.
+            # No name heard -> NEVER abandon silently (Dan 2026-07-05):
+            # re-arm and coach the phrasing until a name or a cancel; the
+            # only no-answer exit is the walk-away TTL (refreshed here, same
+            # semantics as the confirm latch above).
+            _tries = _latch.get("name_attempts", 0) + 1
+            self._pending_enroll = {**_latch, "name_attempts": _tries}
+            self._enroll_latch_ts = time.time()
+            await self._speak_direct(name_reask_line(_tries))
+            return
 
         # A face auto-enroll consent dialog in flight OWNS this turn. Route it to
         # the FSM BEFORE the legacy voice enroll-intent / name-ask below, which

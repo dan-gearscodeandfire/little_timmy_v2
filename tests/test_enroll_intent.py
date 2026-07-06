@@ -171,3 +171,89 @@ def test_apostrophe_name_canonicalized():
     # O'Brien previously failed NAME_RE downstream; now canonicalizes.
     r = detect_enroll_intent("enroll me as O'Brien")
     assert r.matched and r.name == "obrien"
+
+
+# ---- 2026-07-05 re-ask fix (never-silent latches, Dan's spec) ----
+
+def test_confirm_verdict_paraphrased_yes():
+    # Live-proven failure 2026-07-02: "You did get that right" read as
+    # unclear -> silent latch drop -> the LLM confabulated the commit. STT
+    # filters one-word turns, so paraphrases are the DEFAULT confirm reply.
+    from conversation.enroll_intent import confirm_verdict
+    assert confirm_verdict("You did get that right") == "yes"
+    assert confirm_verdict("you got that right") == "yes"
+    assert confirm_verdict("you got it right") == "yes"
+    assert confirm_verdict("you heard me right") == "yes"
+    assert confirm_verdict("that's my name") == "yes"
+    assert confirm_verdict("that is my name") == "yes"
+    assert confirm_verdict("nailed it") == "yes"
+    assert confirm_verdict("yes that is correct") == "yes"   # level-3 script
+
+
+def test_confirm_verdict_paraphrased_yes_negated_stays_no():
+    # _NO_RE runs first: widened yes-anchors must not flip negated forms.
+    from conversation.enroll_intent import confirm_verdict
+    assert confirm_verdict("you did not get that right") == "no"
+    assert confirm_verdict("you didn't get it right") == "no"
+    assert confirm_verdict("that is not my name") == "no"
+    assert confirm_verdict("no that is wrong") == "no"       # level-3 script
+
+
+def test_confirm_verdict_name_babble_stays_unclear():
+    # Live repro 2: "Joe, Joey, Jojo, Shabbadu" — neither yes nor no; the
+    # caller must RE-ASK (escalation), never commit or silently drop.
+    from conversation.enroll_intent import confirm_verdict
+    assert confirm_verdict("Joe, Joey, Jojo, Shabbadu") == "unclear"
+    assert confirm_verdict("you got me confused with someone") == "unclear"
+
+
+def test_enroll_cancel_detection():
+    from conversation.enroll_intent import is_enroll_cancel
+    assert is_enroll_cancel("never mind")
+    assert is_enroll_cancel("forget about it")
+    assert is_enroll_cancel("cancel that")
+    assert is_enroll_cancel("stop asking")
+    assert is_enroll_cancel("no thanks")
+    assert not is_enroll_cancel("yes that is right")
+    assert not is_enroll_cancel("my name is Dan")
+    assert not is_enroll_cancel("")
+
+
+def test_reask_scripts_escalate():
+    from conversation.enroll_intent import confirm_reask_line, name_reask_line
+    first = confirm_reask_line("Joe", 1)
+    later = confirm_reask_line("Joe", 2)
+    assert first == "Yes or no — is the name Joe?"
+    assert "YES THAT IS CORRECT" in later and "Joe" in later
+    assert confirm_reask_line("Joe", 7) == later    # blunt level is terminal
+    assert "my name is" in name_reask_line(1)
+    assert "MY NAME IS" in name_reask_line(2)
+
+
+def test_full_name_inference_with_connective():
+    # Dan 2026-07-05: infer the FULL stated name, not the first token.
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("My name is Dan the Barbarian") == \
+        "dan_the_barbarian"
+    r = detect_enroll_intent("enroll me as Dan the Barbarian")
+    assert r.matched and r.name == "dan_the_barbarian"
+    # Trailing connective is trimmed, leading connective still breaks.
+    assert extract_reply_name("I'm Dan the") == "dan"
+    assert extract_reply_name("the door") is None
+
+
+def test_conjunction_still_stops_span():
+    # C7 must survive the connective change: "and" is a hard break.
+    r = detect_enroll_intent("Enroll me, I'm Dan and Sarah is here too")
+    assert r.matched and r.name == "dan"
+
+
+def test_name_turn_miss_shapes_2026_07_02():
+    # The four live miss shapes get sane parses instead of garbage.
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("It is Bob") == "bob"            # was 'it'
+    assert extract_reply_name("My name's Mary Jane") == "mary_jane"  # was 'mary'
+    assert extract_reply_name("hang on") is None               # was 'hang_on'
+    assert extract_reply_name("Buddy") is None                 # bare filler
+    # ...but a real Buddy can enroll via the coached explicit phrasing.
+    assert extract_reply_name("My name is Buddy") == "buddy"

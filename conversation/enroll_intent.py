@@ -31,26 +31,34 @@ _BOTH_RE = re.compile(
 
 # Name-extraction patterns (specific first). Kept as a fallback/superset over
 # the shared conversational extractor (which doesn't parse "... as X").
-# Each captures up to THREE word tokens ("Mary Jane", "Billy Bob Thornton") —
+# Each captures up to FOUR word tokens ("Mary Jane", "Dan the Barbarian") —
 # the single-token version silently truncated multi-word names (test F,
-# 2026-07-02). Trailing non-name tokens are trimmed in _clean_name_tokens.
+# 2026-07-02); epithet names need a connective slot (Dan 2026-07-05).
+# Trailing non-name tokens are trimmed in _clean_name_tokens.
 _NAME_TOKEN = r"[A-Za-z][a-zA-Z']{1,20}"
-_NAME_SPAN = rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,2}})"
+_NAME_SPAN = rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,3}})"
 _NAME_PATTERNS = [
-    re.compile(rf"\bmy\s+name\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE),
+    # "my name is X" / "my name's X" / STT-flattened "my names X" — the
+    # contraction miss truncated "My name's Mary Jane" to 'mary' via the
+    # shared single-token extractor (name-turn miss #3, 2026-07-02).
+    re.compile(rf"\bmy\s+name(?:\s+is|\s+was|'?s)\s+{_NAME_SPAN}\b", re.IGNORECASE),
     re.compile(rf"\bcall\s+me\s+{_NAME_SPAN}\b", re.IGNORECASE),
     re.compile(rf"\b(?:enroll|remember|learn|save)\s+(?:me\s+|my\s+(?:face|voice)\s+)?as\s+{_NAME_SPAN}\b", re.IGNORECASE),
     re.compile(rf"\bI(?:'m|\s+am)\s+{_NAME_SPAN}\b", re.IGNORECASE),
-    re.compile(rf"\bthis\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE),
+    re.compile(rf"\b(?:this|it)\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE),
 ]
 
 # Words that look like names but aren't.
 _NON_NAMES = frozenset({
     "face", "voice", "name", "person", "this", "that", "here", "sorry", "fine",
-    "okay", "ok", "yes", "no", "sure", "back", "ready", "me",
+    "okay", "ok", "yes", "no", "sure", "back", "ready", "me", "it",
     # trailing filler that the multi-word span can drag in
-    "please", "now", "again", "though", "thanks", "buddy", "man",
-    # connectives/verbs: stop the 3-token span from fusing identities
+    "please", "now", "again", "though", "thanks",
+    # stall words: "hang on" canonicalized to 'hang_on' and went to confirm
+    # (name-turn miss #3, 2026-07-02)
+    "hang", "wait", "hold", "um", "uh", "hmm", "well", "so", "just",
+    "second", "minute", "moment",
+    # connectives/verbs: stop the multi-token span from fusing identities
     # ("I'm Dan and Sarah is here" must parse 'dan', not 'dan_and_sarah' —
     # code review C7) and from canonicalizing evasive replies ("not telling",
     # "never mind" — code review C5).
@@ -59,19 +67,40 @@ _NON_NAMES = frozenset({
     "none", "guys", "everyone", "everybody",
 })
 
+# Filler words that ARE plausible names ("Buddy"): rejected in bare replies
+# (where they're almost always vocative filler) but accepted as the FIRST
+# token of an explicit pattern — "My name is Buddy" is unambiguous, and the
+# re-ask coaching funnels real Buddies to exactly that phrasing (Dan 7-05).
+_SOFT_NON_NAMES = frozenset({"buddy", "man"})
 
-def _clean_name_tokens(candidate: str) -> Optional[str]:
+# Mid-name connectives, kept only BETWEEN name tokens ("Dan the Barbarian" ->
+# dan_the_barbarian, Dan 2026-07-05). Leading or trailing they break/trim as
+# before ("the door" -> None, "I'm Dan the" -> dan).
+_NAME_CONNECTIVES = frozenset({"the"})
+
+
+def _clean_name_tokens(candidate: str, explicit: bool = False) -> Optional[str]:
     """Validate a captured span token-by-token: keep leading name-like tokens,
-    stop at the first non-name word. Returns the canonical form (lowercase,
-    spaces -> underscores, apostrophes dropped so "O'Brien" -> "obrien" passes
-    NAME_RE) or None if the FIRST token is already a non-name (e.g. "enroll me
-    as here")."""
-    kept = []
+    stop at the first non-name word. ``explicit`` marks a capture from an
+    explicit name pattern ("my name is X"), where a soft non-name may lead.
+    Returns the canonical form (lowercase, spaces -> underscores, apostrophes
+    dropped so "O'Brien" -> "obrien" passes NAME_RE) or None if the FIRST
+    token is already a non-name (e.g. "enroll me as here")."""
+    kept: list[str] = []
+    pending: list[str] = []          # connectives held until a name follows
     for tok in candidate.strip().lower().split():
-        if tok in _NON_NAMES:
+        if tok in _NAME_CONNECTIVES and kept:
+            pending.append(tok)
+            continue
+        if tok in _SOFT_NON_NAMES:
+            if not (explicit and not kept):
+                break
+        elif tok in _NON_NAMES:
             break
         tok = tok.replace("'", "")
         if tok:
+            kept.extend(pending)
+            pending = []
             kept.append(tok)
     if not kept:
         return None
@@ -101,12 +130,16 @@ def _extract_name(text: str) -> Optional[str]:
     for pat in _NAME_PATTERNS:
         m = pat.search(text)
         if m:
-            cand = _clean_name_tokens(m.group(1))
+            cand = _clean_name_tokens(m.group(1), explicit=True)
             if cand:
                 return cand
     if _extract_name_from_response is not None:
         cand = _extract_name_from_response(text)
         if cand:
+            # NOT explicit: the shared extractor also fires on bare tokens,
+            # which carry no name-position evidence — a soft filler ("Buddy")
+            # must stay rejected here and enroll only via the coached
+            # "my name is X" patterns above.
             cand = _clean_name_tokens(cand)
             if cand:
                 return cand
@@ -139,8 +172,10 @@ def extract_reply_name(text: str) -> Optional[str]:
     if cand:
         return cand
     bare = re.sub(r"[^\w\s']", " ", text).strip()
-    # Conversational lead-ins the patterns above don't cover ("It's Bob").
-    bare = re.sub(r"^(?:it'?s|i'?m|i\s+am|the\s+name'?s?(?:\s+is)?)\s+",
+    # Conversational lead-ins the patterns above don't cover ("It's Bob",
+    # "It is Bob" — the latter parsed to 'it' pre-2026-07-05).
+    bare = re.sub(r"^(?:it'?s|it\s+is|i'?m|i\s+am|"
+                  r"(?:the|my)\s+name(?:'?s|\s+is)?)\s+",
                   "", bare, flags=re.IGNORECASE).strip()
     if bare and len(bare.split()) <= 3:
         return _clean_name_tokens(bare)
@@ -169,7 +204,14 @@ _NO_RE = re.compile(
 _YES_STRONG_RE = re.compile(
     r"\b(?:yes|yeah|yep|yup|affirmative|"
     r"that'?s\s+(?:right|it|me|correct)|that\s+is\s+(?:right|it|me|correct)|"
-    r"you\s+got\s+(?:it|that)(?:\s+right)?|spot\s+on)\b", re.IGNORECASE)
+    # paraphrased confirms, live-proven misses 2026-07-02 ("You did get that
+    # right" -> unclear -> silent drop -> LLM confabulated the commit). STT
+    # drops one-word turns, so EVERY confirm reply is a paraphrase — widen
+    # hard. _NO_RE still runs first, so "you did NOT get that right" is safe.
+    r"that'?s\s+my\s+name|that\s+is\s+my\s+name|"
+    r"you\s+(?:did\s+)?(?:get|got)\s+(?:it|that)(?:\s+(?:right|correct))?|"
+    r"you\s+(?:got|heard)\s+me\s+right|you\s+have\s+it(?:\s+right)?|"
+    r"nailed\s+it|spot\s+on)\b", re.IGNORECASE)
 _YES_WEAK = frozenset({
     "correct", "right", "exactly", "sure", "ok", "okay", "alright", "fine",
     "absolutely", "indeed", "affirmative", "precisely", "bingo",
@@ -200,6 +242,47 @@ def is_affirmation(text: str) -> bool:
 
 def is_negation(text: str) -> bool:
     return confirm_verdict(text) == "no"
+
+
+# Never-silent latch dialogs (Dan 2026-07-05): an unclear confirm reply or a
+# missed name NEVER drops the latch silently — the dialog re-asks with
+# progressively blunter scripted prompts until a clear yes (commit), a clear
+# no (correction loop), or a cancel (abort). The only no-answer exit is the
+# walk-away TTL. Silent drops handed the turn to the LLM mid-dialog, which
+# then confabulated enrollment success ("Fine. Joe it is." — zero [COMMIT],
+# live-proven 2x on 2026-07-02).
+
+# Explicit abort of the whole enroll dialog. Distinct from a "no" verdict —
+# "no" re-opens the name ask, cancel drops everything. Checked BEFORE
+# confirm_verdict because "never mind" contains a _NO_RE cue.
+_CANCEL_RE = re.compile(
+    r"\b(?:never\s*mind|forget\s+(?:about\s+)?(?:it|that|this)|cancel|abort|"
+    r"skip\s+it|drop\s+it|leave\s+it|stop\s+(?:it|that|asking)|"
+    r"don'?t\s+bother|no\s+thanks)\b", re.IGNORECASE)
+
+
+def is_enroll_cancel(text: str) -> bool:
+    """True when the turn explicitly aborts a pending enroll dialog."""
+    return bool(text and _CANCEL_RE.search(text))
+
+
+def confirm_reask_line(display_name: str, attempt: int) -> str:
+    """Scripted re-ask after an unclear confirm verdict. ``attempt`` counts
+    unclear replies so far (1-based); the script escalates in bluntness and
+    coaches multi-word phrasing (STT filters one-word turns, so a coached
+    "yes that is correct" survives where a bare "yes" never arrives)."""
+    if attempt <= 1:
+        return f"Yes or no — is the name {display_name}?"
+    return (f"Say YES THAT IS CORRECT, or NO THAT IS WRONG. "
+            f"Is the name {display_name}?")
+
+
+def name_reask_line(attempt: int) -> str:
+    """Scripted re-ask after a name-turn miss. Coaches the explicit phrasing
+    that the extractor (and STT) parse most reliably."""
+    if attempt <= 1:
+        return "I didn't catch a name. Say 'my name is', then the name."
+    return "I still didn't catch it. Say: MY NAME IS, then your name."
 
 
 def detect_enroll_intent(text: str, speaker_name: Optional[str] = None) -> EnrollIntent:
