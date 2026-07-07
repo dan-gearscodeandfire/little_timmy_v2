@@ -588,6 +588,70 @@ async def set_tts_mute(payload: dict | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+@app.get("/api/timmy/anchor")
+async def get_anchor():
+    """Proxy: live LED-mic anchor state (active/source/age/anchored_name)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/anchor")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/timmy/anchor_enabled")
+async def get_anchor_enabled():
+    """Proxy: LED-mic anchor master toggle."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/anchor_enabled")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/anchor_enabled")
+async def set_anchor_enabled(payload: dict | None = None):
+    """Proxy: flip the anchor master toggle. LT persists; disable also clears
+    any live anchor (teardown-in-one-flip)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/anchor_enabled",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/timmy/identity_dialogs")
+async def get_identity_dialogs():
+    """Proxy: identity-dialog gate verdict (allowed/anchor/override/regime)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/identity_dialogs")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/identity_dialogs")
+async def set_identity_dialogs(payload: dict | None = None):
+    """Proxy: flip the supervised-enroll override (forces identity dialogs on
+    despite EXPO for a supervised mid-show enroll)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/identity_dialogs",
+                                  json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
 @app.get("/api/timmy/conversation/idle_gate")
 async def get_conversation_idle_gate():
     """Proxy: read LT's conversation_idle_gate_seconds (mail-defer active window)."""
@@ -1598,6 +1662,37 @@ header .uptime {
             <option value="">Shop — home base, normal behavior</option>
             <option value="EXPO">Open Sauce — show floor, assume strangers</option>
           </select>
+        </div>
+        <!-- LED-mic anchor (2026-07-07). Master toggle for the lit-mic CV
+             anchor: poll loop finds the LED-holding face, binds it to voice
+             attribution, and un-darks the speech identity dialogs at EXPO
+             for the bound speaker only. Toggle OFF also clears any live
+             anchor (teardown-in-one-flip). -->
+        <div class="service-card" id="anchor-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">LED-Mic Anchor</div>
+            <div class="service-detail" id="anchor-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="anchor-toggle">
+            <input type="checkbox" onchange="commitAnchorEnabled(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Identity-dialogs override (2026-07-06 gate, button 2026-07-07).
+             EXPO darkens the whole identity-dialog class (enroll, misID
+             correction, introductions, face consent). This override forces
+             them back ON for a supervised mid-show enroll; it also restores
+             the misID protest for an on-mic visitor whose voice misIDs as
+             enrolled (binding otherwise blocks it — the documented trade-off). -->
+        <div class="service-card" id="iddialogs-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Identity Dialogs Override</div>
+            <div class="service-detail" id="iddialogs-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="iddialogs-toggle">
+            <input type="checkbox" onchange="commitIdentityDialogs(this.checked)">
+            <span class="slider"></span>
+          </label>
         </div>
         <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
              A1/A2 sticky identity (streamerpi /face_id/config) and LT-side
@@ -3409,6 +3504,115 @@ async function commitTtsMute(muted) {
 
 loadTtsMute();
 setInterval(loadTtsMute, 15000);
+
+// LED-mic anchor (2026-07-07): master toggle + live armed status. 5s poll —
+// the anchor state moves fast (2s poll loop, 30s TTL) and the ARMED/name
+// readout is the operator's confirmation the visitor is bound.
+async function loadAnchor() {
+  const detail = document.getElementById('anchor-detail');
+  const toggle = document.querySelector('#anchor-toggle input');
+  const card = document.getElementById('anchor-card');
+  try {
+    const d = await (await fetch('/api/timmy/anchor')).json();
+    if (d.error) {
+      if (detail) { detail.textContent = d.error; detail.style.color = '#f85149'; }
+      return;
+    }
+    if (toggle && document.activeElement !== toggle) toggle.checked = !!d.enabled;
+    let text, color;
+    if (!d.enabled) {
+      text = 'Off — mic LED ignored';
+      color = '#8b949e';
+    } else if (d.active) {
+      const who = d.anchored_name || (d.source === 'stub' ? 'stub anchor' : 'unrecognized face');
+      text = 'ARMED — ' + who + (d.age_s != null ? ' · age ' + d.age_s + 's' : '');
+      color = '#3fb950';
+    } else {
+      text = 'Enabled — waiting for lit LED';
+      color = '#d29922';
+    }
+    if (detail) { detail.textContent = text; detail.style.color = color; }
+    if (card) card.style.borderLeftColor =
+      d.active ? '#3fb950' : (d.enabled ? '#d29922' : '#484f58');
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+}
+
+async function commitAnchorEnabled(on) {
+  const detail = document.getElementById('anchor-detail');
+  try {
+    const r = await fetch('/api/timmy/anchor_enabled', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!on }) });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (detail) { detail.textContent = 'rejected: ' + (d.error || r.status); detail.style.color = '#f85149'; }
+    }
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+  loadAnchor();
+  loadIdentityDialogs();  // anchor feeds effective_allowed
+}
+
+loadAnchor();
+setInterval(loadAnchor, 5000);
+
+// Identity-dialogs override (2026-07-07): forces the identity-dialog class
+// back ON despite EXPO for a supervised mid-show enroll. Detail line explains
+// the EFFECTIVE gate verdict, not just the toggle.
+async function loadIdentityDialogs() {
+  const detail = document.getElementById('iddialogs-detail');
+  const toggle = document.querySelector('#iddialogs-toggle input');
+  const card = document.getElementById('iddialogs-card');
+  try {
+    const d = await (await fetch('/api/timmy/identity_dialogs')).json();
+    if (d.error) {
+      if (detail) { detail.textContent = d.error; detail.style.color = '#f85149'; }
+      return;
+    }
+    if (toggle && document.activeElement !== toggle) toggle.checked = !!d.override;
+    const expo = (d.situation_regime || '').toUpperCase() !== '';
+    let text, color;
+    if (d.override) {
+      text = 'OVERRIDE — dialogs forced ON' + (expo ? ' despite ' + d.situation_regime : '');
+      color = '#d29922';
+    } else if (d.allowed) {
+      text = 'Dialogs LIVE (Shop regime)';
+      color = '#8b949e';
+    } else if (d.anchor_active) {
+      text = 'DARK (' + d.situation_regime + ') — anchor un-darks for bound speaker';
+      color = '#3fb950';
+    } else {
+      text = 'DARK (' + d.situation_regime + ') — enroll/misID/intro/consent silent';
+      color = '#ff2d95';
+    }
+    if (detail) { detail.textContent = text; detail.style.color = color; }
+    if (card) card.style.borderLeftColor = d.override ? '#d29922' : '#484f58';
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+}
+
+async function commitIdentityDialogs(on) {
+  const detail = document.getElementById('iddialogs-detail');
+  try {
+    const r = await fetch('/api/timmy/identity_dialogs', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!on }) });
+    const d = await r.json();
+    if (!r.ok || d.error || d.ok === false) {
+      if (detail) { detail.textContent = 'rejected: ' + (d.error || r.status); detail.style.color = '#f85149'; }
+    }
+  } catch (e) {
+    if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; }
+  }
+  loadIdentityDialogs();
+}
+
+loadIdentityDialogs();
+setInterval(loadIdentityDialogs, 5000);
 
 // --- Conversation-active / mail-defer window slider (conversation_idle_gate_seconds) ---
 let idleGateHoldUntil = 0;  // suppress poll->slider sync for 2s after a user edit

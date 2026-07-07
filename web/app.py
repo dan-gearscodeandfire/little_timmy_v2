@@ -1393,6 +1393,42 @@ async def set_anchor(payload: dict | None = None):
             "led_xy": list(led_xy) if led_xy else None, "ttl_s": ttl_s}
 
 
+@app.get("/api/anchor_enabled")
+async def get_anchor_enabled():
+    """Read the anchor MASTER toggle (webui button surface, 2026-07-07; full
+    anchor state is GET /api/anchor). `active` rides along so a flip's effect
+    is visible in one read."""
+    from persistence import runtime_toggles
+    from presence import anchor
+    return {
+        "enabled": bool(runtime_toggles.get("anchor_enabled")),
+        "active": anchor.anchor_active(),
+    }
+
+
+@app.post("/api/anchor_enabled")
+async def set_anchor_enabled(payload: dict | None = None):
+    """Flip the anchor master toggle live ({"enabled": bool} — the standard
+    toggle-POST contract). anchor_enabled previously had no API: flipping it
+    meant a shell on okdemerzel, and Dan has no Claude Code at the show.
+    Persisted by runtime_toggles; the poll loop and gate disjunct read it per
+    tick/turn, no restart. Disabling also CLEARS any live anchor (the bench
+    teardown recipe): the gate goes dark via the disjunct either way, but a
+    residual armed anchor would keep GET /api/anchor reporting active=true
+    until TTL expiry — lying status on the booth screen."""
+    from persistence import runtime_toggles
+    from presence import anchor
+    on = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("anchor_enabled", on)
+    if not on:
+        anchor.clear_anchor()
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("anchor_enabled")),
+        "active": anchor.anchor_active(),
+    }
+
+
 @app.get("/api/proactive")
 async def get_proactive():
     """Read the proactive-speech runtime toggle. `enabled` is the live operator
