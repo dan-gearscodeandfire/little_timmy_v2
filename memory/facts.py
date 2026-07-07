@@ -6,6 +6,20 @@ from db.connection import get_pool
 
 log = logging.getLogger(__name__)
 
+# Identity-class predicates for the EXPO facts gate (Dan ruling 2026-07-07):
+# any predicate that RENAMES its subject. The 'name' substring deliberately
+# over-matches (name, nickname, preferred_name, first_name, has_a_robot_named
+# ...) — the gate only runs while the identity dialogs are dark, where a
+# false block costs one booth-chatter fact and a false pass rewrites who
+# somebody IS (observed live 7-07: dan.name overwritten to a visitor's
+# self-intro, twice).
+_IDENTITY_PREDICATE_ALIASES = frozenset(
+    {"goes by", "goes_by", "alias", "aka", "called", "known as", "known_as"})
+
+
+def _is_identity_predicate(predicate: str) -> bool:
+    return "name" in predicate or predicate in _IDENTITY_PREDICATE_ALIASES
+
 
 @dataclass
 class Fact:
@@ -55,6 +69,39 @@ async def store_fact(
                 log.warning("[REDACT] dropped fact containing blocked term %r: %s.%s",
                             _t, subject, predicate)
                 return -1
+
+    # EXPO facts gate (Dan ruling 2026-07-07). While the identity dialogs are
+    # dark (crowd regime, no override), the dialog interceptors that normally
+    # catch name-claims BEFORE the LLM are off — so store_fact heard "my name
+    # is Zorbo" from a misattributed visitor and overwrote dan.name, twice,
+    # live. Both auto-writers (tool router + background extractor) come
+    # through this chokepoint, so gate here:
+    #   (a) identity-class predicates are blocked for ANY subject — renames
+    #       flow only through the sanctioned dialog path (assign_name /
+    #       commit_identity), never through booth chatter;
+    #   (b) subjects that are not ENROLLED speakers are blocked entirely —
+    #       no facts about (or keyed to) strangers. A visitor who enrolls via
+    #       the anchored mic gets a speakers row and facts flow again.
+    # Deliberately keyed on the PURE regime+override predicate, NOT the
+    # LED-anchor disjunct: the anchor un-darks the identity DIALOGS for the
+    # mic-holder, but fact-writing stays gated for the whole show (the
+    # anchor's TTL window is exactly when a misattributed bystander turn can
+    # fire — the observed leak). Same -1 sentinel contract as redaction.
+    from persistence import runtime_toggles
+    if not runtime_toggles.identity_dialogs_allowed():
+        if _is_identity_predicate(predicate):
+            log.warning("[FACT-GATE] blocked identity-key write while dialogs "
+                        "dark: %s.%s = %r", subject, predicate, value)
+            return -1
+        enrolled = await pool.fetchrow(
+            "SELECT 1 FROM speakers WHERE lower(name) = $1 AND retired_at IS NULL",
+            subject,
+        )
+        if enrolled is None:
+            log.warning("[FACT-GATE] blocked fact about unenrolled subject "
+                        "while dialogs dark: %s.%s = %r",
+                        subject, predicate, value)
+            return -1
 
     # Classify sensitivity at creation (PII gating). Both fact writers -- the
     # extraction pipeline and the :8092 tool-call classifier -- pass through

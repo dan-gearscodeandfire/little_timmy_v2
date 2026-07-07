@@ -14,7 +14,6 @@ the injected speaker-id module.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 
 from persistence import runtime_toggles
@@ -113,8 +112,13 @@ class Introductions:
                     # in Shop) so the name links voice AND face, not voice
                     # only. Never blocks or breaks the promotion.
                     await self._maybe_commit_face(temp_id, name)
-                # Promote the speaker and continue into a normal turn.
-                return IntroOutcome(handled=False, speaker_name=name)
+                # Promote ONLY on a successful assign (F2 fix, review 7-07):
+                # a REFUSED name (tombstoned / reserved / already-known) used
+                # to be adopted as the turn's speaker_name anyway, so the
+                # visitor's facts filed under the refused — real person's —
+                # name. Refused -> stay the unknown_N.
+                return IntroOutcome(handled=False,
+                                    speaker_name=name if ok else speaker_name)
             elif any(w in lower for w in _NEGATIVE):
                 log.info("Name rejected by user, will re-ask next stable utterance")
                 temp_id = self._pending_confirm["temp_id"]
@@ -127,7 +131,7 @@ class Introductions:
                 return IntroOutcome(handled=False, speaker_name=speaker_name)
             else:
                 # They said something else — maybe the actual name this time.
-                name = _extract_name_from_response(user_text)
+                name = _extract_name(user_text)
                 if name:
                     self._pending_confirm["name"] = name
                     await self._say_confirm(name)
@@ -137,7 +141,7 @@ class Introductions:
 
         # --- waiting for the speaker to state their name ---
         if self._pending_capture and speaker_name.startswith("unknown_"):
-            name = _extract_name_from_response(user_text)
+            name = _extract_name(user_text)
             if name:
                 # Confirm before committing.
                 self._pending_confirm = {
@@ -219,54 +223,14 @@ class Introductions:
         log.info("[TIMMY] %s (name confirmation)", result.text)
 
 
-def _extract_name_from_response(text: str) -> str | None:
-    """Try to extract a name from a short response like 'I'm Erin' or 'My name
-    is Erin'. Conservative: rejects evasive, playful, or non-name responses.
-    Moved verbatim from main.Orchestrator (2026-06-06 refactor)."""
-    text = text.strip().rstrip(".!?,")
-    lower = text.lower()
+def _extract_name(text: str) -> str | None:
+    """Extract a name from a short reply ('I'm Erin', 'My name is Erin').
 
-    # Reject obviously evasive/playful responses early
-    _EVASIVE_PHRASES = [
-        "not sure", "don't know", "i'm not", "none of your",
-        "wouldn't you", "guess", "figure it out", "not telling",
-        "not allowed", "can't tell", "secret", "classified",
-        "why do you", "does it matter", "who cares", "i don't",
-        "i can't", "i won't", "not going to", "rather not",
-    ]
-    if any(phrase in lower for phrase in _EVASIVE_PHRASES):
-        return None
-
-    patterns = [
-        r"(?:my name is|i'm|i am|it's|call me|they call me|name's|i go by)\s+(\w+)",
-        r"^(\w+)$",  # just a single word
-    ]
-
-    # Expanded rejection set
-    _NOT_NAMES = {
-        # Fillers & affirmations
-        "yes", "no", "yeah", "yep", "nope", "nah", "sure", "ok", "okay",
-        "hi", "hey", "hello", "bye", "thanks",
-        # Articles & pronouns
-        "the", "a", "an", "this", "that", "it", "i",
-        # Question words
-        "what", "who", "why", "how", "when", "where", "which",
-        # Common verbs/adverbs
-        "well", "just", "um", "uh", "like", "really", "actually",
-        "here", "there", "going", "doing", "trying", "thinking",
-        # Adjectives that match "I'm X" but aren't names
-        "not", "fine", "good", "great", "tired", "busy", "sorry",
-        "happy", "sad", "bored", "confused", "lost", "done",
-        "sure", "ready", "allowed", "able", "afraid", "certain",
-        "kidding", "joking", "serious", "curious", "interested",
-        # Negative constructs
-        "nobody", "nothing", "none", "never",
-    }
-
-    for pattern in patterns:
-        m = re.search(pattern, lower)
-        if m:
-            name = m.group(1)
-            if name not in _NOT_NAMES and len(name) >= 2:
-                return name
-    return None
+    Delegates to enroll_intent.extract_reply_name — THE canonical
+    conversational name extractor (F9 fix, review 7-07): this module kept a
+    verbatim-2026-06-06 duplicate with its own _NOT_NAMES, so fixes landed
+    there ('call me later' -> 'later') silently missed the introductions
+    pending-capture path. Lazy import: enroll_intent must stay importable
+    without this module loaded first (it no longer imports us at all)."""
+    from conversation.enroll_intent import extract_reply_name
+    return extract_reply_name(text)

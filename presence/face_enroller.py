@@ -53,9 +53,10 @@ from .new_face_trigger import NewFaceTrigger, TriggerConfig
 log = logging.getLogger("timmy")
 
 
-# Reuse the conservative name extractor the voice-introduction dialog already uses.
+# Reuse THE canonical conversational name extractor (enroll_intent, F9 review
+# 7-07 — the introductions duplicate it used to import is retired).
 try:  # pragma: no cover - import shape differs only under direct module run
-    from conversation.introductions import _extract_name_from_response
+    from conversation.enroll_intent import extract_reply_name as _extract_name_from_response
 except Exception:  # pragma: no cover
     _extract_name_from_response = None  # selftest injects a stub
 

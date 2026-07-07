@@ -22,7 +22,7 @@ import numpy as np
 
 import config
 from persistence import runtime_toggles
-from presence.led_detect import find_green_led
+from presence.led_detect import find_green_led, green_mask
 
 
 def main() -> int:
@@ -47,16 +47,11 @@ def main() -> int:
         cv2.imwrite(args.save, frame)
         print(f"saved: {args.save}")
 
-    # Candidate dump: the same mask as find_green_led but WITHOUT the
-    # exactly-one filter, so you can see everything the thresholds pass.
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    green = cv2.inRange(hsv, (knobs["h_lo"], knobs["s_min"], knobs["v_min"]),
-                        (knobs["h_hi"], 255, 255))
-    white = cv2.inRange(hsv, (0, 0, 250), (179, 60, 255))
-    if cv2.countNonZero(white):
-        near = cv2.dilate(green, np.ones((7, 7), np.uint8))
-        green = cv2.bitwise_or(green, cv2.bitwise_and(white, near))
-    green = cv2.morphologyEx(green, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    # Candidate dump: the detector's OWN mask (led_detect.green_mask — factored
+    # 7-07 so this tool can never desync from it) WITHOUT the exactly-one
+    # filter, so you can see everything the thresholds pass.
+    green = green_mask(frame, knobs["h_lo"], knobs["h_hi"],
+                       knobs["s_min"], knobs["v_min"])
     n, _l, stats, cents = cv2.connectedComponentsWithStats(green)
     cands = []
     for i in range(1, n):

@@ -60,6 +60,13 @@ class FaceObservation:
     # sole_face_crops there is NO ==1-face requirement — the anchor is exactly
     # what disambiguates a crowd. Wins over sole_face_crops at the cosample feed.
     anchored_face_crops: tuple = field(default=(), compare=False, repr=False)
+    # Recognized enrolled identity of the anchored face track this grab, or
+    # None when the face under the LED is unrecognized (the ordinary visitor)
+    # or there was no consistent pick. The voice<->anchor binding input (F1
+    # fix, review 7-07): anchored crops may only be buffered under a turn's
+    # speaker when this is CONSISTENT with the voice attribution — the crops
+    # are the MIC-HOLDER's face, not necessarily the voice's owner.
+    anchored_face_name: Optional[str] = None
 
 
 @dataclass(frozen=True)

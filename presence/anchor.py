@@ -43,24 +43,44 @@ class AnchorState:
     anchored_bbox: Optional[tuple] = None    # (x_min, y_min, x_max, y_max) of the paired face
     source: str = "stub"                     # "stub" (API-declared) | "cv" (LED detector)
     ttl_s: Optional[float] = None            # per-set override; None -> anchor_ttl_s toggle
+    # Recognized (enrolled) name of the anchored face, or None when the face
+    # under the LED is unrecognized (the ordinary visitor case). Written by the
+    # CV detector path only — a stub anchor carries None. This is what lets the
+    # gate/crop consumers BIND the anchor to a turn's voice attribution
+    # (binding_ok below) instead of trusting any speaker inside the TTL window.
+    anchored_name: Optional[str] = None
 
 
 _state: Optional[AnchorState] = None
 _lock = threading.Lock()
 
 
-def set_anchor(led_xy=None, anchored_bbox=None, *, source: str, ttl_s: Optional[float] = None) -> None:
+def set_anchor(led_xy=None, anchored_bbox=None, *, source: str, ttl_s: Optional[float] = None,
+               anchored_name: Optional[str] = None) -> None:
     """Declare/refresh the anchor. Each call restamps captured_at (TTL restart)."""
     global _state
     with _lock:
+        was = _state
         _state = AnchorState(
             captured_at=time.time(),
             led_xy=tuple(led_xy) if led_xy is not None else None,
             anchored_bbox=tuple(anchored_bbox) if anchored_bbox is not None else None,
             source=source,
             ttl_s=ttl_s,
+            anchored_name=anchored_name,
         )
-    log.info("[ANCHOR] set source=%s led_xy=%s ttl=%s", source, led_xy, ttl_s or "toggle")
+        st = _state
+    # INFO only on a state TRANSITION (dark->active, source or identity flip);
+    # steady refreshes log at debug — the CV path republishes every poll tick /
+    # per-turn grab and was spamming INFO per frame (code review 7-07).
+    was_fresh = was is not None and (time.time() - was.captured_at) <= (
+        was.ttl_s if was.ttl_s is not None else float(runtime_toggles.get("anchor_ttl_s")))
+    if (not was_fresh or was.source != st.source
+            or was.anchored_name != st.anchored_name):
+        log.info("[ANCHOR] set source=%s led_xy=%s ttl=%s name=%s", source, led_xy,
+                 ttl_s or "toggle", anchored_name or "-")
+    else:
+        log.debug("[ANCHOR] refresh source=%s led_xy=%s", source, led_xy)
 
 
 def clear_anchor() -> None:
@@ -89,7 +109,7 @@ def anchor_active() -> bool:
     return (time.time() - st.captured_at) <= ttl
 
 
-def gate_disjunct() -> bool:
+def gate_disjunct(speaker_name: Optional[str] = None) -> bool:
     """The identity-dialog gate's third input (regime + override + THIS).
 
     True only when the anchor feature is enabled AND the anchor is fresh —
@@ -98,8 +118,63 @@ def gate_disjunct() -> bool:
     runtime_toggles.identity_dialogs_allowed(): that predicate stays pure
     regime+override (it also guards the face-consent FSM, which the anchor
     must NOT un-dark), and persistence must not import presence.
+
+    ``speaker_name`` (F7 binding, code review 7-07): when given, the fresh
+    anchor must also BIND to this turn's voice attribution (binding_ok) —
+    without it, a fresh anchor un-darked the identity-MUTATION surfaces for
+    EVERY speaker in the TTL window (an off-mic bystander could open the
+    misID confirm FSM on the mic-holder's anchor). None preserves the plain
+    freshness verdict (status surfaces, non-speaker consumers).
     """
-    return bool(runtime_toggles.get("anchor_enabled")) and anchor_active()
+    if not (bool(runtime_toggles.get("anchor_enabled")) and anchor_active()):
+        return False
+    return speaker_name is None or binding_ok(speaker_name)
+
+
+def binding_ok(speaker_name: str) -> bool:
+    """Is this turn's VOICE attribution consistent with the ANCHORED face?
+
+    The anchor marks a face (position above the LED); the turn's speaker comes
+    from voice. They are different sensors and can disagree — an off-mic
+    bystander's voice with the mic-holder's face was the wrong-face-commit
+    vector (F1) and the gate-for-everyone hole (F7). Consistency contract:
+
+    - stub anchor: True (operator-declared bench state — the operator owns
+      attribution; binding would break every stub-driven test flow).
+    - anchored face RECOGNIZED as enrolled X: speaker must be X.
+    - anchored face UNRECOGNIZED (None): speaker must be an unknown_N — the
+      ordinary visitor case. An ENROLLED voice with an unrecognized anchored
+      face is exactly the off-mic-collapse signature, so it does NOT bind.
+      (Cost: an on-mic visitor whose voice misIDs as enrolled loses the misID
+      protest under EXPO — acceptable at the booth; Shop is ungated and the
+      supervised override restores everything.)
+    """
+    with _lock:
+        st = _state
+    if st is None:
+        return False
+    if st.source == "stub":
+        return True
+    if st.anchored_name is None:
+        return speaker_name.startswith("unknown_")
+    return speaker_name == st.anchored_name
+
+
+def speech_dialogs_allowed(speaker_name: Optional[str] = None) -> bool:
+    """THE gate for the SPEECH identity dialogs (introductions, misID
+    correction, enroll intent): pure regime+override OR a fresh, bound anchor.
+    Named helper for the disjunction that was previously inlined at each
+    doorway site (code review 7-07). The face-consent FSM must keep using
+    consent_allowed() — the anchor never un-darks it (implied consent)."""
+    return runtime_toggles.identity_dialogs_allowed() or gate_disjunct(speaker_name)
+
+
+def consent_allowed() -> bool:
+    """Gate for the face-consent FSM: pure regime+override, NO anchor disjunct
+    (mic-in-hand is implied consent — the offer would be noise). Alias of
+    runtime_toggles.identity_dialogs_allowed() so doorway code reads as the
+    consent/speech split it implements."""
+    return runtime_toggles.identity_dialogs_allowed()
 
 
 def pick_anchored_face(face_bboxes, led_xy, image_size, *, x_tol_frac: Optional[float] = None):

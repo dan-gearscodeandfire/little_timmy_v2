@@ -1314,10 +1314,17 @@ async def set_identity_dialogs(payload: dict | None = None):
     from persistence import runtime_toggles
     on = bool((payload or {}).get("enabled", False))
     runtime_toggles.set("identity_dialogs_override", on)
+    # Same contract as the GET (review 7-07): the planned webui button reads
+    # the POST response, which used to lack the anchor fields.
+    from presence import anchor
+    allowed = runtime_toggles.identity_dialogs_allowed()
+    anchor_ok = anchor.gate_disjunct()
     return {
         "ok": True,
         "override": on,
-        "allowed": runtime_toggles.identity_dialogs_allowed(),
+        "allowed": allowed,
+        "anchor_active": anchor_ok,
+        "effective_allowed": allowed or anchor_ok,
         "situation_regime": runtime_toggles.get("situation_regime"),
     }
 
@@ -1338,6 +1345,10 @@ async def get_anchor():
         "age_s": round(time.time() - st.captured_at, 1) if st else None,
         "led_xy": list(st.led_xy) if st and st.led_xy else None,
         "anchored_bbox": list(st.anchored_bbox) if st and st.anchored_bbox else None,
+        # Recognized enrolled identity of the anchored face (None = stranger /
+        # stub) — the F1/F7 voice<->anchor binding input, surfaced for booth
+        # debugging.
+        "anchored_name": st.anchored_name if st else None,
         "ttl_s": (st.ttl_s if st and st.ttl_s is not None
                   else float(runtime_toggles.get("anchor_ttl_s"))),
     }
@@ -1366,6 +1377,17 @@ async def set_anchor(payload: dict | None = None):
         if not isinstance(ttl_s, (int, float)) or ttl_s <= 0:
             return {"ok": False, "error": "ttl_s must be a positive number"}
         ttl_s = float(ttl_s)
+    # Refresh MERGES over a live stub (F4 fix, review 7-07): set_anchor
+    # rebuilds the state wholesale, so a bare {"active": true} keep-alive used
+    # to WIPE a previously-declared led_xy (and ttl_s) — the crop pipeline
+    # went position-less mid-bench. Omitted fields inherit from the current
+    # stub; pass an explicit value to change one.
+    st = anchor.get_anchor()
+    if st is not None and st.source == "stub":
+        if led_xy is None:
+            led_xy = st.led_xy
+        if ttl_s is None:
+            ttl_s = st.ttl_s
     anchor.set_anchor(led_xy, source="stub", ttl_s=ttl_s)
     return {"ok": True, "active": anchor.anchor_active(),
             "led_xy": list(led_xy) if led_xy else None, "ttl_s": ttl_s}

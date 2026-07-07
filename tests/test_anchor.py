@@ -175,3 +175,68 @@ def test_empty_inputs_abstain(toggles):
     assert anchor.pick_anchored_face([], (320, 300), FRAME) is None
     assert anchor.pick_anchored_face([(0, 0, 10, 10)], None, FRAME) is None
     assert anchor.pick_anchored_face([(0, 0, 10, 10)], (5, 20), None) is None
+
+
+# --- voice<->anchor binding (F1/F7, review 7-07) ------------------------------
+
+def _enable(toggles):
+    toggles.set("anchor_enabled", True)
+
+
+def test_binding_stub_always_binds(toggles):
+    _enable(toggles)
+    anchor.set_anchor((320, 300), source="stub")
+    assert anchor.binding_ok("dan") is True
+    assert anchor.binding_ok("unknown_3") is True
+    assert anchor.gate_disjunct("dan") is True
+
+
+def test_binding_cv_unrecognized_binds_only_unknowns(toggles):
+    _enable(toggles)
+    anchor.set_anchor((320, 300), (280, 100, 360, 200), source="cv",
+                      anchored_name=None)
+    # Ordinary visitor: unknown voice + unrecognized anchored face -> bind.
+    assert anchor.binding_ok("unknown_3") is True
+    assert anchor.gate_disjunct("unknown_3") is True
+    # Off-mic-collapse signature: ENROLLED voice + unrecognized face -> dark.
+    assert anchor.binding_ok("dan") is False
+    assert anchor.gate_disjunct("dan") is False
+
+
+def test_binding_cv_recognized_binds_only_that_speaker(toggles):
+    _enable(toggles)
+    anchor.set_anchor((320, 300), (280, 100, 360, 200), source="cv",
+                      anchored_name="dan")
+    assert anchor.binding_ok("dan") is True
+    assert anchor.binding_ok("devon") is False
+    assert anchor.binding_ok("unknown_3") is False
+    assert anchor.gate_disjunct("devon") is False
+
+
+def test_gate_disjunct_without_speaker_is_plain_freshness(toggles):
+    _enable(toggles)
+    anchor.set_anchor((320, 300), source="cv", anchored_name=None)
+    # Status surfaces (web/app.py) keep the unbound verdict.
+    assert anchor.gate_disjunct() is True
+
+
+def test_binding_no_anchor_is_false(toggles):
+    _enable(toggles)
+    assert anchor.binding_ok("unknown_3") is False
+
+
+def test_speech_dialogs_allowed_shop_regime_ignores_binding(toggles):
+    # Shop ('') regime: pure predicate True -> allowed for anyone, no anchor.
+    assert anchor.speech_dialogs_allowed("dan") is True
+    assert anchor.consent_allowed() is True
+
+
+def test_speech_dialogs_allowed_expo_requires_bound_anchor(toggles):
+    toggles.set("situation_regime", "EXPO")
+    assert anchor.speech_dialogs_allowed("unknown_3") is False
+    assert anchor.consent_allowed() is False
+    _enable(toggles)
+    anchor.set_anchor((320, 300), source="cv", anchored_name=None)
+    assert anchor.speech_dialogs_allowed("unknown_3") is True
+    assert anchor.speech_dialogs_allowed("dan") is False   # unbound
+    assert anchor.consent_allowed() is False               # anchor never un-darks consent

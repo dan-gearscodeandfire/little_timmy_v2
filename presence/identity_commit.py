@@ -424,9 +424,15 @@ async def commit_identity(
         speaker_identifier = SpeakerIdentifier()
 
     if face_crops and face_embeddings is None:
+        import asyncio
         from presence.face_encoder import embed_batch
         try:
-            face_embeddings = list(embed_batch(face_crops))
+            # Off the event loop (F5 fix, review 7-07): embed_batch is sync
+            # ONNX CPU (face_encoder.py's own docstring says to_thread) and
+            # was running ON the loop here — up to 12 crops stalling every
+            # concurrent coroutine mid-commit. Covers both callers
+            # (introductions name-tell + main's unified enroll).
+            face_embeddings = list(await asyncio.to_thread(embed_batch, face_crops))
         except Exception as e:
             log.warning("[COMMIT] face embed failed for %s: %s", clean, e)
             face_embeddings = None

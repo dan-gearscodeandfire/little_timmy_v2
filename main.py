@@ -451,8 +451,18 @@ class Orchestrator:
         face_crops = self._cosample.crops_for(speaker_name) if want_face else []
         if want_face and not face_crops:
             obs = await self._fetch_face_safe()
-            if obs is not None and obs.sole_face_crops:
-                face_crops = list(obs.sole_face_crops)
+            if obs is not None:
+                # F3 fix (review 7-07): mirror the cosample feed — anchored
+                # crops (bound to this speaker, same rule as the buffer) win
+                # over sole-face, so an anchored enroll in a CROWD (the exact
+                # scenario the anchor exists for) no longer grabs zero crops.
+                if obs.anchored_face_crops:
+                    _n = obs.anchored_face_name
+                    if (_n == speaker_name if _n is not None
+                            else speaker_name.startswith("unknown_")):
+                        face_crops = list(obs.anchored_face_crops)
+                elif obs.sole_face_crops:
+                    face_crops = list(obs.sole_face_crops)
 
         voice_embs = None
         if want_voice:
@@ -830,8 +840,12 @@ class Orchestrator:
         # the cosample->commit path on the name-tell — offering a consent
         # dialog whose answer changes nothing would be noise. No anchor (or
         # feature off) -> both predicates are identical to the shipped gate.
-        _consent_ok = runtime_toggles.identity_dialogs_allowed()
-        _dialogs_ok = _consent_ok or anchor.gate_disjunct()
+        # F7 binding (review 7-07): the anchor disjunct now also requires the
+        # turn's VOICE attribution to bind to the ANCHORED face (anchor.
+        # binding_ok) — a fresh anchor used to un-dark the mutation surfaces
+        # for EVERY speaker in the TTL window.
+        _consent_ok = anchor.consent_allowed()
+        _dialogs_ok = anchor.speech_dialogs_allowed(speaker_name)
 
         # Latch lifecycle guards (code review C4): expire stale latches (TTL —
         # _enroll_latch_pending clears them as a side effect), and clear both
@@ -1363,9 +1377,10 @@ class Orchestrator:
         # speech — a latch must not survive the flip. Same anchor split as
         # the doorway: a fresh LED-mic anchor un-darks the speech dialogs
         # (_dialogs_ok) but never the face-consent FSM (_consent_ok —
-        # mic-in-hand is implied consent, the offer would be noise).
-        _consent_ok = runtime_toggles.identity_dialogs_allowed()
-        _dialogs_ok = _consent_ok or anchor.gate_disjunct()
+        # mic-in-hand is implied consent, the offer would be noise), and the
+        # anchor disjunct is speaker-BOUND (F7, review 7-07).
+        _consent_ok = anchor.consent_allowed()
+        _dialogs_ok = anchor.speech_dialogs_allowed(speaker_name)
         if not _dialogs_ok:
             self._introductions.drop_pending()
         if not _consent_ok:
@@ -1459,13 +1474,32 @@ class Orchestrator:
         # (bounded ring, no embedding here) so we buffer even with the flag off,
         # keeping the buffer warm for the moment it's flipped on.
         # LED-mic anchor (2026-07-06): anchored_face_crops (the face directly
-        # above the lit mic — unambiguous even in a crowd, close-talk means
-        # the mic-holder IS this turn's speaker) win over the sole-face rule
-        # when present; the sole-face predicate stays intact for Shop.
+        # above the lit mic — unambiguous even in a crowd) win over the
+        # sole-face rule when present; the sole-face predicate stays intact
+        # for Shop. F1 binding (review 7-07): the anchored crops are the
+        # MIC-HOLDER's face, but speaker_name is VOICE-attributed — an
+        # off-mic bystander's turn used to buffer the mic-holder's face under
+        # the bystander's key (wrong-face commit). Buffer anchored crops only
+        # when the two sensors agree: the anchored face recognized AS this
+        # speaker, or an unrecognized face with an unknown_N voice (the
+        # ordinary visitor). Unbound -> skip (never fall back to sole crops:
+        # a frame with an anchored pick had a face, so ==1-face co-sampling
+        # of somebody ELSE is exactly the mis-bind to avoid).
         if face_obs is not None:
-            _crops = face_obs.anchored_face_crops or face_obs.sole_face_crops
-            if _crops:
-                self._cosample.add(speaker_name, list(_crops))
+            if face_obs.anchored_face_crops:
+                _n = face_obs.anchored_face_name
+                _bound = (_n == speaker_name if _n is not None
+                          else speaker_name.startswith("unknown_"))
+                if _bound:
+                    self._cosample.add(speaker_name,
+                                       list(face_obs.anchored_face_crops))
+                else:
+                    log.info("[ANCHOR] anchored crops NOT bound to speaker "
+                             "%s (anchored face=%s) — skip co-sample",
+                             speaker_name, _n or "unrecognized")
+            elif face_obs.sole_face_crops:
+                self._cosample.add(speaker_name,
+                                   list(face_obs.sole_face_crops))
 
         # --- Presence: voice + face fusion ---
         fusion_source = None
@@ -2197,6 +2231,46 @@ async def main():
 
     face_enroll_task = asyncio.create_task(face_enroll_monitor())
 
+    # LED-mic anchor periodic poll (Ruling A, Dan 2026-07-07). The per-turn CV
+    # refresh armed the anchor only DURING a turn's face grab, so the gate
+    # computed at the TOP of the next turn was the first to see it — a
+    # visitor's opening "hi, I'm X" ran dark and leaked to the LLM as
+    # ordinary speech (gate-lag finding, review 7-07). Polling keeps the
+    # anchor (and its recognized-face binding) fresh BEFORE the first
+    # utterance, and fixes the per-turn-only refresh (a silent booth let the
+    # anchor decay mid-engagement). CPU-only work (~ms: JPEG decode + YuNet +
+    # EdgeFace) — never the VLM (the two-35B GPU-contention finding). Toggles
+    # read per tick so booth flips apply without a restart; a fresh STUB
+    # anchor is the operator's declaration and skips the tick entirely (F4 —
+    # never restamped).
+    async def anchor_poll_monitor():
+        from presence.face_recognize import poll_anchor_frame
+        while True:
+            try:
+                await asyncio.sleep(
+                    float(runtime_toggles.get("anchor_poll_interval_s")))
+                if not runtime_toggles.get("anchor_enabled"):
+                    continue
+                st = anchor.get_anchor()
+                if (st is not None and st.source == "stub"
+                        and anchor.anchor_active()):
+                    continue
+                try:
+                    r = await orch._face_http.get(
+                        config.STREAMERPI_CAPTURE_URL, timeout=1.5)
+                    jpeg = r.content if r.status_code == 200 else None
+                except Exception:
+                    jpeg = None
+                if jpeg:
+                    await asyncio.to_thread(poll_anchor_frame, jpeg)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("[ANCHOR] poll tick error", exc_info=True)
+                await asyncio.sleep(2.0)
+
+    anchor_poll_task = asyncio.create_task(anchor_poll_monitor())
+
     log.info("=== Little Timmy ready on http://0.0.0.0:%d ===", config.WEB_PORT)
 
     try:
@@ -2232,6 +2306,7 @@ async def main():
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:
+        anchor_poll_task.cancel()
         face_enroll_task.cancel()
         await orch.supervisor.stop()
         await orch.vision.stop()

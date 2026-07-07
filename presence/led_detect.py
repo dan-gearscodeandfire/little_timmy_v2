@@ -54,6 +54,29 @@ def find_green_led(frame_bgr: np.ndarray, *,
     if max_area is None:
         max_area = int(runtime_toggles.get("anchor_led_max_area_px"))
 
+    green = green_mask(frame_bgr, h_lo, h_hi, s_min, v_min)
+
+    n, _labels, stats, centroids = cv2.connectedComponentsWithStats(green)
+    hits = [i for i in range(1, n)
+            if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area]
+    if len(hits) != 1:
+        if len(hits) > 1:
+            log.debug("[LED] %d candidate blobs -> abstain", len(hits))
+        return None
+    cx, cy = centroids[hits[0]]
+    return (float(cx), float(cy))
+
+
+def green_mask(frame_bgr: np.ndarray, h_lo: int, h_hi: int,
+               s_min: int, v_min: int) -> np.ndarray:
+    """The detector's binary green mask for ``frame_bgr`` — HSV band +
+    specular-core rescue + morphological open, BEFORE the blob/area filter.
+
+    Factored out (review 7-07) so ops/led_calibrate.py dumps candidates
+    through the IDENTICAL pipeline: it used to copy-paste this block, and the
+    hard-coded specular-rescue constants below could silently desync the
+    tuning tool from the detector."""
+    import cv2
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     green = cv2.inRange(hsv, (h_lo, s_min, v_min), (h_hi, 255, 255))
 
@@ -65,14 +88,4 @@ def find_green_led(frame_bgr: np.ndarray, *,
         near_green = cv2.dilate(green, np.ones((7, 7), np.uint8))
         green = cv2.bitwise_or(green, cv2.bitwise_and(white, near_green))
 
-    green = cv2.morphologyEx(green, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-
-    n, _labels, stats, centroids = cv2.connectedComponentsWithStats(green)
-    hits = [i for i in range(1, n)
-            if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area]
-    if len(hits) != 1:
-        if len(hits) > 1:
-            log.debug("[LED] %d candidate blobs -> abstain", len(hits))
-        return None
-    cx, cy = centroids[hits[0]]
-    return (float(cx), float(cy))
+    return cv2.morphologyEx(green, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))

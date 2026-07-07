@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conversation.introductions import Introductions, _extract_name_from_response
+from conversation.introductions import Introductions, _extract_name
 
 
 class FakeTurn:
@@ -113,6 +113,34 @@ async def test_evasive_answer_is_not_captured_as_a_name():
     ("not sure", None),
     ("fine", None),
     ("yes", None),
+    # F9 (review 7-07): the extractor now delegates to enroll_intent's
+    # canonical extract_reply_name, so fixes landed there apply here too —
+    # these were parsed as names by the retired duplicate.
+    ("call me later", None),
+    ("call me tomorrow", None),
+    ("I go by Dex", "dex"),
+    ("My name is Mary Jane", "mary_jane"),
 ])
 def test_extract_name(text, expected):
-    assert _extract_name_from_response(text) == expected
+    assert _extract_name(text) == expected
+
+
+# --- F2 (review 7-07): refused assign_name must not promote ------------------
+
+class RefusingSpeakerID(FakeSpeakerID):
+    def assign_name(self, temp_id, name):
+        super().assign_name(temp_id, name)
+        return False    # tombstoned / reserved / already-known
+
+
+@pytest.mark.asyncio
+async def test_refused_assign_keeps_unknown_speaker():
+    spk = RefusingSpeakerID(unknown_temp_ids=("unknown_1",))
+    turn = FakeTurn()
+    intro = Introductions(speaker_id_module=spk, turn=turn)
+    await intro.offer_confirm("unknown_1", "dan")   # claim an enrolled name
+    out = await intro.handle("yes that is right", "unknown_1")
+    assert out.handled is False
+    # The refused name must NOT become the turn's speaker (facts would file
+    # under the real person's name); the speaker stays the unknown.
+    assert out.speaker_name == "unknown_1"

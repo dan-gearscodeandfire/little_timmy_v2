@@ -53,6 +53,10 @@ _NAME_PATTERNS = [
     (re.compile(rf"\b(?:enroll|remember|learn|save)\s+(?:me\s+|my\s+(?:face|voice)\s+)?as\s+{_NAME_SPAN}\b", re.IGNORECASE), True),
     (re.compile(rf"\bI(?:'m|\s+am)\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
     (re.compile(rf"\bthis\s+is\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
+    # Parity with the retired introductions duplicate (F9, review 7-07): its
+    # pattern list also handled "I go by X" and bare "name's X" (no my/the).
+    (re.compile(rf"\bI\s+go\s+by\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
+    (re.compile(rf"\bname'?s\s+{_NAME_SPAN}\b", re.IGNORECASE), False),
 ]
 
 # Words that look like names but aren't.
@@ -130,14 +134,6 @@ def _clean_name_tokens(candidate: str, explicit: bool = False) -> Optional[str]:
         return None
     return "_".join(kept)
 
-# The shared conversational name extractor (returns lowercase). Falls back to
-# the local patterns if it can't be imported (e.g. in isolated tests).
-try:  # pragma: no cover - import wiring
-    from conversation.introductions import _extract_name_from_response
-except Exception:  # pragma: no cover
-    _extract_name_from_response = None
-
-
 @dataclass
 class EnrollIntent:
     matched: bool
@@ -148,23 +144,15 @@ class EnrollIntent:
 
 def _extract_name(text: str) -> Optional[str]:
     """Return a canonical (lowercase, underscore-joined) name from ``text`` or
-    None. Tries the local enroll-specific patterns first (they parse
-    "... as X" and multi-word names), then the shared conversational
-    extractor."""
+    None, via the local patterns (they parse "... as X" and multi-word
+    names). This module IS the canonical conversational extractor now (F9,
+    review 7-07): introductions.py delegates here instead of keeping its
+    2026-06-06 duplicate, so the old fallback import of that duplicate is
+    gone with it."""
     for pat, strong in _NAME_PATTERNS:
         m = pat.search(text)
         if m:
             cand = _clean_name_tokens(m.group(1), explicit=strong)
-            if cand:
-                return cand
-    if _extract_name_from_response is not None:
-        cand = _extract_name_from_response(text)
-        if cand:
-            # NOT explicit: the shared extractor also fires on bare tokens,
-            # which carry no name-position evidence — a soft filler ("Buddy")
-            # must stay rejected here and enroll only via the coached
-            # "my name is X" patterns above.
-            cand = _clean_name_tokens(cand)
             if cand:
                 return cand
     return None

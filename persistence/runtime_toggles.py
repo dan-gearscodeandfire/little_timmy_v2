@@ -165,6 +165,12 @@ _DEFAULTS: dict = {
     "anchor_led_v_min": 200,
     "anchor_led_min_area_px": 4,
     "anchor_led_max_area_px": 400,
+    # Periodic anchor-poll cadence (s) — main.anchor_poll_monitor grabs one
+    # /capture frame and runs the CPU LED detect + face pick + identify so the
+    # anchor is fresh BEFORE a visitor's first utterance (Ruling A, Dan
+    # 2026-07-07; the per-turn-only refresh opened the gate one turn late).
+    # Keep well under anchor_ttl_s. Only ticks while anchor_enabled.
+    "anchor_poll_interval_s": 2.0,
     # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
     # All default-OFF / today's-behavior. Prototype — enable only after Dan's
     # live review. Read live per turn by presence.identity.IdentityFusion.
@@ -285,10 +291,29 @@ _DEFAULTS: dict = {
 
 _lock = threading.Lock()
 
+# mtime-keyed parse cache (review 7-07): get() re-read AND re-parsed the JSON
+# on every call — ~7x per frame on an anchored turn via the led_detect knob
+# reads. The stat() is kept (manual edits + /api writers must still apply
+# live, the design contract); only the parse+merge is skipped when the file
+# is unchanged. Guarded by _lock (callers hold it).
+_cache_stamp: tuple | None = None
+_cache_state: dict | None = None
+
 
 def _load() -> dict:
     """Read the on-disk state, merging over defaults so missing keys fall
     back to the design default (not crash)."""
+    global _cache_stamp, _cache_state
+    try:
+        st = STATE_PATH.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        return dict(_DEFAULTS)
+    except Exception as e:
+        log.warning("lt_runtime_toggles stat failed (%s); using defaults", e)
+        return dict(_DEFAULTS)
+    if _cache_state is not None and stamp == _cache_stamp:
+        return dict(_cache_state)
     try:
         raw = json.loads(STATE_PATH.read_text())
     except FileNotFoundError:
@@ -298,8 +323,28 @@ def _load() -> dict:
         return dict(_DEFAULTS)
     merged = dict(_DEFAULTS)
     for k, default in _DEFAULTS.items():
-        if k in raw and isinstance(raw[k], type(default)):
-            merged[k] = raw[k]
+        if k not in raw:
+            continue
+        v = raw[k]
+        # Type-checked merge with numeric coercion (F10, review 7-07): a
+        # hand-edited int for a float knob (ttl_s: 60) used to be SILENTLY
+        # dropped back to the default (30.0) — the booth-tuning trap. int<->
+        # float now coerce; any other mismatch is dropped LOUDLY. bool is an
+        # int subclass in Python, so it's matched exactly, never coerced.
+        if isinstance(v, bool) == isinstance(default, bool) and isinstance(v, type(default)):
+            merged[k] = v
+        elif (isinstance(default, float) and isinstance(v, int)
+              and not isinstance(v, bool)):
+            merged[k] = float(v)
+        elif (isinstance(default, int) and not isinstance(default, bool)
+              and isinstance(v, float) and v.is_integer()):
+            merged[k] = int(v)
+        else:
+            log.warning(
+                "lt_runtime_toggles: %s=%r has wrong type (%s, want %s) — "
+                "IGNORED, using default %r", k, v,
+                type(v).__name__, type(default).__name__, default)
+    _cache_stamp, _cache_state = stamp, dict(merged)
     return merged
 
 
