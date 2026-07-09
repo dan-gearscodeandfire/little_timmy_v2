@@ -110,3 +110,10 @@ def test_pre_resolved_none_falls_back_to_blend(fake_search, fake_resolver):
     assert fake_resolver["n"] == 0
     expected_blend = retrieval._build_semantic_query("what's its name?", _CTX)
     assert fake_search["embed_query"] == expected_blend
+
+
+def test_nominal_ellipsis_ones_passes_gate():
+    """"ones" (2026-07-08): "what about the tall ones?" is anaphoric like
+    "them" -- must pass _needs_resolution. Bare "one" stays excluded (noisy)."""
+    assert retrieval._needs_resolution("what about the tall ones?") is True
+    assert retrieval._needs_resolution("what about one of my friends?") is False

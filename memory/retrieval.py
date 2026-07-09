@@ -26,8 +26,12 @@ log = logging.getLogger(__name__)
 # miss, so tightening this gate can never poison retrieval. Word-boundary,
 # case-insensitive. Measured 2026-06-18 (ops/elliptical_*.py); latency-gated
 # 2026-06-22 (supervisor_issues.md, long-declarative spikes).
+# "ones" (2026-07-08): nominal ellipsis ("what about the tall ones?") is
+# anaphoric exactly like "them" but was missing -- found live when a 5-word
+# follow-up never fired. Bare "one" deliberately excluded (too noisy: "one of
+# my friends", numbers).
 _DEIXIS_RE = re.compile(
-    r"\b(it|its|it's|that|there|them|they|their|theirs|he|him|his|she|her|hers|those)\b",
+    r"\b(it|its|it's|that|there|them|they|their|theirs|he|him|his|she|her|hers|those|ones)\b",
     re.IGNORECASE,
 )
 # Query-like opener: wh-words, auxiliaries/modals, or recall imperatives. Paired
