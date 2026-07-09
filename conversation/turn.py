@@ -561,7 +561,9 @@ class LiveLLM:
         return stream_conversation(messages, max_tokens=max_tokens)
 
 
-async def _retrieve_episodes_as_memories(user_text, top_k, context_turns):
+async def _retrieve_episodes_as_memories(user_text, top_k, context_turns,
+                                         resolved_query=None,
+                                         query_pre_resolved=False):
     """Always-on retrieval over the LIVE `episodes` table (recency-decayed),
     adapted to the RetrievedMemory shape llm.prompt_builder expects
     (.content/.created_at/.type/.score). This is what replaces the frozen
@@ -569,13 +571,35 @@ async def _retrieve_episodes_as_memories(user_text, top_k, context_turns):
     (the default) — fixing the "Relevant memories" block (and the booth panel
     that mirrors it) surfacing stale months-old memories into Timmy's context.
 
-    Mirrors retrieve()'s query construction: the SEMANTIC channel embeds the
-    coref-blended context (_build_semantic_query) so elliptical follow-ups land
-    near their antecedent, while FTS/trigram use the bare utterance."""
+    Mirrors retrieve()'s query construction INCLUDING coref resolution
+    (2026-07-08): a short query-like deictic follow-up is rewritten standalone
+    via :8093 (resolve_for_retrieval — self-gating, fail-safe: decline/miss ->
+    None) and the rewrite is what the SEMANTIC channel embeds; otherwise the
+    coref-blended context (_build_semantic_query). The episodic migration had
+    silently orphaned the resolver (:8093 healthy, zero traffic since ~6-24).
+    `resolved_query`/`query_pre_resolved` carry a doorway (speculative)
+    resolution — same contract as retrieve(): pre-resolved means "don't call
+    :8093 again", None -> blend. FTS/trigram inside search_episodes use the
+    bare utterance, unaffected.
+    TODO: surface the resolver's per-turn cost (stage:resolution /
+    last_resolution_ms — already published by resolve_for_retrieval) as a pip
+    in the GUI latency bar."""
     from datetime import datetime, timezone
     from memory.episodic_search import search_episodes
-    from memory.retrieval import RetrievedMemory, _build_semantic_query
-    embed_query = _build_semantic_query(user_text, context_turns)
+    from memory.retrieval import (RetrievedMemory, _build_semantic_query,
+                                  resolve_for_retrieval)
+    embed_query = None
+    if query_pre_resolved:
+        # Doorway already attempted resolution (possibly parallel with the
+        # classifier). Trust the handed-in result; None -> blend.
+        if resolved_query:
+            embed_query = resolved_query
+    else:
+        resolved = await resolve_for_retrieval(user_text, context_turns)
+        if resolved:
+            embed_query = resolved
+    if embed_query is None:
+        embed_query = _build_semantic_query(user_text, context_turns)
     eps = await search_episodes(
         user_text, datetime.now(timezone.utc),
         top_k=top_k, embed_query=embed_query,
@@ -621,7 +645,9 @@ class LiveMemory:
             _mem_coro = _empty()
         elif _use_episodes:
             _mem_coro = _retrieve_episodes_as_memories(
-                user_text, self._top_k, context_turns)
+                user_text, self._top_k, context_turns,
+                resolved_query=resolved_query,
+                query_pre_resolved=query_pre_resolved)
         else:
             _mem_coro = retrieve(user_text, top_k=self._top_k,
                                  context_turns=context_turns,
