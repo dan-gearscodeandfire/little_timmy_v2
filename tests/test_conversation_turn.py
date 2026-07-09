@@ -21,9 +21,11 @@ class FakeSpeaker:
     """Records the sentences that reached TTS, in order."""
     def __init__(self):
         self.spoken: list[str] = []
+        self.play_start_callbacks: list = []  # on_play_start per speak() call
 
-    async def speak(self, text: str) -> None:
+    async def speak(self, text: str, on_play_start=None) -> None:
         self.spoken.append(text)
+        self.play_start_callbacks.append(on_play_start)
 
 
 class FakeLLM:

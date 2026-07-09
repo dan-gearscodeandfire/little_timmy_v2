@@ -218,7 +218,8 @@ class TurnSettings:
 # --------------------------------------------------------------------------
 
 class Speaker(Protocol):
-    async def speak(self, text: str) -> None: ...
+    async def speak(self, text: str,
+                    on_play_start: Callable[[float], None] | None = None) -> None: ...
 
 
 class TokenStreamer(Protocol):
