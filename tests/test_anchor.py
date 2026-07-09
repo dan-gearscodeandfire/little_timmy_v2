@@ -141,9 +141,26 @@ def test_two_candidates_in_tolerance_abstain(toggles):
 
 
 def test_face_below_led_excluded(toggles):
-    # bbox bottom (y_max=380) below the LED y=300 -> not "above the mic".
+    # bbox vertical center (y_ctr=330) below the LED y=300 -> not "above
+    # the mic" (F8: rule is center-above, not bottom-above).
     bboxes = [(280, 280, 360, 380)]
     assert anchor.pick_anchored_face(bboxes, (320, 300), FRAME) is None
+
+
+def test_mouth_height_led_is_picked(toggles):
+    # F8 regression (live frame 2026-07-08 21:21:39): mic at the MOUTH puts
+    # the LED at chin height, 2 px INSIDE the bbox (led_y=200 < y_max=202).
+    # The old y_max-rule rejected the natural speaking hold; the vertical-
+    # center rule (y_ctr=130 < 200) picks it.
+    bboxes = [(299, 59, 404, 202)]
+    assert anchor.pick_anchored_face(bboxes, (343, 200), FRAME) == 0
+
+
+def test_led_at_face_center_excluded(toggles):
+    # Boundary: LED exactly AT the bbox vertical center -> not below it
+    # (strict <), abstain. Guards the eye-height/forehead absurdity.
+    bboxes = [(280, 100, 360, 200)]  # y_ctr = 150
+    assert anchor.pick_anchored_face(bboxes, (320, 150), FRAME) is None
 
 
 def test_out_of_horizontal_tolerance_excluded(toggles):

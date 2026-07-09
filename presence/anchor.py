@@ -181,11 +181,15 @@ def pick_anchored_face(face_bboxes, led_xy, image_size, *, x_tol_frac: Optional[
     """Pick the face directly above the lit LED — or abstain.
 
     A candidate face's bbox horizontal center must be within
-    ``x_tol_frac * frame_width`` of the LED x AND its bbox bottom must sit
-    above (smaller y than) the LED y. EXACTLY one candidate -> its index in
-    ``face_bboxes``; zero or two-plus -> None. No nearest-wins among two:
-    ambiguity is an abstain, the same contract as the sole-face rule
-    (never guess which face is talking).
+    ``x_tol_frac * frame_width`` of the LED x AND its bbox vertical CENTER
+    must sit above (smaller y than) the LED y. Center, not bottom (F8 fix,
+    live 7-08): a mic held at the MOUTH puts the LED at chin height — right
+    at bbox bottom — so the old ``y_max < led_y`` flickered by a few px on
+    the natural speaking hold; the LED-in-lower-half rule passes every live
+    mouth-hold frame while still rejecting a face BELOW the LED. EXACTLY one
+    candidate -> its index in ``face_bboxes``; zero or two-plus -> None. No
+    nearest-wins among two: ambiguity is an abstain, the same contract as
+    the sole-face rule (never guess which face is talking).
 
     Pure function (hermetic-testable). bboxes are (x_min, y_min, x_max, y_max)
     px; led_xy is (x, y) px; image_size is (width, height).
@@ -199,7 +203,8 @@ def pick_anchored_face(face_bboxes, led_xy, image_size, *, x_tol_frac: Optional[
     candidates = []
     for i, (x_min, y_min, x_max, y_max) in enumerate(face_bboxes):
         center_x = (x_min + x_max) / 2.0
-        if abs(center_x - led_x) <= x_tol and y_max < led_y:
+        center_y = (y_min + y_max) / 2.0
+        if abs(center_x - led_x) <= x_tol and center_y < led_y:
             candidates.append(i)
     if len(candidates) == 1:
         return candidates[0]
