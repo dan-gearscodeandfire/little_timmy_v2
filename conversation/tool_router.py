@@ -101,10 +101,19 @@ semantic-call ::= "{\"tool\":\"recall_semantic\"}"
 none-call     ::= "{\"tool\":\"none\"}"
 '''
 
+# char additionally excludes {} (2026-07-08, multifact corruption): the grammar
+# models exactly ONE triple, so on a conjunction utterance ("my cat is Mittens
+# AND my dog is Rex") the model tried to start a SECOND object and the
+# structural chars bled INTO the first value ("Mittens},{"), slipping past
+# _value_grounded_in_utterance because the real token was present. Spoken
+# values never contain braces, so banning them is loss-free -- the constrained
+# decode now has no legal continuation but closing the string. Commas stay
+# legal (real values: "pizza, tacos"). The dropped-second-fact half of the bug
+# is handled by _multifact_utterance below.
 _ARGS_GRAMMAR = r'''
 root  ::= "{\"subject\":\"" str "\",\"predicate\":\"" str "\",\"value\":\"" str "\"}"
 str   ::= char+
-char  ::= [^"\\]
+char  ::= [^"\\{}]
 '''
 
 # Tier-2 for recall_temporal: extract the natural-language time phrase only
@@ -113,7 +122,7 @@ char  ::= [^"\\]
 _RECALL_ARGS_GRAMMAR = r'''
 root  ::= "{\"phrase\":\"" str "\"}"
 str   ::= char+
-char  ::= [^"\\]
+char  ::= [^"\\{}]
 '''
 
 
@@ -158,6 +167,30 @@ async def extract_store_fact_args(user_text: str) -> dict | None:
     if not isinstance(obj, dict):
         return None
     return obj
+
+
+# Multi-fact conjunction gate (2026-07-08). "Remember my cat is named Mittens
+# and my dog is named Rex" carries TWO facts; the Tier-2 grammar deliberately
+# models ONE triple (benchmarked single-object shape), so the fast path can only
+# ever store the first and previously corrupted even that (see _ARGS_GRAMMAR
+# note). Detection: "and" followed by a possessive determiner -- the signature
+# of a second possessed-entity clause. On a hit the router DECLINES the turn
+# entirely (before paying Tier-2) and the normal pipeline's background
+# extractor -- which emits an ARRAY of facts and loops store_fact -- owns the
+# extraction with full context. Same fail-safe contract as the grounding and
+# name-collapse guards: a false positive here (e.g. "Florence and the Machine"
+# never matches, but "my brother and my sister...") only costs the fast-path
+# ACK; nothing is lost or corrupted.
+_MULTIFACT_RE = re.compile(
+    r"\band\s+(?:my|his|her|its|our|their)\b", re.IGNORECASE,
+)
+
+
+def _multifact_utterance(utterance: str) -> bool:
+    """True when the utterance likely states MORE THAN ONE fact (a conjunction
+    of possessed-entity clauses) -- beyond what the single-triple Tier-2
+    grammar can represent."""
+    return bool(_MULTIFACT_RE.search(utterance or ""))
 
 
 _VALUE_STOPWORDS = {
@@ -471,6 +504,13 @@ async def maybe_handle_tool_call(
 
     if route != "store_fact":
         return _FALLTHROUGH  # 'none', None (error), or unknown tool -> pipeline
+
+    if _multifact_utterance(user_text):
+        # More facts than the single-triple grammar can carry -- decline before
+        # paying Tier-2; the background extractor stores ALL of them.
+        log.info("[TOOL store_fact] multi-fact conjunction; falling through to "
+                 "the background extractor: %r", user_text[:80])
+        return _FALLTHROUGH
 
     t_args = time.perf_counter()
     args = await extract_store_fact_args(user_text)
