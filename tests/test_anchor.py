@@ -242,6 +242,17 @@ def test_binding_no_anchor_is_false(toggles):
     assert anchor.binding_ok("unknown_3") is False
 
 
+def test_gate_disjunct_binding_failure_logs(toggles, caplog):
+    # Live-test finding 7-08: a dark gate was undiagnosable — nothing logged
+    # when a FRESH anchor failed the speaker binding. Pin the INFO line.
+    _enable(toggles)
+    anchor.set_anchor((320, 300), source="cv", anchored_name="dan")
+    with caplog.at_level("INFO", logger="presence.anchor"):
+        assert anchor.gate_disjunct("devon") is False
+    assert any("NOT bound: speaker=devon anchored=dan" in r.message
+               for r in caplog.records)
+
+
 def test_speech_dialogs_allowed_shop_regime_ignores_binding(toggles):
     # Shop ('') regime: pure predicate True -> allowed for anyone, no anchor.
     assert anchor.speech_dialogs_allowed("dan") is True

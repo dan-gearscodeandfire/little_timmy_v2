@@ -128,7 +128,13 @@ def gate_disjunct(speaker_name: Optional[str] = None) -> bool:
     """
     if not (bool(runtime_toggles.get("anchor_enabled")) and anchor_active()):
         return False
-    return speaker_name is None or binding_ok(speaker_name)
+    if speaker_name is None or binding_ok(speaker_name):
+        return True
+    with _lock:
+        st = _state
+    log.info("[ANCHOR] fresh anchor NOT bound: speaker=%s anchored=%s",
+             speaker_name, st.anchored_name if st else None)
+    return False
 
 
 def binding_ok(speaker_name: str) -> bool:
