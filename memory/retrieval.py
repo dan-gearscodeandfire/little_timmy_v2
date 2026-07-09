@@ -259,6 +259,37 @@ async def resolve_for_retrieval(query: str, context_turns: list | None) -> str |
     return resolved or None
 
 
+async def choose_semantic_query(
+    query: str,
+    context_turns: list | None,
+    resolved_query: str | None = None,
+    query_pre_resolved: bool = False,
+) -> str:
+    """Pick the SEMANTIC-channel query string: a standalone coref rewrite when a
+    short query-like deictic follow-up resolves, else the role-tagged context
+    blend (_build_semantic_query). The single source of the resolver contract,
+    shared by retrieve() and conversation.turn._retrieve_episodes_as_memories so
+    the two memory tiers cannot drift (the episodic tier silently shipped WITHOUT
+    the resolver for ~2 weeks by keeping its own copy of this logic; 2026-07-09
+    code review).
+
+    `query_pre_resolved`=True means the doorway already attempted resolution
+    (possibly in PARALLEL with the classifier) and hands the result in via
+    `resolved_query` -- trust it, do NOT call :8093 again; None -> blend. False
+    (default) resolves inline. Resolver decline/failure/empty -> blend (the
+    graceful, unchanged fail-safe). FTS/trigram callers always use the bare
+    `query` and are unaffected."""
+    if query_pre_resolved:
+        if resolved_query:
+            log.debug("[RESOLVE] using doorway pre-resolved query %r", resolved_query)
+            return resolved_query
+    else:
+        resolved = await resolve_for_retrieval(query, context_turns)
+        if resolved:
+            return resolved
+    return _build_semantic_query(query, context_turns)
+
+
 async def retrieve(
     query: str,
     top_k: int | None = None,
@@ -286,27 +317,13 @@ async def retrieve(
 
     pool = await get_pool()
 
-    # Semantic-query construction. Default: the role-tagged context blend
-    # (_build_semantic_query). For a short query-like deictic follow-up we instead
-    # embed a standalone query rewritten via :8093 -- measured to beat the blend
-    # on elliptical follow-ups (MRR 0.71->0.85). Resolver decline/failure/empty ->
-    # fall back to the blend (graceful). FTS/trigram below always use the bare
-    # `query`, unaffected. The resolution itself lives in resolve_for_retrieval();
-    # it runs EITHER at the doorway (in parallel with the classifier, handed in
-    # via query_pre_resolved) OR inline here.
-    semantic_query = None
-    if query_pre_resolved:
-        # Doorway already attempted resolution (possibly parallel with :8092).
-        # Trust the handed-in result; do NOT call :8093 again. None -> blend.
-        if resolved_query:
-            semantic_query = resolved_query
-            log.debug("[RESOLVE] using doorway pre-resolved query %r", resolved_query)
-    else:
-        resolved = await resolve_for_retrieval(query, context_turns)
-        if resolved:
-            semantic_query = resolved
-    if semantic_query is None:
-        semantic_query = _build_semantic_query(query, context_turns)
+    # Semantic-query construction (shared with the episodic tier via
+    # choose_semantic_query): a standalone :8093 coref rewrite for a short
+    # query-like deictic follow-up -- measured to beat the blend on elliptical
+    # follow-ups (MRR 0.71->0.85) -- else the role-tagged context blend.
+    # FTS/trigram below always use the bare `query`, unaffected.
+    semantic_query = await choose_semantic_query(
+        query, context_turns, resolved_query, query_pre_resolved)
     query_emb = await embed(semantic_query)
 
     # Run all three searches in parallel. Semantic uses the (possibly

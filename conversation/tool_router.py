@@ -169,27 +169,39 @@ async def extract_store_fact_args(user_text: str) -> dict | None:
     return obj
 
 
-# Multi-fact conjunction gate (2026-07-08). "Remember my cat is named Mittens
-# and my dog is named Rex" carries TWO facts; the Tier-2 grammar deliberately
-# models ONE triple (benchmarked single-object shape), so the fast path can only
-# ever store the first and previously corrupted even that (see _ARGS_GRAMMAR
-# note). Detection: "and" followed by a possessive determiner -- the signature
-# of a second possessed-entity clause. On a hit the router DECLINES the turn
-# entirely (before paying Tier-2) and the normal pipeline's background
-# extractor -- which emits an ARRAY of facts and loops store_fact -- owns the
-# extraction with full context. Same fail-safe contract as the grounding and
-# name-collapse guards: a false positive here (e.g. "Florence and the Machine"
-# never matches, but "my brother and my sister...") only costs the fast-path
-# ACK; nothing is lost or corrupted.
+# Multi-fact conjunction gate (2026-07-08, tightened 2026-07-09 per code
+# review). "Remember my cat is named Mittens and my dog is named Rex" carries
+# TWO facts; the Tier-2 grammar deliberately models ONE triple (benchmarked
+# single-object shape), so the fast path can only ever store the first and
+# previously corrupted even that (see _ARGS_GRAMMAR note). On a hit the router
+# DECLINES the turn (before paying Tier-2) and the background extractor -- which
+# emits an ARRAY of facts and loops store_fact -- owns the extraction.
+#
+# Detection signature: a COMPLETED predicate clause ("... is/named/has/works ...")
+# followed by "and <possessive>". Requiring the copula BEFORE the "and" is what
+# distinguishes a genuine second fact ("my cat IS named Mittens and my dog...")
+# from a compound SUBJECT sharing one predicate ("my brother and my sister live
+# in Ohio" -- one location fact, no copula before the "and"), which the original
+# "and <possessive>" pattern wrongly declined -- bouncing a cleanly-storable
+# single fact off the deterministic fast path onto the debounced/classifier-
+# gated background extractor (which can decline or drop under churn), a silent-
+# loss regression. The fast-path decline is only fail-safe when the utterance is
+# a TRUE multi-fact (where the fast path never stored it cleanly anyway);
+# false-positive declines are NOT free, so this gate errs toward the fast path.
+# Cost of a MISSED true multi-fact: the single-triple grammar stores fact #1
+# cleanly (braces banned, no corruption) and drops the rest -- degraded, not
+# corrupt.
 _MULTIFACT_RE = re.compile(
-    r"\band\s+(?:my|his|her|its|our|their)\b", re.IGNORECASE,
+    r"\b(?:is|are|was|were|named|called|has|have|had|likes?|loves?|owns?|"
+    r"works?|lives?|goes?)\b.*?\band\s+(?:my|his|her|its|our|their)\b",
+    re.IGNORECASE,
 )
 
 
 def _multifact_utterance(utterance: str) -> bool:
-    """True when the utterance likely states MORE THAN ONE fact (a conjunction
-    of possessed-entity clauses) -- beyond what the single-triple Tier-2
-    grammar can represent."""
+    """True when the utterance states MORE THAN ONE fact -- a completed
+    predicate clause followed by a second "and <possessive>" clause -- beyond
+    what the single-triple Tier-2 grammar can represent."""
     return bool(_MULTIFACT_RE.search(utterance or ""))
 
 

@@ -74,6 +74,13 @@ def test_multifact_detected(utterance):
     "my brother lives in Sandy Hook",                  # no conjunction
     "remember my anniversary is June 3rd",
     "",
+    # Compound SUBJECT sharing one predicate -- one fact, no copula before the
+    # "and", must keep the deterministic fast path (2026-07-09 tightening: the
+    # original "and <possessive>" pattern wrongly declined these onto the
+    # droppable background extractor).
+    "my brother and my sister live in Ohio",
+    "my mom and my dad are visiting next week",
+    "remember my son and my daughter go to Lincoln Elementary",
 ])
 def test_single_fact_not_detected(utterance):
     assert tr._multifact_utterance(utterance) is False

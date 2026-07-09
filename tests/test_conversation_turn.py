@@ -12,7 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conversation.turn import ConversationTurn, SpeakerIdentity, Retrieved, TurnSettings
+from conversation.turn import (ConversationTurn, SpeakerIdentity, Retrieved,
+                               TurnSettings, TurnContext)
 
 
 # --- fakes ----------------------------------------------------------------
@@ -115,6 +116,31 @@ async def test_respond_speaks_each_sentence_and_saves_the_turn():
     assert memory.saves[0]["user_text"] == "how are you?"
     assert memory.saves[0]["response"] == result.text
     assert memory.saves[0]["speaker_name"] == "dan"
+
+
+@pytest.mark.asyncio
+async def test_on_play_start_wired_to_first_sentence_only():
+    # The audible-onset callback (on_first_audio) must reach TTS on the FIRST
+    # spoken sentence and be None on every later one -- else the first-audio
+    # latency metric mis-fires. Drives respond() with a ctx carrying the hook
+    # (the default ctx leaves it None, which is why the FakeSpeaker instrumentation
+    # alone proved nothing).
+    # Same token shape as test_respond_speaks_*: enough to flush two separate
+    # sentences through the streaming path (each >30 chars) rather than one
+    # end-of-stream chunk.
+    tokens = ["I'm ", "doing ", "really ", "well ", "today, ", "thanks. ",
+              "How ", "about ", "you?"]
+    turn, speaker, llm, memory, history = _make_turn(tokens)
+
+    sentinel = lambda _ts: None
+    ctx = TurnContext(on_first_audio=sentinel)
+    await history.add_user_turn("say a few things", "dan")
+    await turn.respond("say a few things", SpeakerIdentity("dan", 1), ctx)
+
+    assert len(speaker.play_start_callbacks) == len(speaker.spoken) >= 2
+    assert speaker.play_start_callbacks[0] is sentinel, "first sentence carries the onset hook"
+    assert all(cb is None for cb in speaker.play_start_callbacks[1:]), \
+        "later sentences must NOT re-fire the onset hook"
 
 
 @pytest.mark.asyncio

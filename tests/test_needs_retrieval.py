@@ -95,25 +95,27 @@ class _Mem:
     score = 0.9
 
 
-def _install_fakes(monkeypatch, *, gate: bool):
-    """Patch BOTH memory-channel tiers (legacy retrieve() + the live episodic
-    path — see EPISODIC_ALWAYS_ON_RETRIEVAL) + facts lookups + the toggle.
-    Returns a dict whose 'retrieve' counter counts whichever tier ran, so the
-    gate assertions hold regardless of the configured tier."""
+def _install_fakes(monkeypatch, *, gate: bool, use_episodes: bool):
+    """Patch BOTH memory-channel tiers + facts lookups + the gate toggle, and
+    pin which tier LiveMemory.gather selects (EPISODIC_ALWAYS_ON_RETRIEVAL).
+    Returns PER-TIER counters {'legacy','episodes'} so a test asserts the RIGHT
+    tier ran and the other did not -- a shared counter would pass vacuously if a
+    gate bug hit only the tier the ambient config didn't happen to select."""
+    import config as config_mod
     import memory.retrieval as retrieval_mod
     import memory.facts as facts_mod
     from persistence import runtime_toggles
 
-    calls = {"retrieve": 0}
+    calls = {"legacy": 0, "episodes": 0}
 
     async def fake_retrieve(user_text, top_k=5, context_turns=None,
                             resolved_query=None, query_pre_resolved=False):
-        calls["retrieve"] += 1
+        calls["legacy"] += 1
         return [_Mem()]
 
     async def fake_episodes(user_text, top_k, context_turns,
                             resolved_query=None, query_pre_resolved=False):
-        calls["retrieve"] += 1
+        calls["episodes"] += 1
         return [_Mem()]
 
     async def fake_all_facts(subjects, limit=5):
@@ -122,6 +124,7 @@ def _install_fakes(monkeypatch, *, gate: bool):
     async def fake_speaker_facts(name, db_id, limit=5):
         return []
 
+    monkeypatch.setattr(config_mod, "EPISODIC_ALWAYS_ON_RETRIEVAL", use_episodes)
     monkeypatch.setattr(retrieval_mod, "retrieve", fake_retrieve)
     monkeypatch.setattr(turn, "_retrieve_episodes_as_memories", fake_episodes)
     monkeypatch.setattr(facts_mod, "get_all_facts_for_prompt", fake_all_facts)
@@ -138,30 +141,54 @@ def _gather(text):
     )
 
 
-def test_gate_on_banter_skips_retrieve(monkeypatch):
-    calls = _install_fakes(monkeypatch, gate=True)
+# Each gate x intent case is run against BOTH tiers so neither branch can go
+# unexercised (the episodic path silently orphaned the resolver for ~2 weeks
+# exactly because nothing pinned it here). `active`/`idle` name the tier that
+# should / should not run for the given use_episodes.
+@pytest.mark.parametrize("use_episodes,active,idle", [
+    (True, "episodes", "legacy"),
+    (False, "legacy", "episodes"),
+])
+def test_gate_on_banter_skips_retrieve(monkeypatch, use_episodes, active, idle):
+    calls = _install_fakes(monkeypatch, gate=True, use_episodes=use_episodes)
     result = _run(_gather("lol nice one"))
-    assert calls["retrieve"] == 0, "banter with gate ON must NOT call retrieve()"
+    assert calls[active] == 0, "banter with gate ON must NOT retrieve on the active tier"
+    assert calls[idle] == 0, "the inactive tier never runs"
     assert result.memories == [], "skipped turn injects no memories"
 
 
-def test_gate_on_recall_still_retrieves(monkeypatch):
-    calls = _install_fakes(monkeypatch, gate=True)
+@pytest.mark.parametrize("use_episodes,active,idle", [
+    (True, "episodes", "legacy"),
+    (False, "legacy", "episodes"),
+])
+def test_gate_on_recall_still_retrieves(monkeypatch, use_episodes, active, idle):
+    calls = _install_fakes(monkeypatch, gate=True, use_episodes=use_episodes)
     result = _run(_gather("what's my dog's name?"))
-    assert calls["retrieve"] == 1, "recall with gate ON must retrieve"
+    assert calls[active] == 1, "recall with gate ON must retrieve on the active tier"
+    assert calls[idle] == 0, "the inactive tier must not run"
     assert len(result.memories) == 1
 
 
-def test_gate_off_banter_still_retrieves(monkeypatch):
+@pytest.mark.parametrize("use_episodes,active,idle", [
+    (True, "episodes", "legacy"),
+    (False, "legacy", "episodes"),
+])
+def test_gate_off_banter_still_retrieves(monkeypatch, use_episodes, active, idle):
     # Default behaviour (gate OFF): retrieve on every turn, banter included.
-    calls = _install_fakes(monkeypatch, gate=False)
+    calls = _install_fakes(monkeypatch, gate=False, use_episodes=use_episodes)
     result = _run(_gather("lol nice one"))
-    assert calls["retrieve"] == 1, "gate OFF must preserve today's retrieve-always behaviour"
+    assert calls[active] == 1, "gate OFF must preserve retrieve-always on the active tier"
+    assert calls[idle] == 0
     assert len(result.memories) == 1
 
 
-def test_gate_off_recall_retrieves(monkeypatch):
-    calls = _install_fakes(monkeypatch, gate=False)
+@pytest.mark.parametrize("use_episodes,active,idle", [
+    (True, "episodes", "legacy"),
+    (False, "legacy", "episodes"),
+])
+def test_gate_off_recall_retrieves(monkeypatch, use_episodes, active, idle):
+    calls = _install_fakes(monkeypatch, gate=False, use_episodes=use_episodes)
     result = _run(_gather("do you remember the leak"))
-    assert calls["retrieve"] == 1
+    assert calls[active] == 1
+    assert calls[idle] == 0
     assert len(result.memories) == 1

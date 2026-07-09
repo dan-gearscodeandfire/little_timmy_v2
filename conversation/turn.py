@@ -218,7 +218,13 @@ class TurnSettings:
 # --------------------------------------------------------------------------
 
 class Speaker(Protocol):
-    async def speak(self, text: str,
+    # Mirror tts/engine.py Engine.speak exactly (2026-07-09 code review): a
+    # partial Protocol let a positional call bind arg 2 to on_play_start when the
+    # real impl treats it as `force`, silently forcing past the mouth-mute and
+    # dropping the callback. Keep every positional param + default in sync.
+    async def speak(self, text: str, force: bool = False,
+                    voice_model: str | None = None,
+                    suppress_mic: bool = True,
                     on_play_start: Callable[[float], None] | None = None) -> None: ...
 
 
@@ -587,20 +593,11 @@ async def _retrieve_episodes_as_memories(user_text, top_k, context_turns,
     in the GUI latency bar."""
     from datetime import datetime, timezone
     from memory.episodic_search import search_episodes
-    from memory.retrieval import (RetrievedMemory, _build_semantic_query,
-                                  resolve_for_retrieval)
-    embed_query = None
-    if query_pre_resolved:
-        # Doorway already attempted resolution (possibly parallel with the
-        # classifier). Trust the handed-in result; None -> blend.
-        if resolved_query:
-            embed_query = resolved_query
-    else:
-        resolved = await resolve_for_retrieval(user_text, context_turns)
-        if resolved:
-            embed_query = resolved
-    if embed_query is None:
-        embed_query = _build_semantic_query(user_text, context_turns)
+    from memory.retrieval import RetrievedMemory, choose_semantic_query
+    # Same resolver contract as retrieve() -- see choose_semantic_query (one
+    # source, so the two tiers can't drift as they did pre-2026-07-09).
+    embed_query = await choose_semantic_query(
+        user_text, context_turns, resolved_query, query_pre_resolved)
     eps = await search_episodes(
         user_text, datetime.now(timezone.utc),
         top_k=top_k, embed_query=embed_query,
