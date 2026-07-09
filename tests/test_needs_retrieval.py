@@ -96,8 +96,10 @@ class _Mem:
 
 
 def _install_fakes(monkeypatch, *, gate: bool):
-    """Patch retrieve() + facts lookups + the toggle. Returns a dict whose
-    'retrieve_calls' counter lets a test assert whether the vector path ran."""
+    """Patch BOTH memory-channel tiers (legacy retrieve() + the live episodic
+    path — see EPISODIC_ALWAYS_ON_RETRIEVAL) + facts lookups + the toggle.
+    Returns a dict whose 'retrieve' counter counts whichever tier ran, so the
+    gate assertions hold regardless of the configured tier."""
     import memory.retrieval as retrieval_mod
     import memory.facts as facts_mod
     from persistence import runtime_toggles
@@ -109,6 +111,11 @@ def _install_fakes(monkeypatch, *, gate: bool):
         calls["retrieve"] += 1
         return [_Mem()]
 
+    async def fake_episodes(user_text, top_k, context_turns,
+                            resolved_query=None, query_pre_resolved=False):
+        calls["retrieve"] += 1
+        return [_Mem()]
+
     async def fake_all_facts(subjects, limit=5):
         return []
 
@@ -116,6 +123,7 @@ def _install_fakes(monkeypatch, *, gate: bool):
         return []
 
     monkeypatch.setattr(retrieval_mod, "retrieve", fake_retrieve)
+    monkeypatch.setattr(turn, "_retrieve_episodes_as_memories", fake_episodes)
     monkeypatch.setattr(facts_mod, "get_all_facts_for_prompt", fake_all_facts)
     monkeypatch.setattr(facts_mod, "get_facts_about_speaker", fake_speaker_facts)
     monkeypatch.setattr(runtime_toggles, "get",
