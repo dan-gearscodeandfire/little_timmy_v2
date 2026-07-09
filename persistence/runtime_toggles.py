@@ -282,6 +282,40 @@ _DEFAULTS: dict = {
     # (the :8083/:8084 split solves contention physically). This toggle now
     # drives ONLY the mail-active window.
     "conversation_idle_gate_seconds": 20.0,
+    # --- EXPO face-proximity vision-poll gate (2026-07-09, Dan) ---------------
+    # Replaces the pixel-MAD scene-change gate (vision/scene_change.py) as the
+    # VLM trigger when True. Instead of firing on raw frame motion (which pins
+    # OPEN in a crowd — scores 28-65 vs threshold 12 with 2 people, and self-
+    # triggers on servo head-moves), it fires on a FACE getting close: max
+    # /faces YuNet bbox height >= vision_proximity_height_frac of frame,
+    # sustained N-of-M polls, on the RISING edge (someone steps up to the
+    # booth/mic). Gate on DETECTION + size, NOT identity (SFace can't ID
+    # strangers/far faces; the expo audience is unenrolled). Event-driven
+    # trigger() (visual questions) stays independent — "what do you see?"
+    # always works. Calibrated live in-shop 2026-07-09: standing-back baseline
+    # = 13-14% height, at-mic close = 45-65%; 20% clears background-standers by
+    # ~6pts. See project_expo_vision_poll_gate. Default OFF (opt-in A/B vs the
+    # MAD gate). Read live per poll — no restart to flip.
+    "vision_proximity_gate_enabled": False,
+    # Height threshold: a face bbox taller than this fraction of the frame
+    # height counts as "close / at the booth". Dan set 20% (0.20) 2026-07-09
+    # (I proposed 30%; he chose 20% for earlier/more-sensitive firing). Live-
+    # tunable at the booth (camera height / crowd depth vary). Higher = must be
+    # closer to fire; lower = fires from farther back (watch background-standers).
+    "vision_proximity_height_frac": 0.20,
+    # Debounce window: engage when >= _debounce_n of the last _debounce_m polls
+    # (at ~1 poll/s) had a qualifying close face. Load-bearing because YuNet
+    # detection is intermittent and goes DARK during servo head-motion
+    # (camera.py:1080 skips frames while servos move) — a consecutive-frame rule
+    # would flap. Disengage (re-arm the rising edge) only when the window is
+    # fully empty of qualifiers, giving hysteresis. Defaults: 2-of-6.
+    "vision_proximity_debounce_m": 6,
+    "vision_proximity_debounce_n": 2,
+    # While a visitor stays engaged, optionally re-poll the VLM every N seconds
+    # so the scene description refreshes (they pick up an object, etc). 0.0 =
+    # OFF = rising-edge only (leanest; avoids reintroducing a duty cycle). The
+    # 10s VLM cooldown still floors it. Default 0.0.
+    "vision_proximity_refresh_s": 0.0,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in

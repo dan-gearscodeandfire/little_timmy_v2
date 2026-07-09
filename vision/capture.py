@@ -15,6 +15,8 @@ from typing import Callable, Awaitable
 
 import httpx
 import config
+from persistence import runtime_toggles
+from vision.face_remote import RemoteFaceClient
 from vision.scene_change import SceneChangeDetector
 
 log = logging.getLogger(__name__)
@@ -39,6 +41,15 @@ class FrameCapture:
         self._running = False
         self._on_frame: Callable[[bytes], Awaitable[None]] | None = None
         self._detector = SceneChangeDetector()
+
+        # Face-proximity gate (EXPO): reuses the Pi's /faces YuNet bbox as the
+        # VLM trigger instead of pixel-MAD scene-change. Client created in
+        # start(); gate logic in _poll_proximity(). Enabled live via the
+        # vision_proximity_gate_enabled toggle (default OFF).
+        self._face_client: RemoteFaceClient | None = None
+        self._prox_window: list[bool] = []   # recent polls: was a close face present?
+        self._prox_engaged: bool = False     # hysteresis latch for rising-edge firing
+        self._last_face_height_frac: float = 0.0  # observability (HUD/stats)
 
         # Cooldown: minimum seconds between VLM calls
         self._vlm_cooldown: float = 10.0
@@ -108,10 +119,12 @@ class FrameCapture:
             timeout=httpx.Timeout(10.0, connect=5.0),
             verify=False,  # streamerpi uses self-signed certs
         )
+        self._face_client = RemoteFaceClient()
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        log.info("Frame capture started (poll=1fps, gate=scene-change, url=%s)",
-                 self.capture_url)
+        log.info("Frame capture started (poll=1fps, gate=%s, url=%s)",
+                 "proximity" if runtime_toggles.get("vision_proximity_gate_enabled")
+                 else "scene-change", self.capture_url)
 
     async def stop(self):
         """Stop polling and close HTTP client."""
@@ -125,6 +138,9 @@ class FrameCapture:
         if self._client:
             await self._client.aclose()
             self._client = None
+        if self._face_client:
+            await self._face_client.close()
+            self._face_client = None
         log.info("Frame capture stopped (polled=%d, analyzed=%d, ratio=%.0f%%)",
                  self._frames_polled, self._frames_analyzed,
                  (self._frames_analyzed / max(self._frames_polled, 1)) * 100)
@@ -140,7 +156,13 @@ class FrameCapture:
         return await self._fetch_frame(reason, resolution)
 
     async def _poll_loop(self):
-        """Poll at ~1fps, only trigger VLM callback on scene change.
+        """Poll at ~1fps, trigger the VLM callback only when the active gate
+        fires.
+
+        Two gates, selected live per poll by the vision_proximity_gate_enabled
+        toggle:
+          - scene-change (default): pixel-MAD frame diff (vision/scene_change).
+          - proximity (EXPO): a close face in the Pi's /faces YuNet bbox.
 
         Skips while is_paused (set by orchestrator during speech->TTS turn
         to keep the periodic VLM off the GPU while conversation-tier LLM
@@ -156,34 +178,117 @@ class FrameCapture:
                 if not self._auto_poll_enabled:
                     continue
 
-                jpeg = await self._fetch_frame("poll", LOW_RES)
-                if jpeg is None:
-                    continue
-
-                self._frames_polled += 1
-
-                # Scene-change gate
-                should_analyze, score = self._detector.check(jpeg)
-                self._last_change_score = score
-
-                if should_analyze and self._on_frame:
-                    now = time.monotonic()
-                    elapsed = now - self._last_vlm_time
-                    if elapsed < self._vlm_cooldown:
-                        log.debug("[CAPTURE] VLM cooldown (%.0fs remaining)",
-                                  self._vlm_cooldown - elapsed)
-                        continue
-                    self._frames_analyzed += 1
-                    self._last_vlm_time = now
-                    log.info("[CAPTURE] Triggering VLM (score=%.1f, analyzed %d/%d frames)",
-                             score, self._frames_analyzed, self._frames_polled)
-                    await self._on_frame(jpeg)
+                if runtime_toggles.get("vision_proximity_gate_enabled"):
+                    await self._poll_proximity()
+                else:
+                    await self._poll_scene_change()
 
             except asyncio.CancelledError:
                 break
             except Exception:
                 log.exception("Error in poll loop")
                 await asyncio.sleep(5.0)
+
+    async def _poll_scene_change(self):
+        """Default gate: fetch a frame, fire the VLM on pixel-MAD scene change."""
+        jpeg = await self._fetch_frame("poll", LOW_RES)
+        if jpeg is None:
+            return
+
+        self._frames_polled += 1
+
+        # Scene-change gate
+        should_analyze, score = self._detector.check(jpeg)
+        self._last_change_score = score
+
+        if should_analyze and self._on_frame:
+            now = time.monotonic()
+            elapsed = now - self._last_vlm_time
+            if elapsed < self._vlm_cooldown:
+                log.debug("[CAPTURE] VLM cooldown (%.0fs remaining)",
+                          self._vlm_cooldown - elapsed)
+                return
+            self._frames_analyzed += 1
+            self._last_vlm_time = now
+            log.info("[CAPTURE] Triggering VLM (score=%.1f, analyzed %d/%d frames)",
+                     score, self._frames_analyzed, self._frames_polled)
+            await self._on_frame(jpeg)
+
+    async def _poll_proximity(self):
+        """EXPO gate: fire the VLM when a face gets close to the booth.
+
+        Reads the Pi's /faces YuNet bbox (cheap JSON — no frame transfer until
+        we actually fire) and computes the largest face's height as a fraction
+        of frame height. A qualifying poll = height >= threshold. Engage when
+        >= N of the last M polls qualified (debounced — YuNet is intermittent
+        and dark during servo motion); fire the VLM on the RISING edge (a
+        visitor stepping up), then hold until the window empties (hysteresis)
+        so we don't re-fire every poll. Identity is ignored on purpose — a
+        stranger walking up is exactly who we want to greet.
+        """
+        thr = runtime_toggles.get("vision_proximity_height_frac")
+        m = max(1, int(runtime_toggles.get("vision_proximity_debounce_m")))
+        n = max(1, int(runtime_toggles.get("vision_proximity_debounce_n")))
+        refresh_s = runtime_toggles.get("vision_proximity_refresh_s")
+
+        self._frames_polled += 1
+
+        # Largest face height fraction from the Pi's authoritative /faces state.
+        max_hf = 0.0
+        if self._face_client is not None:
+            state = await self._face_client.fetch_full()
+            if state:
+                fh = state["image_size"][1]
+                if fh > 0:
+                    for f in state["faces"]:
+                        b = f.get("bbox")
+                        if b and len(b) >= 4:
+                            max_hf = max(max_hf, b[3] / fh)
+        self._last_face_height_frac = max_hf
+
+        # Debounced engagement over the last M polls.
+        self._prox_window.append(max_hf >= thr)
+        if len(self._prox_window) > m:
+            self._prox_window = self._prox_window[-m:]
+        count = sum(self._prox_window)
+        engaged_now = count >= n
+
+        if engaged_now:
+            was_engaged = self._prox_engaged
+            self._prox_engaged = True
+            if not was_engaged:
+                await self._fire_proximity("arrival", max_hf, count, m)
+            elif refresh_s and refresh_s > 0 and \
+                    (time.monotonic() - self._last_vlm_time) >= refresh_s:
+                await self._fire_proximity("refresh", max_hf, count, m)
+        elif count == 0:
+            # Window fully clear of close faces -> visitor left; re-arm.
+            if self._prox_engaged:
+                log.info("[CAPTURE] proximity disengaged (face gone)")
+            self._prox_engaged = False
+
+    async def _fire_proximity(self, reason: str, max_hf: float, count: int, m: int):
+        """Fetch the current frame and fire the VLM for a proximity event,
+        honoring the shared VLM cooldown. The rising-edge latch is already set
+        by the caller, so a cooldown block just skips this fire (we won't
+        re-fire until disengage/re-engage or the refresh timer)."""
+        if not self._on_frame:
+            return
+        now = time.monotonic()
+        elapsed = now - self._last_vlm_time
+        if elapsed < self._vlm_cooldown:
+            log.debug("[CAPTURE] proximity %s but VLM cooldown (%.0fs remaining)",
+                      reason, self._vlm_cooldown - elapsed)
+            return
+        jpeg = await self._fetch_frame("proximity", LOW_RES)
+        if jpeg is None:
+            return
+        self._frames_analyzed += 1
+        self._last_vlm_time = now
+        log.info("[CAPTURE] Triggering VLM (proximity %s, height=%.0f%%, %d/%d window, "
+                 "analyzed %d/%d)", reason, max_hf * 100, count, m,
+                 self._frames_analyzed, self._frames_polled)
+        await self._on_frame(jpeg)
 
     async def _fetch_frame(self, reason: str, resolution: tuple | None = None) -> bytes | None:
         """Fetch a single JPEG frame from streamerpi.
