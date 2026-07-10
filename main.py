@@ -1538,14 +1538,21 @@ class Orchestrator:
             )
             streak_hit = self._face_hint_streak.observe(streak_face_name, streak_temp_id)
             if streak_hit is not None:
-                if config.AUTO_ENROLL_KILL:
-                    # Emergency kill switch: suppress voiceprint auto-enroll. A
-                    # crowd makes face_hint streaks unreliable (false-accepts),
-                    # and binding a voiceprint off a bad streak corrupts speaker
-                    # attribution at scale. Still reset so the streak doesn't
-                    # accumulate stale across turns.
+                # Suppress the voiceprint auto-enroll when EITHER the env kill
+                # switch (config.AUTO_ENROLL_KILL, hard master-off) OR the live
+                # LT-OS operator toggle (auto_enroll_enabled=False) is set. A
+                # crowd makes face_hint streaks unreliable (false-accepts), and
+                # binding a voiceprint off a bad streak corrupts speaker
+                # attribution at scale. Read live per turn so a booth flip
+                # applies immediately. Still reset either way so the streak
+                # doesn't accumulate stale across turns.
+                _ae_toggle_on = bool(runtime_toggles.get("auto_enroll_enabled"))
+                if config.AUTO_ENROLL_KILL or not _ae_toggle_on:
+                    _reason = ("AUTO_ENROLL_KILL" if config.AUTO_ENROLL_KILL
+                               else "auto_enroll_enabled=False")
                     log.info(
-                        "[PRESENCE] auto-enroll SUPPRESSED (AUTO_ENROLL_KILL): %s -> %s (%d-turn streak)",
+                        "[PRESENCE] auto-enroll SUPPRESSED (%s): %s -> %s (%d-turn streak)",
+                        _reason,
                         streak_hit.voice_temp_id, streak_hit.face_hint_name, streak_hit.count,
                     )
                 else:
@@ -2249,6 +2256,14 @@ async def main():
                 # LED-mic anchor never un-darks the consent FSM — mic-in-hand
                 # is implied consent, stored via the name-tell commit instead.
                 if not runtime_toggles.identity_dialogs_allowed():
+                    orch._face_enroller.drop_gated()
+                    continue
+                # Live auto-enroll operator switch (LT-OS Services, 2026-07-09):
+                # the same toggle that gates the voiceprint streak also gates the
+                # interactive face-enroll consent FSM. Read per tick so a booth
+                # flip applies without a restart; drop any armed candidate so a
+                # pre-flip offer can't complete after the operator turned it off.
+                if not runtime_toggles.get("auto_enroll_enabled"):
                     orch._face_enroller.drop_gated()
                     continue
                 await orch._face_enroller.observe_faces(

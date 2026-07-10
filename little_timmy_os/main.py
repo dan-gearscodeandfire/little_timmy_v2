@@ -175,6 +175,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         result = await services.toggle_query_resolution(desired)
                         toggles = await services.check_lt_toggles_status()
                         await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "auto_enroll":
+                        result = await services.toggle_auto_enroll(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
                         result = await services.toggle_service(svc_id, desired)
                         health = await services.check_all_health()
@@ -868,6 +872,13 @@ async def toggle_query_resolution(data: dict):
     return await services.toggle_query_resolution(bool(data.get("enabled", True)))
 
 
+@app.post("/api/auto_enroll/toggle")
+async def toggle_auto_enroll(data: dict):
+    """Enable/disable LT's auto-enrollment (voiceprint streak + interactive face
+    FSM). Live; no restart. Env AUTO_ENROLL_KILL still hard-overrides off."""
+    return await services.toggle_auto_enroll(bool(data.get("enabled", True)))
+
+
 @app.post("/api/face_recognition/set")
 async def set_face_recognition(data: dict):
     """Set okDemerzel face-recognition knobs live (authority / shadow / threshold
@@ -1535,6 +1546,21 @@ header .uptime {
           </div>
           <label class="toggle" id="query_resolution-toggle">
             <input type="checkbox" onchange="toggleLTFlag('query_resolution', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Auto-enroll (2026-07-09). Gates BOTH auto-enrollment paths live: the
+             voiceprint face-hint streak AND the interactive face-enroll consent
+             FSM. Flip OFF for a crowd/booth — a recognizer false-accept +
+             mode="add" corrupts identities at scale. The env kill
+             (TIMMY_AUTO_ENROLL_KILL) hard-overrides off; surfaced as master. -->
+        <div class="service-card" id="auto_enroll-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Auto-Enroll (voiceprint + face)</div>
+            <div class="service-detail" id="auto_enroll-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="auto_enroll-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('auto_enroll', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -2837,12 +2863,21 @@ const LT_FLAGS = {
     enabledDetail: 'Resolving deictic follow-ups before retrieval (:8092 up)',
     disabledDetail: 'Off — semantic query uses the context blend',
   },
+  auto_enroll: {
+    cardId: 'auto_enroll-card',
+    toggleId: 'auto_enroll-toggle',
+    detailId: 'auto_enroll-detail',
+    route: '/api/auto_enroll/toggle',
+    enabledDetail: 'Learning new voiceprints/faces from booth chatter',
+    disabledDetail: 'Off — no new identities bound (recognition still works)',
+  },
 };
-const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null, query_resolution: null };
-const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false, query_resolution: false };
+const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null, query_resolution: null, auto_enroll: null };
+const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false, query_resolution: false, auto_enroll: false };
 let ltProactiveMaster = true;  // config kill-switch; false => toggle is inert
 let ltClassifierUp = false;    // :8092 reachable? surfaced in the classifier detail line
 let ltQueryResolutionUp = false;  // same :8092 server; surfaced in the query-resolution detail line
+let ltAutoEnrollMaster = true; // env AUTO_ENROLL_KILL; false => toggle is inert (hard-killed)
 
 function applyLTToggles(data) {
   if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
@@ -2853,6 +2888,8 @@ function applyLTToggles(data) {
   if (typeof data.classifier_up === 'boolean') ltClassifierUp = data.classifier_up;
   if (typeof data.query_resolution_enabled === 'boolean') ltFlagState.query_resolution = data.query_resolution_enabled;
   if (typeof data.query_resolution_up === 'boolean') ltQueryResolutionUp = data.query_resolution_up;
+  if (typeof data.auto_enroll_enabled === 'boolean') ltFlagState.auto_enroll = data.auto_enroll_enabled;
+  if (typeof data.auto_enroll_master === 'boolean') ltAutoEnrollMaster = data.auto_enroll_master;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
   applyFaceRec({
     okdemerzel: data.face_okdemerzel, shadow: data.face_shadow,
@@ -2928,7 +2965,11 @@ function updateLTFlagUI(flag) {
   // Proactive speech is inert when the config kill-switch (master) is off,
   // even if the runtime toggle reads on -- surface that so the switch isn't
   // misleading.
-  const masterOff = (flag === 'proactive_speech' && !ltProactiveMaster);
+  // Proactive speech OR auto-enroll can be force-disabled by a config/env
+  // kill-switch even when the runtime toggle reads on -- surface that so the
+  // switch isn't misleading.
+  const masterOff = (flag === 'proactive_speech' && !ltProactiveMaster)
+                 || (flag === 'auto_enroll' && !ltAutoEnrollMaster);
   // Classifier enabled but its :8092 server is unreachable: surface as amber —
   // LT still works (degrades to normal pipeline), but the tool path is inert.
   const clsDown = (flag === 'classifier' && enabled && !ltClassifierUp);
@@ -2941,6 +2982,7 @@ function updateLTFlagUI(flag) {
   if (detail) {
     if (busy)                  detail.textContent = 'Toggling...';
     else if (enabled === null) detail.textContent = 'Checking...';
+    else if (masterOff && flag === 'auto_enroll') detail.textContent = 'Hard-killed by env (TIMMY_AUTO_ENROLL_KILL=1)';
     else if (masterOff)        detail.textContent = 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)';
     else if (clsDown)          detail.textContent = 'ON, but :8092 unreachable — utterances fall through to the brain';
     else if (qrDown)           detail.textContent = 'ON, but :8092 unreachable — falls back to the context blend';

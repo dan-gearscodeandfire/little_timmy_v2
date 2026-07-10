@@ -316,6 +316,17 @@ _DEFAULTS: dict = {
     # OFF = rising-edge only (leanest; avoids reintroducing a duty cycle). The
     # 10s VLM cooldown still floors it. Default 0.0.
     "vision_proximity_refresh_s": 0.0,
+    # --- Auto-enroll live operator switch (2026-07-09, LT-OS Services toggle) --
+    # Live enable/disable for BOTH auto-enrollment paths: the voiceprint
+    # face-hint STREAK (main.py) and the interactive face-enroll consent FSM
+    # (presence/face_enroller.py, when armed by TIMMY_AUTO_ENROLL_ENABLED). The
+    # env kill switch config.AUTO_ENROLL_KILL is a HARD master-off that still
+    # overrides this (emergency lever, survives a UI flip); effective auto-enroll
+    # = auto_enroll_enabled AND NOT AUTO_ENROLL_KILL. Default True preserves the
+    # prior "on unless env-killed" behavior — flip OFF in the LT-OS Services panel
+    # for a crowd (a recognizer false-accept + mode="add" corrupts identities at
+    # scale). Read live at the doorway; no restart to flip.
+    "auto_enroll_enabled": True,
     # Retired 2026-06-10: "party_mode_enabled" + "speaker_allowlist" (Phase 2
     # reply gating). Speaker-ID isn't reliable enough to gate replies on; the
     # predicate lives on as main.speaker_allowlist_drop (gate commented out in

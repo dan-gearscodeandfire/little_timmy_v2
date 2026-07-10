@@ -586,6 +586,8 @@ async def check_lt_toggles_status() -> dict:
         "classifier_up": False,
         "query_resolution_enabled": False,
         "query_resolution_up": False,
+        "auto_enroll_enabled": False,
+        "auto_enroll_master": True,
         # okDemerzel face-recognition knobs (all live-tunable).
         "face_authority": "pi",
         "face_okdemerzel": False,
@@ -601,6 +603,7 @@ async def check_lt_toggles_status() -> dict:
             p = await client.get(f"{cfg.TIMMY_BASE_URL}/api/proactive")
             c = await client.get(f"{cfg.TIMMY_BASE_URL}/api/classifier")
             qr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/query_resolution")
+            ae = await client.get(f"{cfg.TIMMY_BASE_URL}/api/auto_enroll")
             fr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/face_recognition")
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
@@ -613,6 +616,9 @@ async def check_lt_toggles_status() -> dict:
             qj = qr.json()
             out["query_resolution_enabled"] = bool(qj.get("enabled", False))
             out["query_resolution_up"] = bool(qj.get("up", False))
+            aej = ae.json()
+            out["auto_enroll_enabled"] = bool(aej.get("enabled", False))
+            out["auto_enroll_master"] = bool(aej.get("master", True))
             frj = fr.json()
             out["face_authority"] = frj.get("authority", "pi")
             out["face_okdemerzel"] = bool(frj.get("okdemerzel", False))
@@ -752,5 +758,29 @@ async def toggle_query_resolution(enabled: bool) -> dict:
             return result
     except Exception as e:
         await _broadcast_status(f"Query resolution toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_auto_enroll(enabled: bool) -> dict:
+    """Enable/disable LT's auto-enrollment live. Persists the LT-side runtime
+    toggle, read per turn at the doorway (voiceprint face-hint streak) and per
+    tick by the interactive face-enroll monitor — no restart. Gates BOTH paths.
+    The env emergency kill (TIMMY_AUTO_ENROLL_KILL) still hard-overrides it off."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} auto-enroll...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/auto_enroll",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Auto-enroll {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Auto-enroll toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}

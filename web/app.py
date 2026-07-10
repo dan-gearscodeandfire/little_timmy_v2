@@ -1454,3 +1454,33 @@ async def set_proactive(payload: dict | None = None):
         "enabled": bool(runtime_toggles.get("proactive_speech_enabled")),
         "master": bool(config.PROACTIVE_SPEECH_ENABLED),
     }
+
+
+@app.get("/api/auto_enroll")
+async def get_auto_enroll():
+    """Read the auto-enroll runtime toggle. `enabled` is the live operator switch
+    (LT-OS Services); `master` is False when the env emergency kill
+    (config.AUTO_ENROLL_KILL) is set — a hard override that suppresses auto-enroll
+    regardless of the toggle. Both auto-enroll paths (voiceprint face-hint streak
+    + interactive face-enroll FSM) fire only when enabled AND master are true."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("auto_enroll_enabled")),
+        "master": not bool(config.AUTO_ENROLL_KILL),
+    }
+
+
+@app.post("/api/auto_enroll")
+async def set_auto_enroll(payload: dict | None = None):
+    """Enable/disable auto-enrollment live. Persists the runtime toggle, read per
+    turn at the doorway (voiceprint streak) and per tick by the face-enroll
+    monitor — takes effect without a restart. The env kill (AUTO_ENROLL_KILL)
+    still hard-overrides it off when set."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", True))
+    runtime_toggles.set("auto_enroll_enabled", enabled)
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("auto_enroll_enabled")),
+        "master": not bool(config.AUTO_ENROLL_KILL),
+    }
