@@ -588,6 +588,10 @@ async def check_lt_toggles_status() -> dict:
         "query_resolution_up": False,
         "auto_enroll_enabled": False,
         "auto_enroll_master": True,
+        "unified_enroll_enabled": False,
+        "unified_enroll_env_master": False,
+        "vision_proximity_gate_enabled": False,
+        "vision_proximity_height_frac": 0.20,
         # okDemerzel face-recognition knobs (all live-tunable).
         "face_authority": "pi",
         "face_okdemerzel": False,
@@ -605,6 +609,22 @@ async def check_lt_toggles_status() -> dict:
             qr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/query_resolution")
             ae = await client.get(f"{cfg.TIMMY_BASE_URL}/api/auto_enroll")
             fr = await client.get(f"{cfg.TIMMY_BASE_URL}/api/face_recognition")
+            # Newer endpoints (2026-07-10) read non-fatally so a version-skewed
+            # LT (restarted before/after LT-OS) can't blank the whole panel.
+            try:
+                ue = await client.get(f"{cfg.TIMMY_BASE_URL}/api/unified_enroll")
+                uej = ue.json()
+                out["unified_enroll_enabled"] = bool(uej.get("enabled", False))
+                out["unified_enroll_env_master"] = bool(uej.get("env_master", False))
+            except Exception:
+                pass
+            try:
+                pg = await client.get(f"{cfg.TIMMY_BASE_URL}/api/vision/proximity_gate")
+                pgj = pg.json()
+                out["vision_proximity_gate_enabled"] = bool(pgj.get("enabled", False))
+                out["vision_proximity_height_frac"] = float(pgj.get("height_frac", 0.20))
+            except Exception:
+                pass
             out["vision_auto_poll_enabled"] = bool(v.json().get("enabled", False))
             out["hearing_enabled"] = bool(h.json().get("enabled", False))
             pj = p.json()
@@ -782,5 +802,52 @@ async def toggle_auto_enroll(enabled: bool) -> dict:
             return result
     except Exception as e:
         await _broadcast_status(f"Auto-enroll toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_unified_enroll(enabled: bool) -> dict:
+    """Enable/disable LT's reactive "enroll me" path live. Persists the LT-side
+    runtime toggle, read per turn — no restart. The env master
+    (TIMMY_UNIFIED_ENROLL) still forces the feature ON when set (OR polarity,
+    opposite of auto-enroll's env kill)."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} unified enroll...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/unified_enroll",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Unified enroll {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Unified-enroll toggle failed: {e}", "error")
+        _write_session_log()
+        return {"enabled": False, "error": str(e)[:120]}
+
+
+async def toggle_vision_proximity_gate(enabled: bool) -> dict:
+    """Enable/disable the face-proximity vision-poll gate live. Persists the
+    LT-side runtime toggle, read per poll tick by vision/capture.py — no
+    restart. Child of vision auto-poll: inert while the poll loop is off."""
+    import config as cfg
+    await _broadcast_status(f"{'Enabling' if enabled else 'Disabling'} vision proximity gate...")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{cfg.TIMMY_BASE_URL}/api/vision/proximity_gate",
+                json={"enabled": enabled},
+            )
+            result = r.json()
+            state_str = "enabled" if result.get("enabled") else "disabled"
+            await _broadcast_status(f"Vision proximity gate {state_str}")
+            _write_session_log()
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Vision-proximity-gate toggle failed: {e}", "error")
         _write_session_log()
         return {"enabled": False, "error": str(e)[:120]}

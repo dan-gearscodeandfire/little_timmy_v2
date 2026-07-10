@@ -179,6 +179,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         result = await services.toggle_auto_enroll(desired)
                         toggles = await services.check_lt_toggles_status()
                         await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "unified_enroll":
+                        result = await services.toggle_unified_enroll(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
+                    elif svc_id == "vision_proximity_gate":
+                        result = await services.toggle_vision_proximity_gate(desired)
+                        toggles = await services.check_lt_toggles_status()
+                        await broadcast_event("lt_toggles", toggles)
                     elif svc_id in config.SERVICES:
                         result = await services.toggle_service(svc_id, desired)
                         health = await services.check_all_health()
@@ -879,6 +887,20 @@ async def toggle_auto_enroll(data: dict):
     return await services.toggle_auto_enroll(bool(data.get("enabled", True)))
 
 
+@app.post("/api/unified_enroll/toggle")
+async def toggle_unified_enroll(data: dict):
+    """Enable/disable LT's reactive "enroll me" path. Live; no restart. Env
+    TIMMY_UNIFIED_ENROLL still forces ON when set (OR polarity)."""
+    return await services.toggle_unified_enroll(bool(data.get("enabled", True)))
+
+
+@app.post("/api/vision/proximity_gate/toggle")
+async def toggle_vision_proximity_gate(data: dict):
+    """Enable/disable the face-proximity vision-poll gate. Live; no restart.
+    Child of vision auto-poll — inert while the poll loop is off."""
+    return await services.toggle_vision_proximity_gate(bool(data.get("enabled", True)))
+
+
 @app.post("/api/face_recognition/set")
 async def set_face_recognition(data: dict):
     """Set okDemerzel face-recognition knobs live (authority / shadow / threshold
@@ -1379,6 +1401,23 @@ header .uptime {
 }
 
 /* PARTY MODE banner — the single most important party control. Loud on, dim off. */
+/* Chain-grouped toggle sections (2026-07-10): section labels split the card
+   list along the runtime-toggle dependency map (Core / Brain / Identity /
+   Vision / Body) so parent→child chains are visible instead of a flat list. */
+.toggle-section-label {
+  font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px;
+  margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid #21262d;
+  flex: 0 0 100%;  /* full-width band header inside the flex-wrap chip strip */
+}
+/* Child card: indented under its parent toggle with a connector gutter. */
+.service-card.child-card { margin-left: 18px; }
+/* Gated child (parent OFF / env-killed parent): collapses to a slim dimmed
+   row — visibly inert-BY-DESIGN, not broken. JS hides the switch and sets
+   the detail line to name the gate. */
+.service-card.slim-gated { opacity: .55; }
+.service-card.slim-gated .toggle { display: none; }
+/* EXPO badge: shown on cards whose behavior Open Sauce Mode darkens. */
+.expo-badge { margin-left: 6px; font-size: 12px; }
 #party-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   margin: 0 0 16px 0; padding: 14px 22px; border-radius: 12px;
@@ -1448,10 +1487,13 @@ header .uptime {
     <details class="panel" open>
       <summary><h2>Services</h2></summary>
       <div id="services"></div>
-      <!-- LT-side runtime toggles (relocated out of streamerpi Controls 2026-06-18):
-           these gate Little Timmy itself, not the Pi, so they belong with the
-           service cards above (whisper.cpp, ollama, brain), not under streamerpi. -->
+      <!-- LT-side runtime toggles, chain-grouped along the runtime-toggle
+           dependency map (2026-07-10): Core / Brain / Identity & Enroll /
+           Vision sections here, Body (streamerpi) below. Children render
+           indented under their parent and collapse to a slim row while the
+           parent gates them (see .slim-gated + updateLTFlagUI). -->
       <div id="lt-runtime-toggles">
+        <div class="toggle-section-label" style="border-top:none; padding-top:0;">Core</div>
         <div class="service-card" id="hearing-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
             <div class="service-name">Hearing (mic → STT)</div>
@@ -1521,6 +1563,21 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <!-- Mouth-mute (2026-06-12). Silences Timmy's replies + fillers (ears +
+             matcher stay live; /api/announce still speaks). A clean bench for
+             two-voice attribution tests and enrolling guests without Timmy
+             talking over the cues. -->
+        <div class="service-card" id="tts-mute-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Mute Mouth (lab)</div>
+            <div class="service-detail" id="tts-mute-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="tts-mute-toggle">
+            <input type="checkbox" onchange="commitTtsMute(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toggle-section-label">Brain (LLM services)</div>
         <!-- First-pass tool-call classifier (Qwen3-4B :8092, 2026-06-18). When ON,
              each utterance is routed by the classifier before the brain; store_fact
              commands execute as a tool instead of a chat reply. Detail line shows
@@ -1549,6 +1606,53 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="toggle-section-label">Identity &amp; Enroll</div>
+        <!-- Identity-dialogs override (2026-07-06 gate, button 2026-07-07).
+             EXPO darkens the whole identity-dialog class (enroll, misID
+             correction, introductions, face consent). This override forces
+             them back ON for a supervised mid-show enroll; it also restores
+             the misID protest for an on-mic visitor whose voice misIDs as
+             enrolled (binding otherwise blocks it — the documented trade-off). -->
+        <div class="service-card" id="iddialogs-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Identity Dialogs Override</div>
+            <div class="service-detail" id="iddialogs-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="iddialogs-toggle">
+            <input type="checkbox" onchange="commitIdentityDialogs(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- LED-mic anchor (2026-07-07). Master toggle for the lit-mic CV
+             anchor: poll loop finds the LED-holding face, binds it to voice
+             attribution, and un-darks the speech identity dialogs at EXPO
+             for the bound speaker only. Toggle OFF also clears any live
+             anchor (teardown-in-one-flip). -->
+        <div class="service-card" id="anchor-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">LED-Mic Anchor</div>
+            <div class="service-detail" id="anchor-detail">Loading…</div>
+          </div>
+          <label class="toggle" id="anchor-toggle">
+            <input type="checkbox" onchange="commitAnchorEnabled(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Reactive enroll master (2026-07-10). "enroll me" voice-command path
+             (unified_enroll_enabled). Its dialogs still route through the EXPO
+             gate (🌑 badge while darkened); env TIMMY_UNIFIED_ENROLL forces the
+             feature ON regardless of this switch (OR polarity — surfaced in
+             the detail line, opposite of auto-enroll's env KILL). -->
+        <div class="service-card" id="unified_enroll-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Reactive Enroll (&ldquo;enroll me&rdquo;)<span class="expo-badge" id="unified_enroll-expo" style="display:none;" title="Dialogs dark under Open Sauce — escape: Override or a bound LED-mic anchor">🌑</span></div>
+            <div class="service-detail" id="unified_enroll-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="unified_enroll-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('unified_enroll', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
         <!-- Auto-enroll (2026-07-09). Gates BOTH auto-enrollment paths live: the
              voiceprint face-hint streak AND the interactive face-enroll consent
              FSM. Flip OFF for a crowd/booth — a recognizer false-accept +
@@ -1560,7 +1664,7 @@ header .uptime {
              the kill is lifted (Phase B). -->
         <div class="service-card" id="auto_enroll-card" style="border-left:3px solid #484f58; display:none;">
           <div class="service-info">
-            <div class="service-name">Auto-Enroll (voiceprint + face)</div>
+            <div class="service-name">Auto-Enroll (voiceprint + face)<span class="expo-badge" id="auto_enroll-expo" style="display:none;" title="Consent FSM dark under Open Sauce — escape: Override only">🌑</span></div>
             <div class="service-detail" id="auto_enroll-detail">Checking...</div>
           </div>
           <label class="toggle" id="auto_enroll-toggle">
@@ -1581,9 +1685,9 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <div class="service-card" id="face-shadow-card" style="border-left:3px solid #484f58;">
+        <div class="service-card child-card" id="face-shadow-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
-            <div class="service-name">Face Shadow-log (okDemerzel vs Pi)</div>
+            <div class="service-name">├ Face Shadow-log (okDemerzel vs Pi)</div>
             <div class="service-detail" id="face-shadow-detail">Checking...</div>
           </div>
           <label class="toggle" id="face-shadow-toggle">
@@ -1591,9 +1695,9 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <div class="service-card" id="face-threshold-card" style="border-left:3px solid #484f58;">
+        <div class="service-card child-card" id="face-threshold-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
-            <div class="service-name">Face Accept Threshold: <span id="face-threshold-val">0.50</span></div>
+            <div class="service-name">├ Face Accept Threshold: <span id="face-threshold-val">0.50</span></div>
             <div class="service-detail">Lower = stricter · Higher = looser (dim/party lighting)</div>
           </div>
           <input type="range" id="face-threshold-slider" min="0.30" max="0.70" step="0.01" value="0.50"
@@ -1601,18 +1705,73 @@ header .uptime {
                  oninput="document.getElementById('face-threshold-val').textContent=(+this.value).toFixed(2)"
                  onchange="setFaceRec('threshold', +this.value)">
         </div>
-        <div class="service-card" id="face-frames-card" style="border-left:3px solid #484f58;">
+        <div class="service-card child-card" id="face-frames-card" style="border-left:3px solid #484f58;">
           <div class="service-info">
-            <div class="service-name">Face Frames / turn: <span id="face-frames-val">3</span></div>
+            <div class="service-name">└ Face Frames / turn: <span id="face-frames-val">3</span></div>
             <div class="service-detail">Grabs per turn; best match wins (1–5)</div>
           </div>
           <input type="number" id="face-frames-input" min="1" max="5" value="3" step="1"
                  style="width:52px; background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:4px;"
                  onchange="setFaceRec('frames', +this.value)">
         </div>
+        <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
+             A1/A2 sticky identity (streamerpi /face_id/config) and LT-side
+             B3/C5 gates (runtime toggles). All live, no restart needed. -->
+        <div class="service-card" id="face-tuning-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
+          <div class="service-info" style="margin-bottom:6px;">
+            <div class="service-name">Face ID Debounce (P4)</div>
+            <div class="service-detail" id="face-tuning-status">Loading…</div>
+          </div>
+          <div style="display:grid; grid-template-columns:auto 70px; gap:4px 8px; font-size:11px; color:#8b949e; align-items:center;">
+            <span title="A1: consecutive unknown frames before a held identity is released (Pi)">Unknown debounce (frames)</span>
+            <input type="number" id="ft-debounce" min="1" max="20" step="1"
+                   onchange="commitFaceTuning('pi','face_unknown_debounce_frames',this.value)" style="width:64px;">
+            <span title="A2: latch an identity below this cosine distance (Pi; effective only ≤ the 0.45 match threshold)">Identity acquire dist</span>
+            <input type="number" id="ft-acquire" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('pi','face_identity_acquire_dist',this.value)" style="width:64px;">
+            <span title="A2: release a held identity only past this distance, sustained (Pi)">Identity release dist</span>
+            <input type="number" id="ft-release" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('pi','face_identity_release_dist',this.value)" style="width:64px;">
+            <span title="B3: a person must appear in ≥ ceil(this × 5) of the last 5 scene records to count as new (LT)">People novelty persistence</span>
+            <input type="number" id="ft-persistence" min="0" max="1" step="0.05"
+                   onchange="commitFaceTuning('lt','people_novelty_min_persistence',this.value)" style="width:64px;">
+            <span title="C5: enroll-candidate samples must span at least this many seconds (LT)">Enroll min span (s)</span>
+            <input type="number" id="ft-span" min="0" max="60" step="0.5"
+                   onchange="commitFaceTuning('lt','enroll_candidate_min_span_s',this.value)" style="width:64px;">
+            <span title="C5: most samples must be farther than this from every known identity (LT; shares A2 release value)">Enroll min dist</span>
+            <input type="number" id="ft-enroll-dist" min="0.05" max="1.5" step="0.01"
+                   onchange="commitFaceTuning('lt','enroll_candidate_min_dist',this.value)" style="width:64px;">
+          </div>
+        </div>
+        <div class="toggle-section-label">Vision</div>
+        <div class="service-card" id="vision-auto-poll-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Vision Auto-Poll (1fps VLM)</div>
+            <div class="service-detail" id="vision-auto-poll-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="vision-auto-poll-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('vision_auto_poll', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Face-proximity poll gate (2026-07-09, card 2026-07-10). Branch
+             INSIDE the auto-poll loop: the VLM fires only while a /faces
+             YuNet bbox is ≥ height-frac of the frame (detection, not ID).
+             Child of Vision Auto-Poll — collapses to a slim row while the
+             poll loop is off. -->
+        <div class="service-card child-card" id="vision_proximity_gate-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">└ Proximity Gate (face-size arm)</div>
+            <div class="service-detail" id="vision_proximity_gate-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="vision_proximity_gate-toggle">
+            <input type="checkbox" onchange="toggleLTFlag('vision_proximity_gate', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
-      <div id="streamerpi-controls" style="margin-top:12px; padding-top:10px; border-top:1px solid #21262d;">
-        <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">streamerpi Controls</div>
+      <div id="streamerpi-controls" style="margin-top:12px;">
+        <div class="toggle-section-label" style="margin-top:0;">Body (streamerpi)</div>
         <div class="service-card" id="streamerpi-main-card" style="border-left:3px solid #484f58;"
              title="little-timmy-motor.service on streamerpi (port 8080)">
           <div class="service-info">
@@ -1654,106 +1813,12 @@ header .uptime {
             <span class="slider"></span>
           </label>
         </div>
-        <div class="service-card" id="vision-auto-poll-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Vision Auto-Poll (1fps VLM)</div>
-            <div class="service-detail" id="vision-auto-poll-detail">Checking...</div>
-          </div>
-          <label class="toggle" id="vision-auto-poll-toggle">
-            <input type="checkbox" onchange="toggleLTFlag('vision_auto_poll', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- Mouth-mute (2026-06-12). Silences Timmy's replies + fillers (ears +
-             matcher stay live; /api/announce still speaks). A clean bench for
-             two-voice attribution tests and enrolling guests without Timmy
-             talking over the cues. -->
-        <div class="service-card" id="tts-mute-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Mute Mouth (lab)</div>
-            <div class="service-detail" id="tts-mute-detail">Loading…</div>
-          </div>
-          <label class="toggle" id="tts-mute-toggle">
-            <input type="checkbox" onchange="commitTtsMute(this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- Binary mode (2026-07-05, was the 5-value Situation Regime):
-             Shop ('') vs Open Sauce ('EXPO'). Injects the [SITUATION] show-
-             floor line into Timmy's prompt; Shop emits nothing. Live (read
-             per-turn), persisted across reboots. -->
-        <div class="service-card" id="situation-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
-          <div class="service-info" style="margin-bottom:6px;">
-            <div class="service-name">Mode</div>
-            <div class="service-detail" id="situation-status">Loading…</div>
-          </div>
-          <select id="situation-select" onchange="commitSituation(this.value)"
-                  style="width:100%; background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:6px; font-size:12px;">
-            <option value="">Shop — home base, normal behavior</option>
-            <option value="EXPO">Open Sauce — show floor, assume strangers</option>
-          </select>
-        </div>
-        <!-- LED-mic anchor (2026-07-07). Master toggle for the lit-mic CV
-             anchor: poll loop finds the LED-holding face, binds it to voice
-             attribution, and un-darks the speech identity dialogs at EXPO
-             for the bound speaker only. Toggle OFF also clears any live
-             anchor (teardown-in-one-flip). -->
-        <div class="service-card" id="anchor-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">LED-Mic Anchor</div>
-            <div class="service-detail" id="anchor-detail">Loading…</div>
-          </div>
-          <label class="toggle" id="anchor-toggle">
-            <input type="checkbox" onchange="commitAnchorEnabled(this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- Identity-dialogs override (2026-07-06 gate, button 2026-07-07).
-             EXPO darkens the whole identity-dialog class (enroll, misID
-             correction, introductions, face consent). This override forces
-             them back ON for a supervised mid-show enroll; it also restores
-             the misID protest for an on-mic visitor whose voice misIDs as
-             enrolled (binding otherwise blocks it — the documented trade-off). -->
-        <div class="service-card" id="iddialogs-card" style="border-left:3px solid #484f58;">
-          <div class="service-info">
-            <div class="service-name">Identity Dialogs Override</div>
-            <div class="service-detail" id="iddialogs-detail">Loading…</div>
-          </div>
-          <label class="toggle" id="iddialogs-toggle">
-            <input type="checkbox" onchange="commitIdentityDialogs(this.checked)">
-            <span class="slider"></span>
-          </label>
-        </div>
-        <!-- P4 face-flap debounce knobs (2026-06-11). Two layers: Pi-side
-             A1/A2 sticky identity (streamerpi /face_id/config) and LT-side
-             B3/C5 gates (runtime toggles). All live, no restart needed. -->
-        <div class="service-card" id="face-tuning-card" style="border-left:3px solid #484f58; flex-direction:column; align-items:stretch;">
-          <div class="service-info" style="margin-bottom:6px;">
-            <div class="service-name">Face ID Debounce (P4)</div>
-            <div class="service-detail" id="face-tuning-status">Loading…</div>
-          </div>
-          <div style="display:grid; grid-template-columns:auto 70px; gap:4px 8px; font-size:11px; color:#8b949e; align-items:center;">
-            <span title="A1: consecutive unknown frames before a held identity is released (Pi)">Unknown debounce (frames)</span>
-            <input type="number" id="ft-debounce" min="1" max="20" step="1"
-                   onchange="commitFaceTuning('pi','face_unknown_debounce_frames',this.value)" style="width:64px;">
-            <span title="A2: latch an identity below this cosine distance (Pi; effective only ≤ the 0.45 match threshold)">Identity acquire dist</span>
-            <input type="number" id="ft-acquire" min="0.05" max="1.5" step="0.01"
-                   onchange="commitFaceTuning('pi','face_identity_acquire_dist',this.value)" style="width:64px;">
-            <span title="A2: release a held identity only past this distance, sustained (Pi)">Identity release dist</span>
-            <input type="number" id="ft-release" min="0.05" max="1.5" step="0.01"
-                   onchange="commitFaceTuning('pi','face_identity_release_dist',this.value)" style="width:64px;">
-            <span title="B3: a person must appear in ≥ ceil(this × 5) of the last 5 scene records to count as new (LT)">People novelty persistence</span>
-            <input type="number" id="ft-persistence" min="0" max="1" step="0.05"
-                   onchange="commitFaceTuning('lt','people_novelty_min_persistence',this.value)" style="width:64px;">
-            <span title="C5: enroll-candidate samples must span at least this many seconds (LT)">Enroll min span (s)</span>
-            <input type="number" id="ft-span" min="0" max="60" step="0.5"
-                   onchange="commitFaceTuning('lt','enroll_candidate_min_span_s',this.value)" style="width:64px;">
-            <span title="C5: most samples must be farther than this from every known identity (LT; shares A2 release value)">Enroll min dist</span>
-            <input type="number" id="ft-enroll-dist" min="0.05" max="1.5" step="0.01"
-                   onchange="commitFaceTuning('lt','enroll_candidate_min_dist',this.value)" style="width:64px;">
-          </div>
-        </div>
       </div>
+      <!-- Mode <select> removed 2026-07-10 (chain-grouped restructure): it
+           duplicated the Open Sauce banner — the banner is now the sole
+           situation_regime control. LT toggles that lived here (vision
+           auto-poll, mute mouth, anchor, id-dialogs override, face tuning)
+           moved into their dependency-map sections above. -->
       <!-- Conversation-model dropdown removed 2026-06-18 (Dan): the Llama-3B-vs-X
            switcher is retired; Qwen3.6 (:8083) is the permanent brain, shown as
            its own service card above. -->
@@ -2824,8 +2889,21 @@ async function toggleFacePipeline(layer, enabled) {
   updateFacePipelineUI(layer);
 }
 
-// LT-side runtime flags (vision auto-poll + hearing). State arrives via
-// /api/timmy/toggles poll AND lt_toggles WS broadcasts.
+// LT-side runtime flags, declaratively annotated with their dependency-map
+// relationships (2026-07-10 restructure; map zettel lt-runtime-toggle-
+// dependency-map-2026-07-10). Optional fields per flag:
+//   parents        — flags that must ALL be ON or this card collapses to a
+//                    slim dimmed row naming the gate (.slim-gated)
+//   gatedDetail    — detail line while parent-gated
+//   masterKey      — env KILL switch (AND polarity): false => toggle inert
+//   masterOffDetail, hideWhenMasterOff
+//   forcedOnKey    — env master (OR polarity): true => feature ON regardless
+//   forcedOnDetail
+//   svcUpKey       — backing service reachability: ON + down => amber
+//   svcDownDetail
+//   expoBadgeId    — 🌑 badge element, shown while Open Sauce Mode darkens
+//                    this card's behavior
+// State arrives via /api/timmy/toggles poll AND lt_toggles WS broadcasts.
 const LT_FLAGS = {
   vision_auto_poll: {
     cardId: 'vision-auto-poll-card',
@@ -2834,6 +2912,16 @@ const LT_FLAGS = {
     route: '/api/vision/auto_poll/toggle',
     enabledDetail: '1fps poll loop active (~3-4 VLM calls/min)',
     disabledDetail: 'Polling paused (event-driven trigger still fires)',
+  },
+  vision_proximity_gate: {
+    cardId: 'vision_proximity_gate-card',
+    toggleId: 'vision_proximity_gate-toggle',
+    detailId: 'vision_proximity_gate-detail',
+    route: '/api/vision/proximity_gate/toggle',
+    parents: ['vision_auto_poll'],
+    gatedDetail: 'Gated by Vision Auto-Poll — flip it ON to use',
+    enabledDetail: () => 'Armed — VLM fires only while a face fills ≥ ' + Math.round(ltProximityHeightFrac * 100) + '% of frame',
+    disabledDetail: 'Off — poll loop fires on interval regardless of faces',
   },
   hearing: {
     cardId: 'hearing-card',
@@ -2848,6 +2936,8 @@ const LT_FLAGS = {
     toggleId: 'proactive-speech-toggle',
     detailId: 'proactive-speech-detail',
     route: '/api/proactive/toggle',
+    masterKey: 'proactive_speech',
+    masterOffDetail: 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)',
     enabledDetail: 'Reacts to visual events (cooldown 120s)',
     disabledDetail: 'Silent unless spoken to',
   },
@@ -2856,6 +2946,8 @@ const LT_FLAGS = {
     toggleId: 'classifier-toggle',
     detailId: 'classifier-detail',
     route: '/api/classifier/toggle',
+    svcUpKey: 'classifier',
+    svcDownDetail: 'ON, but :8092 unreachable — utterances fall through to the brain',
     enabledDetail: 'Routing utterances (:8092 up)',
     disabledDetail: 'Off — all utterances go straight to the brain',
   },
@@ -2864,36 +2956,61 @@ const LT_FLAGS = {
     toggleId: 'query_resolution-toggle',
     detailId: 'query_resolution-detail',
     route: '/api/query_resolution/toggle',
-    enabledDetail: 'Resolving deictic follow-ups before retrieval (:8092 up)',
+    svcUpKey: 'query_resolution',
+    svcDownDetail: 'ON, but :8093 unreachable — falls back to the context blend',
+    enabledDetail: 'Resolving deictic follow-ups before retrieval',
     disabledDetail: 'Off — semantic query uses the context blend',
+  },
+  unified_enroll: {
+    cardId: 'unified_enroll-card',
+    toggleId: 'unified_enroll-toggle',
+    detailId: 'unified_enroll-detail',
+    route: '/api/unified_enroll/toggle',
+    forcedOnKey: 'unified_enroll',
+    forcedOnDetail: 'Forced ON by env (TIMMY_UNIFIED_ENROLL=1) — switch has no effect',
+    expoBadgeId: 'unified_enroll-expo',
+    enabledDetail: '“enroll me” voice command live (dialogs still EXPO-gated 🌑)',
+    disabledDetail: 'Off — “enroll me” is ignored',
   },
   auto_enroll: {
     cardId: 'auto_enroll-card',
     toggleId: 'auto_enroll-toggle',
     detailId: 'auto_enroll-detail',
     route: '/api/auto_enroll/toggle',
+    masterKey: 'auto_enroll',
+    masterOffDetail: 'Hard-killed by env (TIMMY_AUTO_ENROLL_KILL=1)',
+    hideWhenMasterOff: true,  // an inert amber switch on the booth display reads as broken (Dan 2026-07-10)
+    expoBadgeId: 'auto_enroll-expo',
     enabledDetail: 'Learning new voiceprints/faces from booth chatter',
     disabledDetail: 'Off — no new identities bound (recognition still works)',
   },
 };
-const ltFlagState = { vision_auto_poll: null, hearing: null, proactive_speech: null, classifier: null, query_resolution: null, auto_enroll: null };
-const ltFlagBusy  = { vision_auto_poll: false, hearing: false, proactive_speech: false, classifier: false, query_resolution: false, auto_enroll: false };
-let ltProactiveMaster = true;  // config kill-switch; false => toggle is inert
-let ltClassifierUp = false;    // :8092 reachable? surfaced in the classifier detail line
-let ltQueryResolutionUp = false;  // same :8092 server; surfaced in the query-resolution detail line
-let ltAutoEnrollMaster = true; // env AUTO_ENROLL_KILL; false => toggle is inert (hard-killed)
+const ltFlagState = Object.fromEntries(Object.keys(LT_FLAGS).map(f => [f, null]));
+const ltFlagBusy  = Object.fromEntries(Object.keys(LT_FLAGS).map(f => [f, false]));
+// Env kill-switches (AND polarity): false => the runtime toggle is inert.
+const ltFlagMasters = { proactive_speech: true, auto_enroll: true };
+// Env masters (OR polarity): true => the feature is ON regardless of toggle.
+const ltFlagForcedOn = { unified_enroll: false };
+// Backing-service reachability for service-dependent flags.
+const ltFlagSvcUp = { classifier: false, query_resolution: false };
+let ltProximityHeightFrac = 0.20;  // live threshold, shown in the gate detail
+let ltRegimeExpo = false;          // mirrored from the Open Sauce banner poll
 
 function applyLTToggles(data) {
   if (typeof data.vision_auto_poll_enabled === 'boolean') ltFlagState.vision_auto_poll = data.vision_auto_poll_enabled;
+  if (typeof data.vision_proximity_gate_enabled === 'boolean') ltFlagState.vision_proximity_gate = data.vision_proximity_gate_enabled;
+  if (typeof data.vision_proximity_height_frac === 'number') ltProximityHeightFrac = data.vision_proximity_height_frac;
   if (typeof data.hearing_enabled === 'boolean') ltFlagState.hearing = data.hearing_enabled;
   if (typeof data.proactive_speech_enabled === 'boolean') ltFlagState.proactive_speech = data.proactive_speech_enabled;
-  if (typeof data.proactive_speech_master === 'boolean') ltProactiveMaster = data.proactive_speech_master;
+  if (typeof data.proactive_speech_master === 'boolean') ltFlagMasters.proactive_speech = data.proactive_speech_master;
   if (typeof data.classifier_enabled === 'boolean') ltFlagState.classifier = data.classifier_enabled;
-  if (typeof data.classifier_up === 'boolean') ltClassifierUp = data.classifier_up;
+  if (typeof data.classifier_up === 'boolean') ltFlagSvcUp.classifier = data.classifier_up;
   if (typeof data.query_resolution_enabled === 'boolean') ltFlagState.query_resolution = data.query_resolution_enabled;
-  if (typeof data.query_resolution_up === 'boolean') ltQueryResolutionUp = data.query_resolution_up;
+  if (typeof data.query_resolution_up === 'boolean') ltFlagSvcUp.query_resolution = data.query_resolution_up;
+  if (typeof data.unified_enroll_enabled === 'boolean') ltFlagState.unified_enroll = data.unified_enroll_enabled;
+  if (typeof data.unified_enroll_env_master === 'boolean') ltFlagForcedOn.unified_enroll = data.unified_enroll_env_master;
   if (typeof data.auto_enroll_enabled === 'boolean') ltFlagState.auto_enroll = data.auto_enroll_enabled;
-  if (typeof data.auto_enroll_master === 'boolean') ltAutoEnrollMaster = data.auto_enroll_master;
+  if (typeof data.auto_enroll_master === 'boolean') ltFlagMasters.auto_enroll = data.auto_enroll_master;
   for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
   applyFaceRec({
     okdemerzel: data.face_okdemerzel, shadow: data.face_shadow,
@@ -2912,17 +3029,30 @@ async function setFaceRec(key, value) {
   } catch(e) { /* next lt_toggles broadcast will resync */ }
 }
 
+// Face knobs (shadow / threshold / frames) are children of the authority
+// switch — only meaningful while okDemerzel EdgeFace drives identity.
+let ltFaceAuthorityOk = false;
+
 function applyFaceRec(d) {
   if (!d) return;
   if (typeof d.okdemerzel === 'boolean') {
+    ltFaceAuthorityOk = d.okdemerzel;
     const t = document.querySelector('#face-authority-toggle input'); if (t) t.checked = d.okdemerzel;
     const det = document.getElementById('face-authority-detail');
     if (det) det.textContent = d.okdemerzel ? 'okDemerzel EdgeFace driving identity (makers + household)' : 'Pi SFace (legacy)';
+    // Collapse the child knobs while the Pi is the authority.
+    for (const id of ['face-shadow-card', 'face-threshold-card', 'face-frames-card']) {
+      const c = document.getElementById(id); if (c) c.classList.toggle('slim-gated', !d.okdemerzel);
+    }
+    const sl = document.getElementById('face-threshold-slider'); if (sl) sl.disabled = !d.okdemerzel;
+    const fr = document.getElementById('face-frames-input'); if (fr) fr.disabled = !d.okdemerzel;
   }
   if (typeof d.shadow === 'boolean') {
     const t = document.querySelector('#face-shadow-toggle input'); if (t) t.checked = d.shadow;
     const det = document.getElementById('face-shadow-detail');
-    if (det) det.textContent = d.shadow ? 'logging okDemerzel vs Pi each turn' : 'off';
+    if (det) det.textContent = !ltFaceAuthorityOk
+      ? 'Gated by Face Recognition → okDemerzel — flip it ON to use'
+      : (d.shadow ? 'logging okDemerzel vs Pi each turn' : 'off');
   }
   if (typeof d.threshold === 'number') {
     const s = document.getElementById('face-threshold-slider'); if (s) s.value = d.threshold;
@@ -2957,6 +3087,10 @@ function flashToolCall(msg) {
   _toolFlashTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
 
+// Generic renderer driven by the declarative fields on LT_FLAGS (replaces the
+// old per-flag masterOff/clsDown/qrDown/auto_enroll special cases, 2026-07-10).
+// Precedence: busy > unknown > env-kill > parent-gate > env-forced-on >
+// service-down > plain enabled/disabled.
 function updateLTFlagUI(flag) {
   const def = LT_FLAGS[flag];
   if (!def) return;
@@ -2966,36 +3100,39 @@ function updateLTFlagUI(flag) {
   const toggle  = document.querySelector('#' + def.toggleId + ' input');
   const tlabel  = document.getElementById(def.toggleId);
   const detail  = document.getElementById(def.detailId);
-  // Proactive speech is inert when the config kill-switch (master) is off,
-  // even if the runtime toggle reads on -- surface that so the switch isn't
-  // misleading.
-  // Proactive speech OR auto-enroll can be force-disabled by a config/env
-  // kill-switch even when the runtime toggle reads on -- surface that so the
-  // switch isn't misleading.
-  const masterOff = (flag === 'proactive_speech' && !ltProactiveMaster)
-                 || (flag === 'auto_enroll' && !ltAutoEnrollMaster);
-  // Classifier enabled but its :8092 server is unreachable: surface as amber —
-  // LT still works (degrades to normal pipeline), but the tool path is inert.
-  const clsDown = (flag === 'classifier' && enabled && !ltClassifierUp);
-  // Query resolution enabled but :8092 unreachable: amber — retrieval still
-  // works (degrades to the context blend), but resolution is inert.
-  const qrDown = (flag === 'query_resolution' && enabled && !ltQueryResolutionUp);
-  // Auto-enroll: hide the whole card while the env master-kill is live (an
-  // inert amber toggle on the booth display is confusing); self-reveals when
-  // the kill is lifted.
-  if (card && flag === 'auto_enroll') card.style.display = (ltAutoEnrollMaster ? '' : 'none');
-  if (card)   card.style.borderLeftColor = (masterOff || clsDown || qrDown) ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
-  if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
+  // Env kill-switch (AND polarity): the runtime toggle is inert while off.
+  const masterOff = !!(def.masterKey && ltFlagMasters[def.masterKey] === false);
+  // Env master (OR polarity): the feature runs regardless of the toggle.
+  const forcedOn = !!(def.forcedOnKey && ltFlagForcedOn[def.forcedOnKey]);
+  // Backing service unreachable while the flag is ON: amber, feature degrades.
+  const svcDown = !!(def.svcUpKey && enabled && ltFlagSvcUp[def.svcUpKey] === false);
+  // Parent gate: every parent flag must be ON or this child is inert-by-design
+  // and collapses to a slim dimmed row naming its gate.
+  const gated = !!(def.parents && def.parents.some(p => ltFlagState[p] === false));
+
+  if (card && def.hideWhenMasterOff) card.style.display = masterOff ? 'none' : '';
+  if (card) {
+    card.classList.toggle('slim-gated', gated && !masterOff);
+    card.style.borderLeftColor = (masterOff || svcDown) ? '#d29922'
+        : ((enabled && !gated) ? '#3fb950' : '#484f58');
+  }
+  if (toggle) { toggle.checked = forcedOn || !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
+  // 🌑 badge: this card's behavior is darkened while Open Sauce Mode is on.
+  if (def.expoBadgeId) {
+    const b = document.getElementById(def.expoBadgeId);
+    if (b) b.style.display = ltRegimeExpo ? '' : 'none';
+  }
   if (detail) {
-    if (busy)                  detail.textContent = 'Toggling...';
-    else if (enabled === null) detail.textContent = 'Checking...';
-    else if (masterOff && flag === 'auto_enroll') detail.textContent = 'Hard-killed by env (TIMMY_AUTO_ENROLL_KILL=1)';
-    else if (masterOff)        detail.textContent = 'Disabled by config (TIMMY_PROACTIVE_SPEECH_ENABLED=false)';
-    else if (clsDown)          detail.textContent = 'ON, but :8092 unreachable — utterances fall through to the brain';
-    else if (qrDown)           detail.textContent = 'ON, but :8092 unreachable — falls back to the context blend';
-    else if (enabled)          detail.textContent = def.enabledDetail;
-    else                       detail.textContent = def.disabledDetail;
+    const txt = (v) => (typeof v === 'function') ? v() : v;
+    if (busy)                     detail.textContent = 'Toggling...';
+    else if (enabled === null)    detail.textContent = 'Checking...';
+    else if (masterOff)           detail.textContent = def.masterOffDetail || 'Hard-killed by env';
+    else if (gated)               detail.textContent = def.gatedDetail || 'Gated by a parent toggle';
+    else if (forcedOn && !enabled) detail.textContent = def.forcedOnDetail || 'Forced ON by env master';
+    else if (svcDown)             detail.textContent = def.svcDownDetail || 'ON, but backing service unreachable';
+    else if (enabled)             detail.textContent = txt(def.enabledDetail);
+    else                          detail.textContent = txt(def.disabledDetail);
   }
 }
 
@@ -3427,50 +3564,14 @@ async function commitFaceTuning(scope, key, value) {
 loadFaceTuning();
 setInterval(loadFaceTuning, 15000);
 
-// Binary mode select (2026-07-05): Shop ('') vs Open Sauce ('EXPO').
-async function loadSituation() {
-  const st = document.getElementById('situation-status');
-  const sel = document.getElementById('situation-select');
-  try {
-    const d = await (await fetch('/api/timmy/situation')).json();
-    if (d.error) {
-      if (st) { st.textContent = d.error; st.style.color = '#f85149'; }
-      return;
-    }
-    if (sel && document.activeElement !== sel) sel.value = d.situation_regime || '';
-    if (st) {
-      const on = (d.situation_regime || '').toUpperCase() === 'EXPO';
-      st.textContent = on ? 'OPEN SAUCE mode' : 'Shop mode';
-      st.style.color = on ? '#ff2d95' : '#8b949e';
-    }
-  } catch (e) {
-    if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
-  }
-}
-
-async function commitSituation(value) {
-  const st = document.getElementById('situation-status');
-  try {
-    const r = await fetch('/api/timmy/situation', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ situation_regime: value }) });
-    const d = await r.json();
-    if (!r.ok || d.error || d.ok === false) {
-      if (st) { st.textContent = 'rejected: ' + (d.error || r.status); st.style.color = '#f85149'; }
-    }
-  } catch (e) {
-    if (st) { st.textContent = 'unreachable'; st.style.color = '#f85149'; }
-  }
-  loadSituation();  // re-sync (also restores a rejected select to server truth)
-  loadOpenSauceMode();  // keep the banner in sync with the select
-}
-
-loadSituation();
-setInterval(loadSituation, 15000);
+// Mode <select> (loadSituation/commitSituation) removed 2026-07-10: it
+// duplicated the banner — the banner below is the sole regime control.
 
 // OPEN SAUCE banner — one-tap Shop ('') <-> Open Sauce ('EXPO'). THE gameday
 // flag: persisted in runtime toggles, survives reboots. (DOM ids retain the
-// party-banner names so the existing CSS applies unchanged.)
+// party-banner names so the existing CSS applies unchanged.) While ON, the
+// sub-line spells out the blast radius from the dependency map, and 🌑
+// badges light up on the cards whose behavior it darkens.
 function applyOpenSauceBanner(regime) {
   const on = (regime || '').toUpperCase() === 'EXPO';
   const banner = document.getElementById('party-banner');
@@ -3481,8 +3582,13 @@ function applyOpenSauceBanner(regime) {
   if (label) label.textContent = on ? '🔥 OPEN SAUCE MODE' : '🔧 Shop Mode';
   if (state) state.textContent = on ? 'OPEN SAUCE' : 'SHOP';
   if (sub) sub.textContent = on
-    ? 'Show floor: assuming strangers · speaker auto-continuity DISABLED · prompt prior set'
+    ? 'Darkens: identity dialogs · face consent · identity-fact writes · speaker continuity (no escape) — escapes: Override / LED-mic anchor'
     : 'Tap for Open Sauce: assume strangers + disable speaker auto-continuity';
+  // Mirror the regime into the flag renderer so 🌑 badges track it live.
+  if (ltRegimeExpo !== on) {
+    ltRegimeExpo = on;
+    for (const flag of Object.keys(LT_FLAGS)) updateLTFlagUI(flag);
+  }
 }
 
 async function loadOpenSauceMode() {
@@ -3505,7 +3611,6 @@ async function toggleOpenSauceMode() {
       body: JSON.stringify({ situation_regime: target }) });
   } catch (e) {}
   loadOpenSauceMode();
-  loadSituation();   // keep the mode <select> in sync
 }
 
 loadOpenSauceMode();

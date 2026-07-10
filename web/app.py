@@ -1484,3 +1484,60 @@ async def set_auto_enroll(payload: dict | None = None):
         "enabled": bool(runtime_toggles.get("auto_enroll_enabled")),
         "master": not bool(config.AUTO_ENROLL_KILL),
     }
+
+
+@app.get("/api/unified_enroll")
+async def get_unified_enroll():
+    """Read the reactive-enroll ("enroll me") master. `enabled` is the live
+    runtime toggle; `env_master` is True when the static env master
+    (config.UNIFIED_ENROLL_ENABLED / TIMMY_UNIFIED_ENROLL) forces the feature
+    ON regardless of the toggle — note the OR polarity, opposite of
+    auto-enroll's env KILL. Effective = enabled OR env_master."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("unified_enroll_enabled")),
+        "env_master": bool(config.UNIFIED_ENROLL_ENABLED),
+    }
+
+
+@app.post("/api/unified_enroll")
+async def set_unified_enroll(payload: dict | None = None):
+    """Enable/disable the reactive-enroll ("enroll me") path live. Persists the
+    runtime toggle, read per turn in main.py — no restart. The env master
+    (TIMMY_UNIFIED_ENROLL) still forces the feature ON when set; the speech
+    dialogs it routes through remain EXPO-gated either way."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", True))
+    runtime_toggles.set("unified_enroll_enabled", enabled)
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("unified_enroll_enabled")),
+        "env_master": bool(config.UNIFIED_ENROLL_ENABLED),
+    }
+
+
+@app.get("/api/vision/proximity_gate")
+async def get_vision_proximity_gate():
+    """Read the face-proximity vision-poll gate (branch inside the auto-poll
+    loop: VLM fires only while a YuNet bbox >= height_frac of frame). Only
+    meaningful while vision auto-poll itself is enabled."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("vision_proximity_gate_enabled")),
+        "height_frac": float(runtime_toggles.get("vision_proximity_height_frac")),
+    }
+
+
+@app.post("/api/vision/proximity_gate")
+async def set_vision_proximity_gate(payload: dict | None = None):
+    """Enable/disable the proximity gate live. Persists the runtime toggle,
+    read per poll tick by vision/capture.py — no restart. A child of vision
+    auto-poll: inert while the poll loop is off."""
+    from persistence import runtime_toggles
+    enabled = bool((payload or {}).get("enabled", True))
+    runtime_toggles.set("vision_proximity_gate_enabled", enabled)
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("vision_proximity_gate_enabled")),
+        "height_frac": float(runtime_toggles.get("vision_proximity_height_frac")),
+    }
