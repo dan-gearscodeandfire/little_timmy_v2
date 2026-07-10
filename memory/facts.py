@@ -255,6 +255,27 @@ async def get_all_facts_for_prompt(subjects: list[str], limit: int = 10) -> list
 _SELF_REFERENCE_ALIASES = ("user", "i", "me")
 
 
+async def get_speaker_id_by_name(name: str) -> int | None:
+    """Resolve an enrolled speaker's row id from their canonical name.
+
+    Used by the PARTY-2 face-trust path (conversation/turn.py): when the voice
+    is unknown but a face is confidently recognized, fact retrieval keys on the
+    face's name AND needs the face person's own speaker_id so id-tagged fact
+    rows (not just NULL-speaker_id name matches) come back. Returns None for an
+    unknown/retired/blank name — get_facts_about_speaker then falls back to the
+    strict canonical-name match, so a miss degrades gracefully.
+    """
+    canon = (name or "").strip().lower()
+    if not canon or canon.startswith("unknown"):
+        return None
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id FROM speakers WHERE lower(name) = $1 AND retired_at IS NULL",
+        canon,
+    )
+    return row["id"] if row is not None else None
+
+
 async def get_facts_about_speaker(
     speaker_name: str,
     speaker_id: int | None,

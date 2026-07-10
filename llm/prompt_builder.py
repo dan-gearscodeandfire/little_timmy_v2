@@ -134,6 +134,7 @@ def build_ephemeral_block(
     presence_state: dict | None = None,
     fusion_source: str | None = None,
     face_hint_name: str | None = None,
+    face_trust_name: str | None = None,
     situation_regime: str | None = None,
     recall_block: str | None = None,
     uncertain_query_term: str | None = None,
@@ -329,6 +330,14 @@ def build_ephemeral_block(
     # instruction closest to generation. (Reordered 2026-06-11 after a live
     # unknown_1 turn still got addressed as Dan with the directive up top.)
     sp = (speaker_name or "").lower()
+    # PARTY-2 face-trust (2026-07-09): voice unknown but a confidently recognized
+    # SOLE face (attribution abstained — head not steady yet / no behavior
+    # snapshot — so fusion_source stayed 'voice'). Address them by the recognized
+    # name as a working hypothesis instead of running the "you're a stranger"
+    # branch below, so a known guest whose voiceprint never bound is greeted by
+    # name. Their facts are already retrieved under this name (LiveMemory.gather).
+    # Lower-severity than the promoted case: NO voiceprint was bound.
+    face_trust = (face_trust_name or "").strip()
     if fusion_source == "face_hint" and face_hint_name:
         parts.append(
             f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
@@ -336,6 +345,15 @@ def build_ephemeral_block(
             f"(only visible person, head centered on them). "
             f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
             f"unless they correct you. Do NOT default to calling them Dan."
+        )
+    elif face_trust and sp.startswith("unknown") and not face_trust.lower().startswith("unknown"):
+        parts.append(
+            f"[WHO IS SPEAKING] The voiceprint did not match, but face recognition "
+            f"identifies the person in front of you as {face_trust.title()} — someone "
+            f"you have met before and already know things about. Address them as "
+            f"{face_trust.title()} and draw on what you know about them; treat it as a "
+            f"working hypothesis and go with a correction if they give one. Do NOT tell "
+            f"them you don't know them, and do NOT default to calling them Dan."
         )
     elif sp.startswith("unknown"):
         parts.append(

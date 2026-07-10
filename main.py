@@ -1504,6 +1504,7 @@ class Orchestrator:
         # --- Presence: voice + face fusion ---
         fusion_source = None
         face_hint_name = None
+        face_trust_name = None
         presence_state = None
         if self._presence_enabled:
             self.room_ledger.update_from_voice(speaker_name)
@@ -1616,6 +1617,35 @@ class Orchestrator:
                 )
             fusion_source = verdict.resolution_source
             face_hint_name = verdict.face_hint_name
+            # PARTY-2 face-trust (2026-07-09, OpenSauce-critical): the voice is
+            # unknown_N and full attribution ABSTAINED (fusion_source stayed
+            # 'voice' — e.g. head not steady 2s yet, or no behavior snapshot),
+            # so speaker_name is still unknown and the guest's on-file facts
+            # would never surface ("face recognized, but Timmy says he doesn't
+            # know you"). If the same fusion confidently sees a RECOGNISED SOLE
+            # face (single_face + face_above_threshold — a strict subset of the
+            # promote gate, minus the head-steady/behavior binding conditions),
+            # trust that face for READ-ONLY purposes: fact retrieval + the
+            # WHO-IS-SPEAKING addressing hypothesis. NOTHING is bound or
+            # persisted — speaker_name stays unknown_N, no voiceprint streak, no
+            # attribution write; the READ tier sits strictly below attribution,
+            # which itself sits below the voiceprint streak. Multiple faces ->
+            # single_face is False -> abstain (same ambiguity contract as the
+            # attribution-abstain branch above): never guess which face speaks.
+            if (speaker_name.startswith("unknown_")
+                    and fusion_source != "face_hint"
+                    and verdict.gates.get("single_face")
+                    and verdict.gates.get("face_above_threshold")
+                    and verdict.face_hint_name
+                    and not verdict.face_hint_name.startswith("unknown")):
+                face_trust_name = verdict.face_hint_name
+                log.info(
+                    "[PARTY-2] voice %s unknown + recognized sole face %r "
+                    "(conf=%.2f, promotion abstained) -> trust face for facts + "
+                    "addressing (READ-only; no voiceprint bind)",
+                    speaker_name, face_trust_name,
+                    verdict.face_hint_confidence or 0.0,
+                )
             presence_state = self.room_ledger.current_state()
 
         # --- Vision context for the prompt (doorway-resolved, passed in) ---
@@ -1749,6 +1779,7 @@ class Orchestrator:
                 subject_not_in_view=subject_not_in_view,
                 presence_state=presence_state, fusion_source=fusion_source,
                 face_hint_name=face_hint_name,
+                face_trust_name=face_trust_name,
                 # Slice A: live regime knob, read once here per turn (re-reads
                 # disk so an LT-OS change takes effect without restart).
                 situation_regime=runtime_toggles.get("situation_regime"),

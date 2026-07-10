@@ -63,6 +63,52 @@ def test_who_is_present_omits_provisional_face():
     assert "Charlotte" not in block
 
 
+def test_face_trust_addresses_recognized_face_when_voice_unknown():
+    """PARTY-2 (2026-07-09): an unknown VOICE with a confidently-recognized SOLE
+    face (face_trust_name set at the doorway) must be addressed by the recognized
+    name — NOT told they're a stranger. Guards the OpenSauce-critical 'face
+    recognized + facts on file, but Timmy says I don't know you' symptom."""
+    block = build_ephemeral_block(
+        [], [], speaker_name="unknown_4", face_trust_name="voss",
+        fusion_source="voice",
+    )
+    assert "WHO IS SPEAKING" in block
+    assert "Voss" in block
+    # Must NOT run the stranger branch.
+    assert "have not met before" not in block
+    assert "meeting for the first" not in block
+
+
+def test_face_trust_yields_to_full_promotion():
+    """When attribution fully promoted (fusion_source == 'face_hint'), that block
+    wins and the lighter face-trust block does not double-render."""
+    block = build_ephemeral_block(
+        [], [], speaker_name="unknown_4", face_hint_name="voss",
+        face_trust_name="voss", fusion_source="face_hint",
+    )
+    assert block.count("WHO IS SPEAKING") == 1
+    assert "strongly suggests this is Voss" in block
+
+
+def test_unknown_voice_without_face_trust_still_stranger():
+    """No face_trust_name -> the unknown-voice stranger branch is unchanged."""
+    block = build_ephemeral_block(
+        [], [], speaker_name="unknown_4", fusion_source="voice",
+    )
+    assert "does NOT match anyone you know" in block
+
+
+def test_face_trust_ignored_for_unknown_face_name():
+    """A face_trust_name that is itself an unknown_* tag must never be spoken."""
+    block = build_ephemeral_block(
+        [], [], speaker_name="unknown_4", face_trust_name="unknown_2",
+        fusion_source="voice",
+    )
+    # Falls through to the stranger branch, never addresses 'Unknown_2'.
+    assert "does NOT match anyone you know" in block
+    assert "Unknown_2" not in block
+
+
 def _user(content: str) -> dict:
     return {"role": "user", "content": content}
 

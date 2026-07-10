@@ -162,6 +162,16 @@ class TurnContext:
     presence_state: Optional[dict] = None
     fusion_source: Optional[str] = None
     face_hint_name: Optional[str] = None
+    # PARTY-2 face-trust (2026-07-09): the canonical name of a CONFIDENTLY
+    # recognized SOLE face when the VOICE is unknown_N and full attribution did
+    # NOT promote (e.g. head not yet steady / no behavior snapshot). Set at the
+    # doorway from a strict subset of the fusion gates. A READ-ONLY trust: it
+    # keys fact retrieval (get_facts_about_speaker) and the WHO-IS-SPEAKING
+    # addressing hypothesis to the recognized face so a known guest whose voice
+    # never bound is greeted by name instead of "I don't know you" — WITHOUT
+    # binding a voiceprint, changing speaker_name/attribution, or persisting
+    # anything. None = no confident sole-face override (stay a guest).
+    face_trust_name: Optional[str] = None
     # Slice A: manual situational-awareness regime ("" / None = OFF). Read once
     # from runtime_toggles at doorway assembly (main.py) so the per-turn read
     # happens in one place, mirroring how the other live toggles are read there.
@@ -237,7 +247,8 @@ class Memory(Protocol):
     async def gather(self, *, user_text: str, speaker_name: str,
                      speaker_db_id: int | None, subjects: list[str],
                      context_turns, resolved_query: str | None = None,
-                     query_pre_resolved: bool = False) -> Retrieved: ...
+                     query_pre_resolved: bool = False,
+                     face_trust_name: str | None = None) -> Retrieved: ...
 
     async def save(self, *, user_text: str, response: str,
                    speaker_id: int | None, speaker_name: str,
@@ -290,6 +301,7 @@ class ConversationTurn:
             words, who,
             resolved_query=ctx.resolved_query,
             query_pre_resolved=ctx.query_pre_resolved,
+            face_trust_name=ctx.face_trust_name,
         )
         retrieval_ms = int((time.time() - t_retrieval) * 1000)
         await self._emit("retrieval", {
@@ -333,6 +345,7 @@ class ConversationTurn:
             presence_state=ctx.presence_state,
             fusion_source=ctx.fusion_source,
             face_hint_name=ctx.face_hint_name,
+            face_trust_name=ctx.face_trust_name,
             situation_regime=ctx.situation_regime,
             recall_block=ctx.recall_block,
             uncertain_query_term=uncertain_term,
@@ -507,7 +520,8 @@ class ConversationTurn:
     # -- helpers -----------------------------------------------------------
     async def _gather(self, words: str, who: SpeakerIdentity,
                       *, resolved_query: str | None = None,
-                      query_pre_resolved: bool = False) -> Retrieved:
+                      query_pre_resolved: bool = False,
+                      face_trust_name: str | None = None) -> Retrieved:
         subjects = _extract_my_subjects(words)
         # Fetch the WIDER of the two windows: the resolver needs more history to
         # find an antecedent that has scrolled past the blend's CONTEXT_TURNS.
@@ -521,6 +535,7 @@ class ConversationTurn:
             user_text=words, speaker_name=who.name, speaker_db_id=who.db_id,
             subjects=subjects, context_turns=ctx_turns,
             resolved_query=resolved_query, query_pre_resolved=query_pre_resolved,
+            face_trust_name=face_trust_name,
         )
 
     async def _emit(self, event_type: str, payload: dict) -> None:
@@ -618,15 +633,32 @@ class LiveMemory:
 
     async def gather(self, *, user_text, speaker_name, speaker_db_id,
                      subjects, context_turns, resolved_query=None,
-                     query_pre_resolved=False) -> Retrieved:
+                     query_pre_resolved=False, face_trust_name=None) -> Retrieved:
         import asyncio
         from memory.retrieval import retrieve
-        from memory.facts import get_all_facts_for_prompt, get_facts_about_speaker
+        from memory.facts import (get_all_facts_for_prompt, get_facts_about_speaker,
+                                  get_speaker_id_by_name)
 
         async def _empty():
             return []
 
         speaker_for_facts = speaker_name if speaker_name != "timmy" else "dan"
+        # PARTY-2 face-trust (2026-07-09): the voice is unknown_N but the doorway
+        # confidently recognized a SOLE face (attribution abstained — e.g. head
+        # not steady — so speaker_name is still unknown). Retrieve facts for the
+        # RECOGNIZED person instead of the empty unknown-voice bucket, so a known
+        # guest whose voiceprint never bound is greeted by name. Resolve the
+        # face's own speaker_id (facts rows may carry it) so the id-filtered rows
+        # come back too, not just the NULL-speaker_id name matches.
+        if (face_trust_name
+                and speaker_name.startswith("unknown_")
+                and not face_trust_name.startswith("unknown")):
+            resolved_id = await get_speaker_id_by_name(face_trust_name)
+            log.info("[PARTY-2] voice %s unknown; trusting recognized face %r "
+                     "for fact retrieval (speaker_id=%s)",
+                     speaker_name, face_trust_name, resolved_id)
+            speaker_for_facts = face_trust_name
+            speaker_db_id = resolved_id
         import config as _cfg
         _use_episodes = getattr(_cfg, "EPISODIC_ALWAYS_ON_RETRIEVAL", False)
         # S4 read-path gate: skip the vector retrieval on confidently-banter
