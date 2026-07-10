@@ -1553,8 +1553,12 @@ header .uptime {
              voiceprint face-hint streak AND the interactive face-enroll consent
              FSM. Flip OFF for a crowd/booth — a recognizer false-accept +
              mode="add" corrupts identities at scale. The env kill
-             (TIMMY_AUTO_ENROLL_KILL) hard-overrides off; surfaced as master. -->
-        <div class="service-card" id="auto_enroll-card" style="border-left:3px solid #484f58;">
+             (TIMMY_AUTO_ENROLL_KILL) hard-overrides off; surfaced as master.
+             Card starts HIDDEN and stays hidden while the env kill is live
+             (master:false) -- an inert amber switch on the booth display reads
+             as "something is broken" (Dan 2026-07-10). It self-reveals when
+             the kill is lifted (Phase B). -->
+        <div class="service-card" id="auto_enroll-card" style="border-left:3px solid #484f58; display:none;">
           <div class="service-info">
             <div class="service-name">Auto-Enroll (voiceprint + face)</div>
             <div class="service-detail" id="auto_enroll-detail">Checking...</div>
@@ -2976,6 +2980,10 @@ function updateLTFlagUI(flag) {
   // Query resolution enabled but :8092 unreachable: amber — retrieval still
   // works (degrades to the context blend), but resolution is inert.
   const qrDown = (flag === 'query_resolution' && enabled && !ltQueryResolutionUp);
+  // Auto-enroll: hide the whole card while the env master-kill is live (an
+  // inert amber toggle on the booth display is confusing); self-reveals when
+  // the kill is lifted.
+  if (card && flag === 'auto_enroll') card.style.display = (ltAutoEnrollMaster ? '' : 'none');
   if (card)   card.style.borderLeftColor = (masterOff || clsDown || qrDown) ? '#d29922' : (enabled ? '#3fb950' : '#484f58');
   if (toggle) { toggle.checked = !!enabled; toggle.disabled = busy; }
   if (tlabel) tlabel.classList.toggle('busy', busy);
