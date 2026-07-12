@@ -113,6 +113,25 @@ def main():
     assert len(fires2) == 1, f"re-arrival should fire again, got {len(fires2)}"
     print("case4 disengage -> re-arm -> re-fire: OK")
 
+    # --- Case 5: faces-state callback feeds ledger without VLM fires ----------
+    # Far faces (below threshold, never fires VLM) must STILL reach the
+    # callback — presence freshness is decoupled from gate engagement.
+    cap = FrameCapture()
+    fed = []
+    cap.set_faces_state_callback(lambda results, img_size: fed.append((results, img_size)))
+    fires = asyncio.run(_run_seq(cap, [_state(50)] * 4))        # ~14%, no VLM
+    assert len(fires) == 0, "far faces must not fire VLM"
+    assert len(fed) == 1, f"throttle: expected 1 callback in a fast burst, got {len(fed)}"
+    assert fed[0][0][0]["name"] == "x" and fed[0][1] == (640, 360)
+    # With throttle off, every poll with faces feeds; empty polls never do.
+    cap2 = FrameCapture()
+    fed2 = []
+    cap2.set_faces_state_callback(lambda results, img_size: fed2.append(results))
+    cap2._faces_state_min_interval = 0.0
+    asyncio.run(_run_seq(cap2, [_state(50), _state(), _state(50)]))
+    assert len(fed2) == 2, f"expected 2 callbacks (empty poll skipped), got {len(fed2)}"
+    print("case5 faces-state callback (no VLM, throttled, skips empty): OK")
+
     print("\nALL PROXIMITY-GATE CASES PASSED" if ok else "FAILURES")
     return 0 if ok else 1
 

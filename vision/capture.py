@@ -51,6 +51,17 @@ class FrameCapture:
         self._prox_engaged: bool = False     # hysteresis latch for rising-edge firing
         self._last_face_height_frac: float = 0.0  # observability (HUD/stats)
 
+        # Passive faces feed: the proximity poll already fetches the Pi's full
+        # /faces state (names included) every second just to read bbox heights.
+        # When set, this callback forwards that state to the presence ledger so
+        # "last seen" stays fresh for anyone recognized in frame, WITHOUT firing
+        # the VLM (the gate only fires on arrival edges, so the ledger would
+        # otherwise starve between fires). Wired by VisionContext. Throttled so
+        # times_seen_face doesn't inflate at 1/s.
+        self._on_faces_state: Callable[[list, tuple | None], None] | None = None
+        self._faces_state_min_interval: float = 5.0
+        self._last_faces_state_time: float = 0.0
+
         # Cooldown: minimum seconds between VLM calls
         self._vlm_cooldown: float = 10.0
         self._last_vlm_time: float = 0.0
@@ -93,6 +104,12 @@ class FrameCapture:
     @property
     def is_paused(self) -> bool:
         return self._pause_count > 0
+
+    def set_faces_state_callback(self, fn: Callable[[list, tuple | None], None]):
+        """Register fn(results, image_size) fed from the proximity poll's
+        1 Hz /faces fetch (same result-dict shape as VisionContext's passive
+        face callback: name, distance, confidence, bbox x,y,w,h)."""
+        self._on_faces_state = fn
 
     def set_auto_poll(self, enabled: bool):
         """Toggle the periodic poll loop. Event-driven trigger() unaffected."""
@@ -244,6 +261,18 @@ class FrameCapture:
                         b = f.get("bbox")
                         if b and len(b) >= 4:
                             max_hf = max(max_hf, b[3] / fh)
+                # Forward the (already-fetched, staleness-filtered) faces to
+                # the presence ledger feed — recognition freshness decoupled
+                # from VLM fires. Callback does its own high/medium filtering.
+                if self._on_faces_state and state["faces"]:
+                    now = time.monotonic()
+                    if now - self._last_faces_state_time >= self._faces_state_min_interval:
+                        self._last_faces_state_time = now
+                        img_size = state["image_size"] if state["image_size"][0] > 0 else None
+                        try:
+                            self._on_faces_state(state["faces"], img_size)
+                        except Exception:
+                            log.exception("[CAPTURE] faces-state callback failed")
         self._last_face_height_frac = max_hf
 
         # Debounced engagement over the last M polls.

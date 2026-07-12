@@ -54,6 +54,12 @@ class VisionContext:
         Each result dict has keys: name, distance, confidence, bbox (x,y,w,h).
         """
         self._passive_face_callback = fn
+        # Also feed the same callback from the proximity poll's 1 Hz /faces
+        # fetch, so presence "last seen" stays fresh between VLM fires (the
+        # proximity gate only fires the VLM on arrival edges — without this,
+        # someone continuously in frame goes stale on the ledger until their
+        # next spoken turn).
+        self._capture.set_faces_state_callback(fn)
 
     async def start(self):
         """Initialize vision pipeline: check model, start capture.
