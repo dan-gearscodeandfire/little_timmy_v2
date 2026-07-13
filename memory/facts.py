@@ -373,3 +373,40 @@ async def inspector_counts() -> dict:
              (SELECT count(*) FROM speakers) AS speakers"""
     )
     return dict(row)
+
+
+async def get_fact_row(fact_id: int) -> dict | None:
+    """One rich inspector row (same shape as list_facts). Used by the fact
+    editor to echo back what actually stored after a write — store_fact may
+    have absorbed the write into a different row (cross-predicate dedup) or
+    re-classified sensitivity, so the caller must not assume its input."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """SELECT f.id, f.subject, f.predicate, f.value, f.learned_at,
+                  f.confidence, f.sensitive, f.pii_category, f.source,
+                  f.superseded_by, s.name AS speaker
+           FROM facts f
+           LEFT JOIN speakers s ON s.id = f.speaker_id
+           WHERE f.id = $1""",
+        fact_id,
+    )
+    return dict(row) if row is not None else None
+
+
+async def delete_fact(fact_id: int) -> bool:
+    """Hard-delete one fact (Memory Inspector editor). Clears inbound
+    superseded_by references first (self-FK) — same unlink-then-delete shape
+    as the persona-retire purge in presence/identity_commit.py. Returns True
+    if a row was actually deleted."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE facts SET superseded_by = NULL WHERE superseded_by = $1",
+                fact_id,
+            )
+            res = await conn.execute("DELETE FROM facts WHERE id = $1", fact_id)
+    deleted = res.endswith("1")
+    if deleted:
+        log.info("Deleted fact #%d via inspector editor", fact_id)
+    return deleted

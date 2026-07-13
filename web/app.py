@@ -432,11 +432,12 @@ async def set_face_recognition(payload: dict | None = None):
     return {"ok": True, **_face_recognition_state()}
 
 
-# --- Memory Inspector (read-only) -------------------------------------------
+# --- Memory Inspector --------------------------------------------------------
 # Backs the LT-OS /memory page. LT-OS proxies these exactly like /api/timmy/*.
-# Read-only by design: no write/supersede/delete endpoints. Sensitive facts ARE
-# returned (this is a local admin tool); the UI badges them. guest_mode gating
-# is a prompt-injection concern and intentionally does NOT apply here.
+# Reads are open; fact WRITES (create/edit/delete below) are gated by a
+# lab-grade password. Sensitive facts ARE returned (this is a local admin
+# tool); the UI badges them. guest_mode gating is a prompt-injection concern
+# and intentionally does NOT apply here.
 
 @app.get("/api/memory/stats")
 async def get_memory_stats():
@@ -499,6 +500,79 @@ async def get_memory_episodes(start: str | None = None, end: str | None = None,
         return {"episodes": rows, "count": len(rows)}
     except Exception as e:
         log.warning("memory_episodes failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# Fact-editor write gate: a plain literal compare on a LAN admin dashboard.
+# Dan-specified (2026-07-12) as an intentional lab-grade UI gate, NOT a real
+# credential — do not hash, do not move to config, do not over-engineer.
+_MEMORY_EDIT_PASSWORD = "1337"
+
+
+@app.post("/api/memory/facts")
+async def upsert_memory_fact(payload: dict | None = None):
+    """Create or edit-value a fact from the Memory Inspector editor. Routed
+    through store_fact(source="tool") ON PURPOSE: that is the single write
+    chokepoint, so admin edits get the surname redaction, PII re-classification,
+    EXPO facts gate, and cross-predicate dedup exactly like LT's own writers
+    (Dan ruling 2026-07-12: gates stay ON for dashboard edits — a blocked
+    write surfaces as an error here, it is not bypassed). Upsert key is
+    (subject, predicate): an existing active row gets its value replaced, a
+    new pair inserts. Body: {password, subject, predicate, value,
+    confidence?}."""
+    from fastapi.responses import JSONResponse
+    from memory import facts as _facts
+    p = payload or {}
+    if p.get("password") != _MEMORY_EDIT_PASSWORD:
+        return JSONResponse({"error": "bad password"}, status_code=401)
+    subject = str(p.get("subject") or "").strip()
+    predicate = str(p.get("predicate") or "").strip()
+    value = str(p.get("value") or "").strip()
+    if not (subject and predicate and value):
+        return JSONResponse({"error": "subject, predicate and value are required"},
+                            status_code=400)
+    try:
+        confidence = min(max(float(p.get("confidence", 1.0)), 0.0), 1.0)
+    except (TypeError, ValueError):
+        confidence = 1.0
+    try:
+        fact_id = await _facts.store_fact(subject, predicate, value,
+                                          confidence=confidence, source="tool")
+        if fact_id < 0:
+            # store_fact's -1 sentinel: dropped by redaction or the EXPO
+            # facts gate (it logs which).
+            return JSONResponse(
+                {"error": "write blocked by redaction or the EXPO facts gate "
+                          "(see LT log for which)"},
+                status_code=403)
+        row = await _facts.get_fact_row(fact_id)
+        if row is not None:
+            la = row.get("learned_at")
+            if la is not None and hasattr(la, "isoformat"):
+                row["learned_at"] = la.isoformat()
+        return {"ok": True, "fact": row}
+    except Exception as e:
+        log.warning("memory_fact_upsert failed: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/memory/facts/{fact_id}")
+async def delete_memory_fact(fact_id: int, password: str | None = None):
+    """Hard-delete a fact from the Memory Inspector editor (Dan ruling
+    2026-07-12: destructive delete, not soft-retire — the tool's purpose is
+    surfacing what's stored, and a wrong fact deleted is wrong, not history).
+    Password via query param."""
+    from fastapi.responses import JSONResponse
+    from memory import facts as _facts
+    if password != _MEMORY_EDIT_PASSWORD:
+        return JSONResponse({"error": "bad password"}, status_code=401)
+    try:
+        if not await _facts.delete_fact(fact_id):
+            return JSONResponse({"error": f"fact #{fact_id} not found"},
+                                status_code=404)
+        return {"ok": True, "deleted": fact_id}
+    except Exception as e:
+        log.warning("memory_fact_delete failed: %s", e)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

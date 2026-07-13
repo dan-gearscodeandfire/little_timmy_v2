@@ -313,10 +313,12 @@ async def get_models():
 
 
 # --- Memory Inspector ------------------------------------------------------
-# A read-only browsable view of Little Timmy's persisted memory (Postgres facts
-# + episodes). The page is a self-contained static file; data comes from LT's
-# read-only /api/memory/* endpoints, proxied below exactly like /api/timmy/*.
-# Opened from the main dashboard via the "MEMORY" header button.
+# A browsable view of Little Timmy's persisted memory (Postgres facts +
+# episodes). The page is a self-contained static file; data comes from LT's
+# /api/memory/* endpoints, proxied below exactly like /api/timmy/*. Fact
+# writes (create/edit/delete) proxy through too — the password gate lives on
+# the LT side (the authority), not here. Opened from the main dashboard via
+# the "MEMORY" header button.
 
 @app.get("/memory", response_class=HTMLResponse)
 async def memory_inspector_page():
@@ -356,6 +358,33 @@ async def memory_episodes(start: str | None = None, end: str | None = None,
                           limit: int = 200):
     return await _proxy_memory("/api/memory/episodes",
                                {"start": start, "end": end, "limit": limit})
+
+
+@app.post("/api/memory/facts")
+async def memory_fact_upsert(payload: dict | None = None):
+    """Proxy a fact create/edit to LT (password checked there)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + "/api/memory/facts",
+                                  json=payload or {})
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.delete("/api/memory/facts/{fact_id}")
+async def memory_fact_delete(fact_id: int, password: str | None = None):
+    """Proxy a fact hard-delete to LT (password checked there)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.delete(
+                config.TIMMY_BASE_URL + f"/api/memory/facts/{fact_id}",
+                params={"password": password} if password is not None else None)
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
 @app.get("/api/timmy/metrics")

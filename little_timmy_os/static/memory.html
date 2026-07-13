@@ -111,6 +111,31 @@
   .btn.ghost{background:var(--panel2);color:var(--muted);border-color:var(--line2)}
   .btn.ghost:hover{color:var(--txt);border-color:var(--muted)}
 
+  /* fact editor */
+  td.acts{white-space:nowrap;text-align:right}
+  .abtn{background:none;border:1px solid var(--line2);border-radius:6px;color:var(--muted);
+    font-family:var(--mono);font-size:12px;min-width:26px;height:24px;cursor:pointer;transition:.15s}
+  .abtn:hover{color:var(--txt);border-color:var(--muted)}
+  .abtn.danger:hover{color:var(--red);border-color:var(--red)}
+  .abtn.armed{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.12);padding:0 8px}
+  .editctl{display:flex;gap:6px;align-items:center}
+  input.iedit{background:var(--panel2);border:1px solid var(--blue);border-radius:6px;color:var(--txt);
+    font-family:var(--mono);font-size:12px;padding:6px 8px;flex:1;min-width:120px}
+  input.iedit:focus{outline:none}
+  #pwbox{display:none}
+  #pwbox input{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;color:var(--txt);
+    font-family:var(--mono);font-size:12px;padding:8px 10px;width:110px}
+  #pwbox input:focus{outline:none;border-color:var(--blue)}
+  #newfact{display:none;gap:8px;flex-wrap:wrap;align-items:center;background:var(--panel);
+    border:1px solid var(--line2);border-radius:10px;padding:12px;margin-bottom:14px}
+  #newfact input{background:var(--panel2);border:1px solid var(--line2);border-radius:6px;color:var(--txt);
+    font-family:var(--mono);font-size:12px;padding:7px 9px}
+  #newfact input:focus{outline:none;border-color:var(--blue)}
+  #toast{display:none;position:fixed;right:20px;bottom:20px;z-index:50;font-family:var(--mono);
+    font-size:12px;padding:10px 14px;border-radius:8px;border:1px solid;max-width:420px}
+  #toast.ok{color:var(--green);border-color:var(--green);background:#12261a}
+  #toast.err{color:var(--red);border-color:var(--red);background:#2b1416}
+
   .empty{text-align:center;padding:48px 20px;color:var(--dim);font-family:var(--mono);font-size:13px}
   .empty svg{margin-bottom:12px;opacity:.5}
   .loading{text-align:center;padding:40px;color:var(--muted);font-family:var(--mono);font-size:13px}
@@ -124,7 +149,7 @@
 <header>
   <div class="brand">
     <h1>MEMORY INSPECTOR</h1>
-    <span class="sub">little timmy · read-only</span>
+    <span class="sub" id="mode-sub">little timmy · read-only</span>
   </div>
   <div class="stats" id="stats"></div>
   <a class="back" href="/">&larr; DASHBOARD</a>
@@ -149,7 +174,17 @@
         <option value="subject">sort: subject A&ndash;Z</option>
       </select>
       <label class="check"><input type="checkbox" id="superseded"> show superseded</label>
+      <button class="btn ghost" id="newfact-btn" style="display:none">+ new fact</button>
+      <span id="pwbox"><input id="pw" type="password" placeholder="password" autocomplete="off"></span>
+      <button class="btn ghost" id="lock-btn" title="unlock editing">&#128274; edit</button>
       <span class="count" id="facts-count"></span>
+    </div>
+    <div id="newfact">
+      <input id="nf-subj" placeholder="subject" size="14">
+      <input id="nf-pred" placeholder="predicate" size="16">
+      <input id="nf-val" placeholder="value" size="30" style="flex:1;min-width:180px">
+      <button class="btn" id="nf-save">Save</button>
+      <button class="btn ghost" id="nf-cancel">Cancel</button>
     </div>
     <div id="facts-body"><div class="loading">loading facts&hellip;</div></div>
   </section>
@@ -169,6 +204,8 @@
     <p class="note">Date range matches episodes overlapping the window (interpreted in UTC). Timeline runs oldest&rarr;newest when filtered, newest-first otherwise.</p>
   </section>
 </div>
+
+<div id="toast"></div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -203,8 +240,11 @@ async function loadFacts(){
   }catch(e){ $('#facts-body').innerHTML = `<div class="empty">failed to load: ${esc(e.message)}</div>`; }
 }
 
+let lastFacts = [];
 function renderFacts(facts){
+  lastFacts = facts;
   if(!facts.length){ $('#facts-body').innerHTML = emptyState('no facts match'); return; }
+  const canEdit = !!pw;
   let rows = facts.map(f=>{
     const c = f.confidence==null?0:f.confidence;
     const srcCls = f.source==='extraction'?'b-extraction':f.source==='tool'?'b-tool':'b-src';
@@ -213,6 +253,13 @@ function renderFacts(facts){
     const badges = [];
     if(f.sensitive) badges.push(`<span class="badge b-sens" title="${esc(f.pii_category||'sensitive')}">&#9888; ${esc(f.pii_category||'sensitive')}</span>`);
     if(f.superseded_by) badges.push(`<span class="badge b-sup" title="superseded by #${f.superseded_by}">superseded</span>`);
+    // edit only offered on ACTIVE rows: the write path upserts on
+    // (subject,predicate) over active rows, so "editing" a superseded row
+    // would silently update its active sibling instead. delete works on any.
+    const acts = canEdit ? `<td class="acts">
+      ${f.superseded_by?'':`<button class="abtn" data-act="edit" data-id="${f.id}" title="edit value">&#9998;</button>`}
+      <button class="abtn danger" data-act="del" data-id="${f.id}" title="delete">&#10005;</button>
+    </td>` : '';
     return `<tr${supersededRow}>
       <td class="id">#${f.id}</td>
       <td class="subj">${esc(f.subject)}</td>
@@ -221,15 +268,137 @@ function renderFacts(facts){
       <td class="spk">${f.speaker?esc(f.speaker):'<span class="b-none">&mdash;</span>'}</td>
       <td><span class="badge ${srcCls}">${esc(f.source||'?')}</span></td>
       <td><span class="conf"><span class="bar"><i style="width:${Math.round(c*100)}%;background:${confColor(c)}"></i></span>${c.toFixed(2)}</span></td>
-      <td class="when">${when}</td>
+      <td class="when">${when}</td>${acts}
     </tr>`;
   }).join('');
   $('#facts-body').innerHTML = `<table>
     <thead><tr>
       <th>ID</th><th>Subject</th><th>Predicate</th><th>Value</th>
-      <th>Speaker</th><th>Source</th><th>Conf</th><th>Learned</th>
+      <th>Speaker</th><th>Source</th><th>Conf</th><th>Learned</th>${canEdit?'<th></th>':''}
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
+
+// ---- fact editor (password-gated writes; gate enforced server-side on LT) ----
+let pw = sessionStorage.getItem('memPw') || '';
+
+function updateLockUI(){
+  const on = !!pw;
+  $('#lock-btn').innerHTML = on ? '&#128275; lock' : '&#128274; edit';
+  $('#lock-btn').title = on ? 'lock editing' : 'unlock editing';
+  $('#newfact-btn').style.display = on ? '' : 'none';
+  if(!on) $('#newfact').style.display = 'none';
+  $('#mode-sub').textContent = on ? 'little timmy · editor unlocked' : 'little timmy · read-only';
+  if(lastFacts.length) renderFacts(lastFacts);
+}
+
+function lockOut(msg){
+  pw=''; sessionStorage.removeItem('memPw'); updateLockUI(); toast(msg,false);
+}
+
+let toastTimer;
+function toast(msg, ok){
+  const t = $('#toast'); t.textContent = msg; t.className = ok?'ok':'err'; t.style.display='block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.style.display='none', 5000);
+}
+
+async function writeFact(subject, predicate, value){
+  try{
+    const r = await fetch('/api/memory/facts', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({password:pw, subject, predicate, value})});
+    const j = await r.json().catch(()=>({}));
+    if(r.status===401){ lockOut('bad password — editor locked'); return null; }
+    if(!r.ok){ toast(j.error||`write failed (${r.status})`, false); return null; }
+    return j.fact;
+  }catch(e){ toast('write failed: '+e.message, false); return null; }
+}
+
+async function removeFact(id){
+  try{
+    const r = await fetch(`/api/memory/facts/${id}?password=${encodeURIComponent(pw)}`, {method:'DELETE'});
+    const j = await r.json().catch(()=>({}));
+    if(r.status===401){ lockOut('bad password — editor locked'); return false; }
+    if(!r.ok){ toast(j.error||`delete failed (${r.status})`, false); return false; }
+    return true;
+  }catch(e){ toast('delete failed: '+e.message, false); return false; }
+}
+
+function startEdit(tr, f){
+  const td = tr.querySelector('td.val');
+  if(td.querySelector('input')) return;
+  td.dataset.orig = td.innerHTML;
+  td.innerHTML = `<span class="editctl"><input class="iedit" value="${esc(f.value)}">
+    <button class="abtn" data-save title="save">&#10003;</button>
+    <button class="abtn" data-cancel title="cancel">&#10005;</button></span>`;
+  const inp = td.querySelector('input'); inp.focus(); inp.select();
+  const done = ()=>{ td.innerHTML = td.dataset.orig; };
+  const save = async ()=>{
+    const v = inp.value.trim();
+    if(!v || v===f.value){ done(); return; }
+    const stored = await writeFact(f.subject, f.predicate, v);
+    if(stored){
+      // store_fact may absorb into a different row (cross-predicate dedup) —
+      // echo back what actually stored.
+      toast(stored.id===f.id ? `updated #${f.id}` :
+        `stored as #${stored.id} (${stored.subject}.${stored.predicate})`, true);
+      loadFacts(); loadStats();
+    }
+  };
+  td.querySelector('[data-save]').addEventListener('click', save);
+  td.querySelector('[data-cancel]').addEventListener('click', done);
+  inp.addEventListener('keydown', e=>{ if(e.key==='Enter') save(); if(e.key==='Escape') done(); });
+}
+
+$('#facts-body').addEventListener('click', async e=>{
+  const b = e.target.closest('button.abtn'); if(!b || !b.dataset.act) return;
+  const id = +b.dataset.id;
+  const f = lastFacts.find(x=>x.id===id); if(!f) return;
+  if(b.dataset.act==='del'){
+    // two-click confirm (no native dialogs): first click arms for 3s
+    if(!b.classList.contains('armed')){
+      b.classList.add('armed'); b.textContent='sure?';
+      setTimeout(()=>{ b.classList.remove('armed'); b.innerHTML='&#10005;'; }, 3000);
+      return;
+    }
+    if(await removeFact(id)){ toast(`deleted #${id}`, true); loadFacts(); loadStats(); }
+  }else if(b.dataset.act==='edit'){
+    startEdit(b.closest('tr'), f);
+  }
+});
+
+$('#lock-btn').addEventListener('click', ()=>{
+  if(pw){ lockOut('editor locked'); return; }
+  const box = $('#pwbox');
+  box.style.display = box.style.display==='inline-flex' ? 'none' : 'inline-flex';
+  if(box.style.display==='inline-flex') $('#pw').focus();
+});
+$('#pw').addEventListener('keydown', e=>{
+  if(e.key==='Enter'){
+    const v = $('#pw').value;
+    if(v){ pw=v; sessionStorage.setItem('memPw', v); $('#pw').value='';
+      $('#pwbox').style.display='none'; updateLockUI();
+      toast('editor unlocked (password checked on first write)', true); }
+  }
+  if(e.key==='Escape'){ $('#pw').value=''; $('#pwbox').style.display='none'; }
+});
+
+$('#newfact-btn').addEventListener('click', ()=>{
+  const n = $('#newfact');
+  n.style.display = n.style.display==='flex' ? 'none' : 'flex';
+  if(n.style.display==='flex') $('#nf-subj').focus();
+});
+$('#nf-cancel').addEventListener('click', ()=>{ $('#newfact').style.display='none'; });
+$('#nf-save').addEventListener('click', async ()=>{
+  const s=$('#nf-subj').value.trim(), p=$('#nf-pred').value.trim(), v=$('#nf-val').value.trim();
+  if(!(s&&p&&v)){ toast('subject, predicate and value are required', false); return; }
+  const stored = await writeFact(s, p, v);
+  if(stored){
+    toast(`stored #${stored.id}: ${stored.subject}.${stored.predicate}`, true);
+    $('#nf-subj').value=$('#nf-pred').value=$('#nf-val').value='';
+    $('#newfact').style.display='none';
+    loadFacts(); loadStats();
+  }
+});
 
 // ---- episodes ----
 async function loadEpisodes(){
@@ -292,6 +461,7 @@ $('#superseded').addEventListener('change', loadFacts);
 $('#ep-apply').addEventListener('click', loadEpisodes);
 $('#ep-clear').addEventListener('click', ()=>{ $('#ep-start').value=''; $('#ep-end').value=''; loadEpisodes(); });
 
+updateLockUI();
 loadStats();
 loadFacts();
 </script>
