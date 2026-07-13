@@ -62,8 +62,16 @@ VAD_THRESHOLD = 0.4
 PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
 
 # --- Hybrid Endpointing ---
-SILENCE_CHUNKS_COMPLETE = 5    # ~0.3s — finalize quickly if sentence looks complete
-SILENCE_CHUNKS_INCOMPLETE = 25  # ~1.5s — wait longer if mid-sentence
+# Chunks are 256ms (CHUNK_FRAMES=4096 @ 16kHz) and the capture loop counts
+# silence once per chunk — size these in REAL chunk units, not assumed-100ms
+# ones. Every prior value (3/15 at birth, 5/25 from 714f0ab) was converted at
+# the wrong chunk duration, so the actual waits ran ~2.6-4x the commented
+# intent (1.28s/6.4s until 2026-07-12). This wait IS the booth display's
+# "VADbreak" segment (endpoint_ms in the [PERF] log line).
+# 2026-07-12 (Dan): restore the original design intent — ~0.5s after a
+# complete-looking sentence, ~1.5s timeout mid-sentence.
+SILENCE_CHUNKS_COMPLETE = 2    # 2 x 256ms = 0.51s — finalize if sentence looks complete
+SILENCE_CHUNKS_INCOMPLETE = 6  # 6 x 256ms = 1.54s — timeout finalize if mid-sentence
 
 # --- Conversation ---
 HOT_MAX_TOKENS = 2500          # token budget for hot tier
