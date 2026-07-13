@@ -1952,14 +1952,20 @@ header .uptime {
     <details class="panel" open>
       <summary><h2>Latency (current turn)</h2></summary>
       <div id="metrics">
+        <!-- 2026-07-12: VADbreak + Reply lag added so this card reconciles with
+             the booth pipeline bar, whose headline total IS reply_lag (speech
+             end -> first reply audio, incl. VADbreak). e2e here remains the
+             internal dequeue->processing-done window and excludes both. -->
+        <div class="metric-row"><span class="label" title="Endpointing-silence wait: last VAD-voiced chunk -> segment finalize (~1.28s = 5 x 256ms silence chunks on the fast path). Booth calls this VADbreak.">VADbreak (endpointing)</span><span class="value" id="m-endpoint">--</span></div>
         <div class="metric-row"><span class="label">STT</span><span class="value" id="m-stt">--</span></div>
         <div class="metric-row"><span class="label">Tool filter (Qwen3-4B)</span><span class="value" id="m-classifier">--</span></div>
         <div class="metric-row"><span class="label">Query resolve (coref)</span><span class="value" id="m-resolution">--</span></div>
         <div class="metric-row"><span class="label">Retrieval</span><span class="value" id="m-retrieval">--</span></div>
         <div class="metric-row"><span class="label">LLM 1st token</span><span class="value" id="m-llm-ft">--</span></div>
         <div class="metric-row"><span class="label">LLM total</span><span class="value" id="m-llm">--</span></div>
-        <div class="metric-row"><span class="label">TTS</span><span class="value" id="m-tts">--</span></div>
-        <div class="metric-row"><span class="label">End-to-end</span><span class="value" id="m-e2e">--</span></div>
+        <div class="metric-row"><span class="label" title="Measured from LLM start to first TTS audio ready (so it ~tracks LLM 1st token + synth). Booth's 'speak' = this minus LLM 1st token.">TTS (from LLM start)</span><span class="value" id="m-tts">--</span></div>
+        <div class="metric-row"><span class="label" title="Internal processing only: queue dequeue -> turn done. Excludes VADbreak + queue; includes full LLM generation.">End-to-end (internal)</span><span class="value" id="m-e2e">--</span></div>
+        <div class="metric-row"><span class="label" title="Felt lag: you stop talking -> Timmy's first reply audio. Matches the booth pipeline total.">Reply lag (→ 1st audio)</span><span class="value" id="m-reply-lag">--</span></div>
         <div class="metric-row"><span class="label">Turns</span><span class="value" id="m-turns">--</span></div>
       </div>
       <div id="latency-context" style="margin-top:10px; padding-top:8px; border-top:1px solid #21262d; font-size:11px; line-height:1.5;">
@@ -2336,6 +2342,9 @@ let _lastAssistantTurn = "";
 function _setLastAssistantTurn(text) { _lastAssistantTurn = text || ""; }
 
 function updateMetricsFromWS(msg) {
+  // endpoint/reply_lag are null on the text/inject path (no capture timestamps).
+  document.getElementById("m-endpoint").textContent = msg.endpoint_ms != null ? msg.endpoint_ms + "ms" : "--";
+  document.getElementById("m-reply-lag").textContent = msg.reply_lag_ms != null ? msg.reply_lag_ms + "ms" : "--";
   document.getElementById("m-stt").textContent = msg.stt_ms != null ? msg.stt_ms + "ms" : "--";
   document.getElementById("m-retrieval").textContent = msg.retrieval_ms != null ? msg.retrieval_ms + "ms" : "--";
   document.getElementById("m-llm-ft").textContent = msg.llm_first_token_ms != null ? msg.llm_first_token_ms + "ms" : "--";
@@ -2574,6 +2583,8 @@ async function pollMetrics() {
     const r = await fetch("/api/timmy/metrics");
     const m = await r.json();
     if (!m.error) {
+      document.getElementById("m-endpoint").textContent = m.last_endpoint_ms != null ? m.last_endpoint_ms + "ms" : "--";
+      document.getElementById("m-reply-lag").textContent = m.last_reply_lag_ms != null ? m.last_reply_lag_ms + "ms" : "--";
       document.getElementById("m-stt").textContent = m.last_stt_ms != null ? m.last_stt_ms + "ms" : "--";
       document.getElementById("m-classifier").textContent = m.last_classifier_ms != null ? m.last_classifier_ms + "ms" : (m.classifier_enabled ? "--" : "off");
       document.getElementById("m-resolution").textContent = m.last_resolution_ms != null ? m.last_resolution_ms + "ms" : (m.query_resolution_enabled ? "--" : "off");
