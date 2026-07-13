@@ -69,9 +69,13 @@ PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
 # intent (1.28s/6.4s until 2026-07-12). This wait IS the booth display's
 # "VADbreak" segment (endpoint_ms in the [PERF] log line).
 # 2026-07-12 (Dan): restore the original design intent — ~0.5s after a
-# complete-looking sentence, ~1.5s timeout mid-sentence.
-SILENCE_CHUNKS_COMPLETE = 2    # 2 x 256ms = 0.51s — finalize if sentence looks complete
-SILENCE_CHUNKS_INCOMPLETE = 6  # 6 x 256ms = 1.54s — timeout finalize if mid-sentence
+# complete-looking sentence; mid-sentence grace lengthened same night after
+# live test (1.54s clipped a deliberate "however..." thinking pause). With
+# fresh-partial gating, the timeout only applies to genuinely mid-thought
+# pauses — complete sentences exit at the fast path — so a longer timeout no
+# longer slows normal turns.
+SILENCE_CHUNKS_COMPLETE = 2     # 2 x 256ms = 0.51s — finalize if sentence looks complete
+SILENCE_CHUNKS_INCOMPLETE = 10  # 10 x 256ms = 2.56s — timeout finalize if mid-sentence
 
 # --- Conversation ---
 HOT_MAX_TOKENS = 2500          # token budget for hot tier

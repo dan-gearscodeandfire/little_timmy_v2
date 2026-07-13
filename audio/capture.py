@@ -22,11 +22,32 @@ log = logging.getLogger(__name__)
 NATIVE_RATE = 48000  # USB mic native sample rate
 
 
+# Trailing connectives Whisper still punctuates ("However." / "So."). A partial
+# ending in one of these is mid-thought regardless of punctuation, so it must
+# fall through to the SILENCE_CHUNKS_INCOMPLETE timeout instead of fast-
+# finalizing at the 0.51s complete path (2026-07-12: "however..." got clipped).
+_CONTINUATION_WORDS = frozenset({
+    "and", "but", "or", "so", "because", "however", "although", "though",
+    "if", "when", "while", "unless", "also", "then", "plus", "like", "with",
+})
+
+
 def looks_complete(text: str) -> bool:
-    """Check if text looks like a complete sentence (ends with terminal punctuation)."""
+    """Check if text looks like a complete sentence: ends with terminal
+    punctuation, isn't trailing off (ellipsis), and doesn't end on a
+    connective word."""
     if not text:
         return False
-    return text.rstrip()[-1] in ".?!"
+    t = text.rstrip()
+    if t.endswith("...") or t.endswith("…"):  # Whisper's trailing-off marker
+        return False
+    if t[-1] not in ".?!":
+        return False
+    stripped = t.rstrip(".?!,;:'\" ")
+    if not stripped:  # bare punctuation, no actual words
+        return False
+    last_word = stripped.rsplit(None, 1)[-1].strip("'\"").lower()
+    return last_word not in _CONTINUATION_WORDS
 
 
 class AudioCapture:
@@ -186,8 +207,12 @@ class AudioCapture:
         silence_count = 0
         pre_speech_ring = collections.deque(maxlen=config.PRE_SPEECH_CHUNKS)
         last_transcription = ""  # for hybrid endpointing
-        live_check_counter = 0
         onset_ts = None  # wall-clock of this utterance's speech onset (latency metric)
+        # Live partials from submits older than this seq predate the newest
+        # voiced chunk and can't contain the words just spoken — the complete
+        # fast-path must ignore them (2026-07-12: "…earlier, however…" clipped
+        # because the comma-pause partial "…earlier." was still the latest).
+        live_min_valid_seq = 1
 
         def _put_segment(audio: np.ndarray, onset_ts=None, offset_ts=None):
             """Thread-safe enqueue to asyncio. Carries the utterance's speech
@@ -301,6 +326,7 @@ class AudioCapture:
                         recording = True
                         self.user_speaking = True
                         silence_count = 0
+                        live_min_valid_seq = self._live_submit_seq + 1
                         onset_ts = time.time()  # latency-metric start point
                         audio_buffer = list(pre_speech_ring) + [audio]
                         log.debug("Speech onset detected (prob=%.2f, peak=%.4f)", vad_prob, self.diag_last_peak)
@@ -313,6 +339,9 @@ class AudioCapture:
                     audio_buffer.append(audio)
                     if is_speech:
                         silence_count = 0
+                        # New words just landed: every partial published so far
+                        # is stale for endpointing purposes.
+                        live_min_valid_seq = self._live_submit_seq + 1
                     else:
                         silence_count += 1
 
@@ -321,7 +350,15 @@ class AudioCapture:
                     incomplete_threshold = config.SILENCE_CHUNKS_INCOMPLETE
 
                     if silence_count >= complete_threshold:
-                        if looks_complete(last_transcription):
+                        # Only trust the partial if it came from a submit made
+                        # during THIS silence window — a stale one can't have
+                        # heard the trailing words and its terminal punctuation
+                        # means nothing. Read the published text directly (not
+                        # the loop-local copy, which lags one read behind); the
+                        # worker writes text before seq, so a fresh seq implies
+                        # the text alongside it is at least as fresh.
+                        partial_fresh = self._latest_live_seq >= live_min_valid_seq
+                        if partial_fresh and looks_complete(self._latest_live_text):
                             # Fast finalize — sentence is complete
                             segment = np.concatenate(audio_buffer)
                             _put_segment(segment, onset_ts, self.last_voice_ts)
@@ -346,12 +383,15 @@ class AudioCapture:
                         silence_count = 0
                         last_transcription = ""
 
-                    # Periodic live transcription for endpointing decisions.
-                    # Submit is non-blocking; we read whatever the worker has
-                    # most recently transcribed (may lag by one network round-trip,
-                    # which is acceptable for endpointing heuristics).
-                    live_check_counter += 1
-                    if recording and silence_count >= 1 and live_check_counter % 3 == 0:
+                    # Live transcription for endpointing decisions. Submit is
+                    # non-blocking; we read whatever the worker has most
+                    # recently published (the seq gate above rejects results
+                    # that predate the current silence window). Was throttled
+                    # to every 3rd chunk (~768ms); at the 2-chunk (0.51s)
+                    # complete threshold that starved the fast path of a fresh
+                    # partial, so submit every silent chunk — the capacity-1
+                    # drop-oldest queue keeps the whisper load serialized.
+                    if recording and silence_count >= 1:
                         if self._live_transcribe_fn and self._live_audio_queue is not None:
                             segment_so_far = np.concatenate(audio_buffer)
                             self._submit_live_audio(segment_so_far)
@@ -382,15 +422,24 @@ class AudioCapture:
             self._live_worker_thread.start()
             log.info("Live transcription worker thread started")
 
+    # Monotonic submit counter + the seq of the submit the latest published
+    # result came from. Lets the endpointing loop reject partials that predate
+    # the most recent voiced chunk (stale-partial race, 2026-07-12).
+    _live_submit_seq = 0
+    _latest_live_seq = 0
+
     def _submit_live_audio(self, audio: np.ndarray):
         """Non-blocking submit. Drops oldest pending audio so worker always
-        operates on the freshest segment."""
+        operates on the freshest segment. Each submit carries a sequence
+        number; the worker republishes it with the result so readers can tell
+        which audio a partial corresponds to."""
+        self._live_submit_seq += 1
         try:
             self._live_audio_queue.get_nowait()
         except queue.Empty:
             pass
         try:
-            self._live_audio_queue.put_nowait(audio)
+            self._live_audio_queue.put_nowait((self._live_submit_seq, audio))
         except queue.Full:
             pass
 
@@ -398,7 +447,7 @@ class AudioCapture:
         """Worker loop: pull audio, run transcription, publish latest text."""
         while self._running or self._live_worker_thread is not None:
             try:
-                audio = self._live_audio_queue.get(timeout=0.5)
+                seq, audio = self._live_audio_queue.get(timeout=0.5)
             except queue.Empty:
                 if not self._running:
                     return
@@ -408,6 +457,7 @@ class AudioCapture:
             try:
                 text = self._live_transcribe_fn(audio)
                 self._latest_live_text = text or ""
+                self._latest_live_seq = seq
             except Exception as e:
                 log.warning("live_transcribe failed: %s", e)
 
