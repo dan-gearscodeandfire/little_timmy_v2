@@ -9,9 +9,12 @@ a specular-core rescue — a lit LED blooms WHITE at the center (saturation
 collapses, so the green mask alone loses the hottest pixels) with a green
 halo; near-white pixels whose small dilation overlaps the green mask are
 folded back in. Morphological open kills speckle, then connected components
-filtered by area. EXACTLY one surviving blob -> its centroid; zero or 2+ ->
-None (abstain — two green lights is ambiguity, the same contract as the
-face geometry).
+filtered by area, then single-link CLUSTERING by centroid distance
+(anchor_led_cluster_px) — the real mic carries several LEDs with two visible
+at any angle (2026-07-13 hardware), so nearby blobs are ONE beacon, not
+ambiguity. EXACTLY one surviving cluster -> its area-weighted centroid;
+zero or 2+ clusters -> None (abstain — two green lights across the room is
+still ambiguity, the same contract as the face geometry).
 
 Knobs live in runtime_toggles (anchor_led_*) so the booth's lighting can be
 tuned live; callers may also pass explicit values (hermetic tests).
@@ -31,7 +34,8 @@ def find_green_led(frame_bgr: np.ndarray, *,
                    h_lo: Optional[int] = None, h_hi: Optional[int] = None,
                    s_min: Optional[int] = None, v_min: Optional[int] = None,
                    min_area: Optional[int] = None,
-                   max_area: Optional[int] = None) -> Optional[tuple]:
+                   max_area: Optional[int] = None,
+                   cluster_px: Optional[int] = None) -> Optional[tuple]:
     """(x, y) centroid of the single lit green LED in ``frame_bgr``, or None.
 
     Blocking (cv2); call behind asyncio.to_thread on the hot path. Any knob
@@ -53,18 +57,48 @@ def find_green_led(frame_bgr: np.ndarray, *,
         min_area = int(runtime_toggles.get("anchor_led_min_area_px"))
     if max_area is None:
         max_area = int(runtime_toggles.get("anchor_led_max_area_px"))
+    if cluster_px is None:
+        cluster_px = int(runtime_toggles.get("anchor_led_cluster_px"))
 
     green = green_mask(frame_bgr, h_lo, h_hi, s_min, v_min)
 
     n, _labels, stats, centroids = cv2.connectedComponentsWithStats(green)
     hits = [i for i in range(1, n)
             if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area]
-    if len(hits) != 1:
-        if len(hits) > 1:
-            log.debug("[LED] %d candidate blobs -> abstain", len(hits))
+    if not hits:
         return None
-    cx, cy = centroids[hits[0]]
-    return (float(cx), float(cy))
+
+    # Single-link clustering: blobs whose centroids sit within cluster_px of
+    # any blob already in the cluster merge (the mic's own LEDs, or one LED
+    # fragmenting into core + halo). Union-find over the handful of hits.
+    parent = list(range(len(hits)))
+
+    def _root(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a in range(len(hits)):
+        for b in range(a + 1, len(hits)):
+            dx = centroids[hits[a]][0] - centroids[hits[b]][0]
+            dy = centroids[hits[a]][1] - centroids[hits[b]][1]
+            if dx * dx + dy * dy <= cluster_px * cluster_px:
+                parent[_root(a)] = _root(b)
+
+    clusters: dict = {}
+    for a, i in enumerate(hits):
+        clusters.setdefault(_root(a), []).append(i)
+    if len(clusters) != 1:
+        log.debug("[LED] %d candidate clusters -> abstain", len(clusters))
+        return None
+
+    members = next(iter(clusters.values()))
+    areas = np.array([stats[i, cv2.CC_STAT_AREA] for i in members], dtype=float)
+    cxs = np.array([centroids[i][0] for i in members])
+    cys = np.array([centroids[i][1] for i in members])
+    w = areas / areas.sum()
+    return (float((cxs * w).sum()), float((cys * w).sum()))
 
 
 def green_mask(frame_bgr: np.ndarray, h_lo: int, h_hi: int,

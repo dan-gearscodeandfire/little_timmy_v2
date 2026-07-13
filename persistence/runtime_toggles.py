@@ -154,17 +154,25 @@ _DEFAULTS: dict = {
     "passive_self_intro_enabled": False,
     # CV green-LED detection knobs (presence/led_detect.py) — HSV mask +
     # blob-size bounds, all live-tunable at the booth (lighting varies).
-    # OpenCV hue is 0-179; 40-85 spans green. The V floor is high on purpose:
-    # a LIT LED is one of the brightest things in frame. Area bounds are in
-    # px at /capture resolution — reject a green shirt (huge) and sensor
-    # speckle (tiny). Exactly ONE surviving blob anchors; zero or 2+ abstain
-    # (two green lights = no anchor, same ambiguity contract as the faces).
-    "anchor_led_h_lo": 40,
+    # OpenCV hue is 0-179. Defaults recalibrated 2026-07-13 against the REAL
+    # in-mic LED hardware (shop frames, ops/led_calibrate.py): its hue is a
+    # narrow 69-83 (h_lo 65 cuts impostors), and its glow is far dimmer than
+    # the bare 7-06 LED — s/v floors relaxed 80/200 -> 60/160 (head-on it
+    # drops to v~50, unreachable without flooding the scene; that part is a
+    # hardware fix). Area bounds are in px at /capture resolution — reject a
+    # green shirt (huge) and sensor speckle (tiny); max 1500 covers the
+    # face-glow bloom (7-08). Blobs within anchor_led_cluster_px single-link
+    # into ONE cluster (the mic carries several LEDs, two visible at any
+    # angle — 2026-07-13 hardware; also rejoins core+halo fragments).
+    # Exactly ONE surviving cluster anchors; zero or 2+ abstain (two green
+    # lights ACROSS THE ROOM = no anchor, same ambiguity contract as faces).
+    "anchor_led_h_lo": 65,
     "anchor_led_h_hi": 85,
-    "anchor_led_s_min": 80,
-    "anchor_led_v_min": 200,
+    "anchor_led_s_min": 60,
+    "anchor_led_v_min": 160,
     "anchor_led_min_area_px": 4,
-    "anchor_led_max_area_px": 400,
+    "anchor_led_max_area_px": 1500,
+    "anchor_led_cluster_px": 60,
     # Periodic anchor-poll cadence (s) — main.anchor_poll_monitor grabs one
     # /capture frame and runs the CPU LED detect + face pick + identify so the
     # anchor is fresh BEFORE a visitor's first utterance (Ruling A, Dan
