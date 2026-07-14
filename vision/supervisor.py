@@ -161,8 +161,20 @@ class BehaviorSupervisor:
         self._in_conversation = False
         self._current_speaker = None
 
+        # Trust the Pi's own YuNet tracker first (Dan 2026-07-13): if the head
+        # is actively locked on a face, "quiet" does not mean "gone" — reaffirm
+        # track instead of a room_sweep that physically sweeps the head OFF the
+        # person standing right there. The VLM-driven self._people_visible drops
+        # a subject at normal working distance (proximity gate) while the Pi
+        # keeps the lock; sweeping on that stale signal is the "you're back then
+        # looks away" bug. Fail-open: a Pi hiccup falls through to the old logic.
+        if await self._pi_tracking_face():
+            await self._send_command("track", priority="normal", timeout_ms=15000)
+            log.info("[SUPERVISOR] Conversation idle but Pi tracking a face → track (not scan)")
+            return
+
         if self._people_visible:
-            # Someone is still there, just not talking — scan to find them
+            # VLM says someone is here but the Pi isn't locked — scan to find them
             await self._send_command("scan", priority="normal",
                                      timeout_ms=30000,
                                      params={"pattern": "room_sweep", "loops": 2})
@@ -195,12 +207,18 @@ class BehaviorSupervisor:
                 await self._send_command("track", priority="high", timeout_ms=15000)
 
         elif had_people and not self._people_visible:
-            # Everyone left
-            log.info("[SUPERVISOR] No people visible → scan")
+            # VLM lost everyone — but its proximity gate drops a subject at
+            # normal working distance while the Pi's YuNet keeps the lock. Don't
+            # sweep the head off a live track on the VLM's say-so (Dan 2026-07-13).
             if not self._in_conversation:
-                await self._send_command("scan", priority="normal",
-                                         timeout_ms=20000,
-                                         params={"pattern": "room_sweep"})
+                if await self._pi_tracking_face():
+                    log.info("[SUPERVISOR] VLM lost people but Pi still tracking a face → hold track")
+                    await self._send_command("track", priority="normal", timeout_ms=15000)
+                else:
+                    log.info("[SUPERVISOR] No people visible → scan")
+                    await self._send_command("scan", priority="normal",
+                                             timeout_ms=20000,
+                                             params={"pattern": "room_sweep"})
 
     # --- Monitor loop ---
 
@@ -299,3 +317,17 @@ class BehaviorSupervisor:
         except Exception:
             pass
         return None
+
+    async def _pi_tracking_face(self) -> bool:
+        """True if the Pi's own YuNet tracker currently holds a live face.
+
+        The Pi's face tracking is the authoritative, low-latency presence signal
+        for BODY behavior — cheaper and far less flickery than the proximity-
+        gated VLM that drives self._people_visible. Before overriding the Pi into
+        a room_sweep (which physically sweeps the head OFF whoever it is tracking)
+        we defer to it. Fail-open to False so a Pi hiccup never freezes the body
+        into a permanent track. (Dan 2026-07-13: the supervisor scanned off a
+        present, tracked subject because the VLM had dropped them at working
+        distance while the Pi still had the lock.)"""
+        st = await self.get_pi_status()
+        return bool(st and st.get("face_visible"))
