@@ -556,6 +556,26 @@ async def toggle_motors(enabled: bool) -> dict:
     return await _toggle_pipeline_layer("motors", enabled)
 
 
+async def center_servos() -> dict:
+    """Move pan/tilt to UI (0, 0) via the Pi's /servo/center (e.g. before
+    disassembly for transport). Note: if face tracking is enabled the Pi
+    supervisor may immediately re-target after centering."""
+    import config as cfg
+    await _broadcast_status("Centering pan/tilt servos on streamerpi...")
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            r = await client.post(
+                f"{cfg.STREAMERPI_URL}/servo/center",
+                json={"speed": 0.8},
+            )
+            result = r.json()
+            await _broadcast_status("Servos centered (pan 0 / tilt 0)")
+            return result
+    except Exception as e:
+        await _broadcast_status(f"Servo center failed: {e}", "error")
+        return {"status": "error", "error": str(e)[:120]}
+
+
 # Legacy aliases kept so existing callers in main.py keep working during
 # the rename; remove once main.py is fully migrated.
 async def check_face_tracking_status() -> dict:

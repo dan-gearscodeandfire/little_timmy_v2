@@ -895,6 +895,13 @@ async def toggle_motors(data: dict):
     return await services.toggle_motors(bool(data.get("enabled", True)))
 
 
+@app.post("/api/servos/center")
+async def servos_center():
+    """Center pan/tilt to UI (0, 0) via the Pi's /servo/center
+    (transport/disassembly pose)."""
+    return await services.center_servos()
+
+
 # Legacy endpoint kept so any consumer still pointing at /api/face_tracking
 # keeps working. Maps to the new face_pipeline status with a back-compat
 # `enabled` key bound to tracking_enabled.
@@ -1887,6 +1894,11 @@ header .uptime {
             <div class="service-name">Motors (pan / tilt)</div>
             <div class="service-detail" id="motors-detail">Checking...</div>
           </div>
+          <button id="servo-center-btn" type="button" onclick="centerServos()"
+                  title="Move pan/tilt to 0,0 (transport/disassembly pose)"
+                  style="font-size:11px; padding:5px 12px; margin-right:10px; background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:4px; cursor:pointer;">
+            Center
+          </button>
           <label class="toggle" id="motors-toggle">
             <input type="checkbox" onchange="toggleFacePipeline('motors', this.checked)">
             <span class="slider"></span>
@@ -2979,6 +2991,15 @@ async function toggleFacePipeline(layer, enabled) {
   } catch(e) { /* fall back to next poll */ }
   facePipelineBusy[layer] = false;
   updateFacePipelineUI(layer);
+}
+
+async function centerServos() {
+  const btn = document.getElementById('servo-center-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Centering...'; }
+  try {
+    await fetch('/api/servos/center', { method: 'POST' });
+  } catch(e) { /* status broadcast surfaces failures */ }
+  if (btn) { btn.disabled = false; btn.textContent = 'Center'; }
 }
 
 // LT-side runtime flags, declaratively annotated with their dependency-map
