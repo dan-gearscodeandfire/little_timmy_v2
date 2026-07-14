@@ -895,6 +895,13 @@ async def toggle_motors(data: dict):
     return await services.toggle_motors(bool(data.get("enabled", True)))
 
 
+@app.get("/api/device_health")
+async def device_health():
+    """Hardware inventory (servos / ESP32 serial / camera / face thread)
+    via the Pi's /health/hardware, plus Pi reachability."""
+    return await services.check_device_health()
+
+
 @app.post("/api/servos/center")
 async def servos_center():
     """Center pan/tilt to UI (0, 0) via the Pi's /servo/center
@@ -1903,6 +1910,39 @@ header .uptime {
             <input type="checkbox" onchange="toggleFacePipeline('motors', this.checked)">
             <span class="slider"></span>
           </label>
+        </div>
+        <!-- Device Health (2026-07-14, pre-Open-Sauce transport): read-only
+             cards over the Pi's GET /health/hardware. Catches the silent
+             reassembly failures — servo/serial init and camera frames all
+             previously reported success while dead. -->
+        <div class="toggle-section-label">Device Health (hardware)</div>
+        <div class="service-card" id="devhealth-servos-card" style="border-left:3px solid #484f58;"
+             title="Serial Wombat pan/tilt init state (init-time only; unplug-after-boot not detectable)">
+          <div class="service-info">
+            <div class="service-name">Pan/Tilt Servos (Serial Wombat)</div>
+            <div class="service-detail" id="devhealth-servos-detail">Checking...</div>
+          </div>
+        </div>
+        <div class="service-card" id="devhealth-esp32-card" style="border-left:3px solid #484f58;"
+             title="ESP32 serial link (eye LED)">
+          <div class="service-info">
+            <div class="service-name">ESP32 Serial (eye LED)</div>
+            <div class="service-detail" id="devhealth-esp32-detail">Checking...</div>
+          </div>
+        </div>
+        <div class="service-card" id="devhealth-camera-card" style="border-left:3px solid #484f58;"
+             title="Pi camera frame delivery (libcamera-vid)">
+          <div class="service-info">
+            <div class="service-name">Camera (Pi CSI)</div>
+            <div class="service-detail" id="devhealth-camera-detail">Checking...</div>
+          </div>
+        </div>
+        <div class="service-card" id="devhealth-facethread-card" style="border-left:3px solid #484f58;"
+             title="YuNet+SFace inference thread (data-age-honest alive signal)">
+          <div class="service-info">
+            <div class="service-name">Face Detection Thread</div>
+            <div class="service-detail" id="devhealth-facethread-detail">Checking...</div>
+          </div>
         </div>
       </div>
       <!-- Mode <select> removed 2026-07-10 (chain-grouped restructure): it
@@ -3624,6 +3664,53 @@ pollStreamerpiMain();
 setInterval(pollStreamerpiMain, 10000);
 pollLTToggles();
 setInterval(pollLTToggles, 10000);
+
+// --- Device Health cards (Pi /health/hardware via /api/device_health) ------
+const DEVHEALTH_IDS = ['servos', 'esp32', 'camera', 'facethread'];
+function setDevHealth(id, color, detail) {
+  const card = document.getElementById('devhealth-' + id + '-card');
+  const det = document.getElementById('devhealth-' + id + '-detail');
+  if (card) card.style.borderLeftColor = color;
+  if (det) det.textContent = detail;
+}
+async function pollDeviceHealth() {
+  const GREEN = '#3fb950', AMBER = '#d29922', RED = '#f85149';
+  try {
+    const r = await fetch('/api/device_health');
+    const d = await r.json();
+    if (!d.pi || !d.pi.running || !d.hardware) {
+      const piUp = d.pi && d.pi.reachable;
+      const msg = piUp ? 'Pi up, motor service down (or /health/hardware failed)'
+                       : 'streamerpi unreachable';
+      DEVHEALTH_IDS.forEach(id => setDevHealth(id, piUp ? AMBER : RED, msg));
+      return;
+    }
+    const hw = d.hardware;
+    setDevHealth('servos',
+      hw.servos.initialized ? GREEN : RED,
+      hw.servos.initialized ? 'Serial Wombat initialized'
+                            : 'NOT INITIALIZED — moves silently no-op; check I2C/power');
+    setDevHealth('esp32',
+      hw.esp32_serial.open ? GREEN : RED,
+      hw.esp32_serial.open ? 'Serial link open'
+                           : 'Serial CLOSED — eye LED dead; check USB cable');
+    if (!hw.camera.frame_available) {
+      setDevHealth('camera', RED, 'NO FRAMES — check CSI ribbon');
+    } else if (hw.camera.frame_age_s !== null && hw.camera.frame_age_s > 5) {
+      setDevHealth('camera', AMBER, 'STALE — last frame ' + hw.camera.frame_age_s.toFixed(1) + 's ago');
+    } else {
+      setDevHealth('camera', GREEN, 'Frames flowing' +
+        (hw.camera.frame_age_s !== null ? ' (' + hw.camera.frame_age_s.toFixed(2) + 's)' : ''));
+    }
+    const ft = hw.face_thread;
+    setDevHealth('facethread',
+      ft.alive ? GREEN : RED,
+      ft.alive ? ('Alive' + (ft.data_age_s !== null ? ', data ' + ft.data_age_s.toFixed(1) + 's old' : ' (warming up)'))
+               : 'DEAD/WEDGED — restart little-timmy-motor.service');
+  } catch (e) { /* leave cards as-is; next poll retries */ }
+}
+pollDeviceHealth();
+setInterval(pollDeviceHealth, 10000);
 
 // --- P4 face-flap debounce knobs (Pi A1/A2 + LT B3/C5) ---------------------
 const FT_FIELDS = {

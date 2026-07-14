@@ -556,6 +556,26 @@ async def toggle_motors(enabled: bool) -> dict:
     return await _toggle_pipeline_layer("motors", enabled)
 
 
+async def check_device_health() -> dict:
+    """Device-level hardware health for the LT-OS Device Health cards.
+
+    Wraps the Pi's GET /health/hardware (Wombat servos / ESP32 serial /
+    camera frames / face thread) behind the reachability probe so a dead
+    Pi renders as one 'unreachable' state rather than four red cards.
+    """
+    import config as cfg
+    pi = await check_streamerpi_server_status()
+    out: dict = {"pi": pi, "hardware": None}
+    if pi.get("running"):
+        try:
+            async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
+                r = await client.get(f"{cfg.STREAMERPI_URL}/health/hardware")
+                out["hardware"] = r.json()
+        except Exception as e:
+            out["error"] = str(e)[:120]
+    return out
+
+
 async def center_servos() -> dict:
     """Move pan/tilt to UI (0, 0) via the Pi's /servo/center (e.g. before
     disassembly for transport). Note: if face tracking is enabled the Pi
