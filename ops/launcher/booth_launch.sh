@@ -63,8 +63,10 @@ wait_for "https://127.0.0.1:8090/"                 "-k" "Booth display" 30
 google-chrome --new-window "$LTOS_URL" >>"$LOG" 2>&1 &
 
 # Window 2: booth display in its own profile (self-signed cert accepted there).
+# --test-type suppresses the "unsupported flag" warning bar, which otherwise
+# shows on the booth display (and in record_booth.sh screen captures).
 google-chrome --user-data-dir="$BOOTH_PROFILE" --no-first-run \
-  --ignore-certificate-errors --new-window "$BOOTH_URL" >>"$LOG" 2>&1 &
+  --ignore-certificate-errors --test-type --new-window "$BOOTH_URL" >>"$LOG" 2>&1 &
 
 log "chrome windows launched"
 notify "LT-OS + Booth display opened 🤖"

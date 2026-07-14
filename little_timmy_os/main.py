@@ -12,6 +12,8 @@ _sys.path.append("/home/gearscodeandfire/little_timmy")
 
 import asyncio
 import json
+import os
+import subprocess
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -265,43 +267,91 @@ async def get_host_metrics():
         return {"available": False, "error": str(e)[:120]}
 
 
-# ---------- Recording control (Supervisor M6) ----------
-# Thin proxy to booth-display's /api/recording/* endpoints. booth-display
-# owns the actual subsystem (file writes, MediaRecorder signal, chunks);
-# LT-OS just exposes operator-facing toggle + status so the recording
-# button lives in the same dashboard as everything else.
+# ---------- Recording control ----------
+# Drives ops/record_booth.sh: kmsgrab screen-capture of the composited booth
+# overlay (:8090, full-screen on the monitor) + room mic + LT TTS -> mp4.
+# Replaced the old booth-display /api/recording/* MediaRecorder proxy
+# (0-byte silent .webm path) on 2026-07-14. The script owns the ffmpeg
+# lifecycle (sudo kmsgrab, crash-safe .mkv, remux to .mp4 on stop); LT-OS
+# shells out so the button lives in the same dashboard as everything else.
+
+_REC_SCRIPT = str(Path.home() / "little_timmy" / "ops" / "record_booth.sh")
+_REC_RUN_DIR = Path(f"/run/user/{os.getuid()}/lt_booth_recorder")
+_REC_DIR = Path.home() / "little_timmy" / "recordings"
+
+
+def _rec_script_sync(action: str, timeout: float) -> tuple[int, str]:
+    # Blocking subprocess.run in a worker thread (via asyncio.to_thread), NOT
+    # asyncio.create_subprocess_exec: under uvloop the latter's communicate()
+    # never resolves for `start` (which leaves a long-lived backgrounded
+    # sudo/ffmpeg) even though the script itself exits in ~1.5s — stock
+    # asyncio handles the same script fine. Thread + waitpid sidesteps it.
+    r = subprocess.run([_REC_SCRIPT, action], capture_output=True, text=True,
+                       timeout=timeout)
+    return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+
+
+async def _rec_script(action: str, timeout: float) -> tuple[int, str]:
+    return await asyncio.to_thread(_rec_script_sync, action, timeout)
+
+
+def _rec_file_info(path: Path, active: bool) -> dict:
+    """session/size/duration without probing the container: start time comes
+    from the booth-<ts> filename stamp; end is now (active) or mtime (done)."""
+    info = {"session_id": path.name, "bytes_received": 0, "duration_s": 0.0}
+    try:
+        st = path.stat()
+        info["bytes_received"] = st.st_size
+        ts = datetime.strptime(path.stem.split("booth-")[-1], "%Y%m%d-%H%M%S")
+        end = time.time() if active else st.st_mtime
+        info["duration_s"] = max(0.0, end - ts.timestamp())
+    except Exception:
+        pass
+    return info
+
 
 @app.post("/api/recording/start")
 async def recording_start():
-    import httpx
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            r = await client.post(f"{config.BOOTH_DISPLAY_URL}/api/recording/start")
-            return JSONResponse(r.json(), status_code=r.status_code)
+        rc, out = await _rec_script("start", timeout=10.0)
+        return JSONResponse({"ok": rc == 0, "detail": out}, status_code=200 if rc == 0 else 500)
     except Exception as e:
-        return JSONResponse({"error": f"booth-display unreachable: {e}"}, status_code=502)
+        return JSONResponse({"error": f"record_booth.sh start failed: {e}"}, status_code=502)
 
 
 @app.post("/api/recording/stop")
 async def recording_stop():
-    import httpx
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            r = await client.post(f"{config.BOOTH_DISPLAY_URL}/api/recording/stop")
-            return JSONResponse(r.json(), status_code=r.status_code)
+        # stop includes the SIGINT drain + .mkv -> .mp4 remux; give it room.
+        rc, out = await _rec_script("stop", timeout=30.0)
+        return JSONResponse({"ok": rc == 0, "detail": out}, status_code=200 if rc == 0 else 500)
     except Exception as e:
-        return JSONResponse({"error": f"booth-display unreachable: {e}"}, status_code=502)
+        return JSONResponse({"error": f"record_booth.sh stop failed: {e}"}, status_code=502)
 
 
 @app.get("/api/recording/status")
 async def recording_status():
-    import httpx
+    # Read the script's pidfile/metafile directly (structured, no subprocess).
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{config.BOOTH_DISPLAY_URL}/api/recording/status")
-            return JSONResponse(r.json(), status_code=r.status_code)
-    except Exception as e:
-        return JSONResponse({"active": False, "error": f"booth-display unreachable: {e}"}, status_code=502)
+        pid = int((_REC_RUN_DIR / "ffmpeg.pid").read_text().strip())
+        active = Path(f"/proc/{pid}").is_dir()
+    except Exception:
+        active = False
+    if active:
+        body = {"active": True}
+        try:
+            body.update(_rec_file_info(
+                Path((_REC_RUN_DIR / "current.path").read_text().strip()), active=True))
+        except Exception:
+            pass
+        return body
+    body = {"active": False}
+    try:
+        last = max(_REC_DIR.glob("booth-*.mp4"), key=lambda p: p.stat().st_mtime)
+        body.update(_rec_file_info(last, active=False))
+    except Exception:
+        pass
+    return body
 
 
 @app.get("/api/models")
@@ -2086,7 +2136,9 @@ header .uptime {
         </div>
         <div id="rec-meta" style="font-size:11px; color:#8b949e;">No active recording</div>
         <div style="font-size:10px; color:#484f58; margin-top:6px;">
-          Saves to <code>~/little_timmy/recordings/&lt;ts&gt;.{webm,jsonl,json}</code>. Audio is silent (visitor WebRTC stream is video-only).
+          Screen-captures the booth overlay display (kmsgrab 30fps) + room mic + LT TTS &rarr;
+          <code>~/little_timmy/recordings/booth-&lt;ts&gt;.mp4</code>.
+          Booth window must be full-screen on the monitor, and be the ONLY open booth page.
         </div>
       </div>
     </details>
@@ -4083,8 +4135,8 @@ async function pollRecording() {
       btn.style.background = '#3a1f1f';
       btn.style.borderColor = '#f85149';
       btn.style.color = '#f85149';
-      const kb = Math.round((s.bytes_received || 0) / 1024);
-      meta.textContent = (s.session_id || '?') + ' · ' + (s.chunks_received || 0) + ' chunks · ' + kb + ' KB';
+      const mb = ((s.bytes_received || 0) / 1048576).toFixed(1);
+      meta.textContent = (s.session_id || '?') + ' · ' + mb + ' MB';
     } else {
       dot.style.background = '#484f58';
       state.textContent = 'idle';
@@ -4093,8 +4145,8 @@ async function pollRecording() {
       btn.style.borderColor = '#1f6feb';
       btn.style.color = '#fff';
       if (s.session_id && s.duration_s) {
-        const kb = Math.round((s.bytes_received || 0) / 1024);
-        meta.textContent = 'last: ' + s.session_id + ' · ' + s.duration_s.toFixed(1) + 's · ' + (s.chunks_received || 0) + ' chunks · ' + kb + ' KB';
+        const mb = ((s.bytes_received || 0) / 1048576).toFixed(1);
+        meta.textContent = 'last: ' + s.session_id + ' · ' + s.duration_s.toFixed(1) + 's · ' + mb + ' MB';
       } else {
         meta.textContent = 'No active recording';
       }
