@@ -39,15 +39,21 @@ def wav_path(text: str) -> Path:
 
 
 # Two length-tiered pools, selected by how slow we expect the turn to be (Dan
-# 2026-06-30, after measuring filler overrun). The asymmetry that drives the
-# split: a LONG clip on a turn that turns out fast DELAYS the answer (it sits in
-# the serial playback queue ahead of the ready reply — measured ~0.5-2.0s of
-# overrun on normal turns); a SHORT clip on a turn that turns out slow merely
-# UNDER-fills (the clip ends, a little quiet, then the answer plays the instant
-# it's ready — never delayed). So we bias SHORT and only go LONG when we're
-# CONFIDENT the turn is slow. The one high-precision "slow" signal available for
-# free at fire time is a visual question landing on a stale frame, which forces a
-# blocking VLM capture (+2.4-2.85s measured) — see the call site in main.py.
+# 2026-06-30, revised 2026-07-13). Original 6-30 logic BIASED SHORT to avoid a
+# LONG clip DELAYING a fast reply — but preemptible playback (3076b16: sd.stop()
+# the instant a real sentence queues behind the filler) already eliminates that
+# delay. Live telemetry proves it: fired-turn overrun (~115-170ms) is
+# statistically IDENTICAL to the no-filler baseline queue latency, i.e. a
+# filler's net added latency is ~0 regardless of length. So the SHORT/LONG split
+# is no longer about "don't overrun" — it's about MATCHING the clip to the
+# expected reply so the filler bridges the silence instead of ending early and
+# leaving a trailing gap. After the 7-12 endpointing win normal replies land at
+# ~2.5s (was slower), so the old ~0.5-0.9s clips ended at ~2.0s and left a
+# ~0.5s median trailing silence; SHORT was retuned UP to ~1.0-1.35s to bridge it
+# while still finishing before the fastest ~2.3s reply (no audible cutoff).
+# LONG still fires only on the one high-precision "slow" signal free at fire
+# time: a visual question on a stale frame, which forces a blocking VLM capture
+# (+2.4-2.85s measured, reply ~5.5s) — see the call site in main.py.
 
 # Beyond the length split, the pools are also REGISTER-split (Dan 2026-06-30):
 # what fits a declarative statement ("I see.", "Got it.") is wrong before/while
@@ -56,11 +62,15 @@ def wav_path(text: str) -> Path:
 # turns are deliberately OUT of scope here — they route through tool_router with
 # their own flow we'll revisit separately, so they fall to the statement default.
 
-# --- SHORT pools (~0.4-0.9s, busy <=~1.2s): the DEFAULT for normal turns. The
-# measured filler-start->answer-ready gap on no-VLM turns is min ~1.0s / median
-# ~2.0s, so to NEVER delay the answer a clip's busy time (audio + 0.4s cooldown)
-# stays ~<=1.2s. Curt acknowledgement/thinking tokens, NOT the pre-2026-06-25
-# "Eh./Huh." dismissive tics. ---
+# --- SHORT pools (~1.0-1.35s): the DEFAULT for normal turns. Sized (Dan
+# 2026-07-13) to bridge toward the ~2.5s reply: filler starts ~0.9-1.0s after
+# you stop (STT/endpointing lead), so a ~1.1s clip ends at ~2.0-2.1s — closing
+# most of the old ~0.5s trailing gap yet still finishing before the fastest
+# ~2.3s reply, so nothing gets cut mid-word. Overrun is free (see the length
+# note above), so the cap is set by "still ends cleanly on fast turns", not by
+# delay fear. Short conversational thinking-beats, NOT the pre-2026-06-25
+# "Eh./Huh." dismissive tics. Keep new entries <=~1.35s (measure with
+# render_fillers; >~1.4s starts clipping on fast turns). ---
 
 # ⚠️ Piper's espeak-ng phonemizer reads a run of 2+ "m"s as the LETTER NAME
 # "em", so "Hmmmm."/"Mm, okay." synthesize as "aitch-em-em-em-em" / "em-em,
@@ -68,26 +78,24 @@ def wav_path(text: str) -> Path:
 # interjections "Hmm"/"Hmmm" (leading h, <=3 m's) render as a real hum (h'@m).
 # Verify any hum spelling with:  espeak-ng -q -x "your text"  (any Em/eItS = bad).
 # Declarative reply: you TOLD Timmy something; he acknowledges / takes it in.
+# Durations (Piper skeletor_v1, measured 2026-07-13) in comments.
 SHORT_STATEMENT: tuple[str, ...] = (
-    "I see.",
-    "Got it.",
-    "Right.",
-    "Ah.",
-    "Noted.",
-    "Hmm, okay.",
-    "Hmm.",
-    "Um.",
+    "Ah, I see.",            # 1.32s
+    "Right, okay.",          # 1.13s
+    "Hmm, okay.",            # 1.14s
+    "Got it, thanks.",       # 1.24s
+    "That's good to know.",  # 1.23s
+    "Huh, okay.",            # 1.01s
 )
 
 # Interrogative reply: you ASKED Timmy something; he's about to answer.
 SHORT_QUESTION: tuple[str, ...] = (
-    "Hmm.",
-    "Let me see.",
-    "Good question.",
-    "Let me think.",
-    "Right.",
-    "Okay.",
-    "Ugh.",
+    "Let me see.",           # 1.21s
+    "Let me think.",         # 1.03s
+    "Good question.",        # 1.09s
+    "Let me check.",         # 0.96s
+    "Let me think here.",    # 1.31s
+    "That's a good one.",    # 1.16s
 )
 
 # --- LONG pools (~1.5-2.9s): fire ONLY when a turn will block on a fresh VLM
