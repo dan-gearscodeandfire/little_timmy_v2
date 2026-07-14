@@ -279,6 +279,11 @@
     background: var(--bone-strong); box-shadow: 0 0 4px rgba(255,142,122,0.9); transition: left 120ms linear; }
   .vumeter .vufloor { position: absolute; top: -2px; bottom: -2px; width: 2px; left: 0%;
     background: var(--brass); box-shadow: 0 0 4px var(--brass); opacity: 0.85; }
+  /* 75% target tick: where a direct speaking voice should land on the dB bar. */
+  .vumeter .vutarget { position: absolute; top: 0; bottom: 0; width: 1px; left: 75%;
+    background: var(--bone-faint); opacity: 0.45; }
+  /* below the onset floor: background noise, not signal — dim it. */
+  .vumeter .vufill.below { opacity: 0.45; }
   .vox.suppressed .vufill { opacity: 0.35; }
   .vox.suppressed .tk b { color: var(--bone-ghost); }
   .bar { position: relative; height: 6px; background: rgba(214,86,68,0.16); border-radius: 3px; }
@@ -535,6 +540,7 @@
           <div class="tk"><span>vox · mic</span><b id="vuReadout">—</b></div>
           <div class="vumeter" id="vuTrack">
             <div class="vufill" id="vuFill"></div>
+            <div class="vutarget" title="target speaking level"></div>
             <div class="vufloor" id="vuFloor" title="energy floor (onset gate)"></div>
             <div class="vupeak" id="vuPeak"></div>
           </div>
@@ -1403,7 +1409,10 @@
     // Mirrors the Little Timmy OS meter: last_peak drives the fill, a peak-hold
     // tick decays slowly, the energy-floor (onset gate) is marked, and the bar
     // dims while TTS is suppressing the mic. Polled fast (~120ms) for liveness.
-    let vuPeakHold = 0;
+    // Rendered on a dB scale (-50 dB -> 0%, 0 dBFS -> 100%), matching LT-OS:
+    // close-talk speech (~0.2-0.25 raw) lands ~75%, ambient stays visible.
+    const vuDisp = (x) => x > 0 ? Math.max(0, Math.min(1, 1 + (20 * Math.log10(x)) / 50)) : 0;
+    let vuPeakHold = 0;   // DISPLAY space, so the decay looks uniform on the log bar
     const vuVox = document.querySelector('.telemetry .vox');
     async function pollAudio() {
       try {
@@ -1413,13 +1422,17 @@
         const cur   = Math.max(0, Math.min(1, d.last_peak || 0));
         const floor = Math.max(0, Math.min(1, d.energy_floor || 0));
         const vad   = Math.max(0, Math.min(1, d.last_vad_prob || 0));
-        vuPeakHold = Math.max(cur, vuPeakHold - 0.035);
+        const dispCur = vuDisp(cur);
+        vuPeakHold = Math.max(dispCur, vuPeakHold - 0.035);
         const fill = document.getElementById('vuFill');
         const peak = document.getElementById('vuPeak');
         const fl   = document.getElementById('vuFloor');
-        if (fill) fill.style.width = (cur * 100).toFixed(1) + '%';
+        if (fill) {
+          fill.style.width = (dispCur * 100).toFixed(1) + '%';
+          fill.classList.toggle('below', floor > 0 && cur < floor);
+        }
         if (peak) peak.style.left  = (Math.min(1, vuPeakHold) * 100).toFixed(1) + '%';
-        if (fl)   fl.style.left    = (floor * 100).toFixed(1) + '%';
+        if (fl)   fl.style.left    = (vuDisp(floor) * 100).toFixed(1) + '%';
         const ro = document.getElementById('vuReadout');
         if (ro) ro.textContent = d.suppressed
             ? 'muted · tts'

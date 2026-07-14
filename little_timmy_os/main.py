@@ -1624,6 +1624,8 @@ header .uptime {
           </div>
           <div id="vu-track" style="position:relative; height:14px; background:#161b22; border:1px solid #21262d; border-radius:3px; overflow:hidden;">
             <div id="vu-fill" style="position:absolute; left:0; top:0; bottom:0; width:0%; background:#3fb950; transition:width 90ms linear;"></div>
+            <!-- 75% target: where a direct speaking voice should land on the dB-scaled bar. -->
+            <div id="vu-target" style="position:absolute; top:0; bottom:0; width:1px; left:75%; background:#8b949e; opacity:0.5;" title="Target speaking level"></div>
             <div id="vu-peak" style="position:absolute; top:0; bottom:0; width:2px; left:0%; background:#f0f6fc; box-shadow:0 0 3px #fff;"></div>
             <!-- Energy floor: onset below this peak is ignored as background. -->
             <div id="vu-floor" style="position:absolute; top:-2px; bottom:-2px; width:2px; left:0%; background:#f0883e; box-shadow:0 0 4px #f0883e;" title="Energy floor (onset gate)"></div>
@@ -4059,17 +4061,29 @@ setInterval(pollHostMetrics, 5000);
 const VU_POLL_MS = 120;
 const VU_DECAY_PER_TICK = 0.035;     // ~0.29/sec hold decay -> ~3s visible peak
 const VAD_SPEECH_THRESHOLD = 0.4;
-let vuPeakHold = 0;
-let vuFloor = 0;                     // last-known server floor (0..1)
+// Display transform (2026-07-14): the bar renders on a dB scale, -50 dB -> 0%,
+// 0 dBFS -> 100%. Raw amplitude is close-talk-quiet (speech peaks ~0.2-0.25),
+// so a linear bar wasted the top 75% on the unreachable clip zone. On the dB
+// scale speech lands ~75% and room ambient (~0.01) stays visible near 20%.
+// DISPLAY ONLY: slider, readout, server floor all remain raw amplitude.
+const VU_DB_FLOOR = 50;
+function vuDisp(x) {
+  if (!(x > 0)) return 0;
+  return Math.max(0, Math.min(1, 1 + (20 * Math.log10(x)) / VU_DB_FLOOR));
+}
+let vuPeakHold = 0;                  // peak-hold, DISPLAY space (uniform decay)
+let vuFloor = 0;                     // last-known server floor (raw 0..1)
 let vuFloorHoldUntil = 0;           // suppress poll->slider sync briefly after a user edit
-function vuColor(level) {
-  if (level >= 0.85) return '#f85149';   // clip zone
-  if (level >= 0.60) return '#f0883e';   // hot
-  return '#3fb950';                       // nominal
+// Color by meaning, not absolute level: below the onset floor = background
+// (dim), above = would-fire (green). Red only for genuine clip territory.
+function vuColor(rawCur) {
+  if (rawCur >= 0.85) return '#f85149';                  // true clip zone
+  if (vuFloor > 0 && rawCur < vuFloor) return '#484f58'; // below onset gate: background
+  return '#3fb950';                                       // above gate: nominal
 }
 function renderFloorMarker() {
   const fl = document.getElementById('vu-floor');
-  if (fl) fl.style.left = (vuFloor * 100).toFixed(1) + '%';
+  if (fl) fl.style.left = (vuDisp(vuFloor) * 100).toFixed(1) + '%';
   const val = document.getElementById('vu-floor-val');
   if (val) val.textContent = vuFloor.toFixed(3);
 }
@@ -4170,8 +4184,8 @@ async function autoCalibrateFloor() {
     await commitFloor(rec);
     const result='Set floor to '+rec.toFixed(3)+'  (room '+ambientMax.toFixed(3)+' · voice '+speechMed.toFixed(3)+')';
     setSt(result); vuCalLastResult=result;
-    const pct=(rec*100).toFixed(1);
-    await ttsSay('Onset floor set to '+pct+' percent. Your voice is well above it.');
+    const pct=(vuDisp(rec)*100).toFixed(0);   // where the tick sits on the (dB) meter
+    await ttsSay('Onset floor set. The marker sits at '+pct+' percent of the meter, and your voice is well above it.');
   } finally {
     if (btn){ btn.disabled=false; btn.style.opacity=1; }
     vuCalRunning=false;
@@ -4205,19 +4219,23 @@ async function pollAudioMeter() {
       if (sl && document.activeElement !== sl) sl.value = vuFloor;
       renderFloorMarker();
     }
-    // peak-hold: instant attack, slow decay
-    vuPeakHold = cur > vuPeakHold ? cur : Math.max(cur, vuPeakHold - VU_DECAY_PER_TICK);
-    fill.style.width = (cur * 100).toFixed(1) + '%';
+    // peak-hold: instant attack, slow decay — held in DISPLAY space so the
+    // decay speed looks uniform across the (log-scaled) bar.
+    const dispCur = vuDisp(cur);
+    vuPeakHold = dispCur > vuPeakHold ? dispCur : Math.max(dispCur, vuPeakHold - VU_DECAY_PER_TICK);
+    fill.style.width = (dispCur * 100).toFixed(1) + '%';
     fill.style.background = vuColor(cur);
     peak.style.left = (vuPeakHold * 100).toFixed(1) + '%';
-    peak.style.background = vuColor(vuPeakHold);
     const speaking = vad >= VAD_SPEECH_THRESHOLD;
     // The dot reflects what capture will ACT on: VAD-positive AND above floor.
     const wouldFire = speaking && cur >= vuFloor;
     dot.style.background = wouldFire ? '#3fb950' : (speaking ? '#f0883e' : '#30363d');
     dot.style.boxShadow = wouldFire ? '0 0 4px #3fb950' : 'none';
+    // Readout stays in RAW amplitude (matches the slider units) — convert the
+    // display-space hold back for the pk figure.
+    const pkRaw = vuPeakHold > 0 ? Math.pow(10, (vuPeakHold - 1) * VU_DB_FLOOR / 20) : 0;
     if (out) out.textContent =
-      'cur ' + cur.toFixed(3) + ' · pk ' + vuPeakHold.toFixed(3) + ' · vad ' + vad.toFixed(2);
+      'cur ' + cur.toFixed(3) + ' · pk ' + pkRaw.toFixed(3) + ' · vad ' + vad.toFixed(2);
   } catch(e) {
     if (out) out.textContent = 'mic unreachable';
   }
