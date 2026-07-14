@@ -15,16 +15,25 @@ from vision.capture import FrameCapture
 
 
 class _FakeFaceClient:
-    """Returns scripted /faces states in fetch_full() shape."""
+    """Returns scripted /faces states in fetch_full() shape.
 
-    def __init__(self, states):
+    behavior_mode is what fetch_behavior_mode() returns for the trust-the-Pi
+    disengage gate; default "idle" so the pure-window disengage path is
+    exercised unless a test opts into "track"/"scan".
+    """
+
+    def __init__(self, states, behavior_mode="idle"):
         self._states = list(states)
         self.i = 0
+        self.behavior_mode = behavior_mode
 
     async def fetch_full(self):
         s = self._states[min(self.i, len(self._states) - 1)]
         self.i += 1
         return s
+
+    async def fetch_behavior_mode(self):
+        return self.behavior_mode
 
     async def close(self):
         pass
@@ -46,7 +55,7 @@ def _patch_toggles(monkey_values):
         lambda k: monkey_values[k] if k in monkey_values else real_get(k))
 
 
-async def _run_seq(cap, states):
+async def _run_seq(cap, states, behavior_mode="idle"):
     """Feed each state through one proximity poll; return list of fire reasons."""
     fires = []
     async def _rec(jpeg):
@@ -56,7 +65,14 @@ async def _run_seq(cap, states):
     async def _fake_fetch(reason, res=None):
         return b"jpeg"
     cap._fetch_frame = _fake_fetch  # type: ignore
-    cap._face_client = _FakeFaceClient(states)
+    # Preserve an existing fake client (and its behavior mode) across calls on
+    # the same cap so a test can flip the Pi mode mid-sequence.
+    if not isinstance(getattr(cap, "_face_client", None), _FakeFaceClient):
+        cap._face_client = _FakeFaceClient(states, behavior_mode)
+    else:
+        cap._face_client._states = list(states)
+        cap._face_client.i = 0
+        cap._face_client.behavior_mode = behavior_mode
     for _ in states:
         await cap._poll_proximity()
     return fires
@@ -70,6 +86,7 @@ def main():
         "vision_proximity_debounce_m": 6,
         "vision_proximity_debounce_n": 2,
         "vision_proximity_refresh_s": 0.0,
+        "vision_proximity_pi_track_hold": True,
     })
     THR_PX = 72  # >=72px => qualifies at 360px frame
 
@@ -131,6 +148,40 @@ def main():
     asyncio.run(_run_seq(cap2, [_state(50), _state(), _state(50)]))
     assert len(fed2) == 2, f"expected 2 callbacks (empty poll skipped), got {len(fed2)}"
     print("case5 faces-state callback (no VLM, throttled, skips empty): OK")
+
+    # --- Case 6: trust-the-Pi hold — empty window does NOT disengage while the
+    # Pi tracker is still holding the person (mode track/scan); disengages once
+    # the Pi reaches idle. This is the working-in-profile / head-turn fix. ------
+    cap = FrameCapture()
+    fires = asyncio.run(_run_seq(cap, [_state(200), _state(200)]))  # engage + fire
+    assert len(fires) == 1 and cap._prox_engaged
+    # 6 empty polls, but the Pi is still tracking -> must STAY engaged.
+    asyncio.run(_run_seq(cap, [_state()] * 6, behavior_mode="track"))
+    assert cap._prox_engaged, "should hold engaged while Pi mode=track"
+    # Pi still searching (scan) -> still held.
+    asyncio.run(_run_seq(cap, [_state()] * 6, behavior_mode="scan"))
+    assert cap._prox_engaged, "should hold engaged while Pi mode=scan"
+    # Pi gives up (idle) with the window empty -> now disengage.
+    asyncio.run(_run_seq(cap, [_state()] * 6, behavior_mode="idle"))
+    assert not cap._prox_engaged, "should disengage once Pi reaches idle"
+    print("case6 trust-the-Pi hold (track/scan hold, idle releases): OK")
+
+    # --- Case 7: kill switch OFF -> pure-window disengage regardless of Pi -----
+    _patch_toggles({
+        "vision_proximity_gate_enabled": True,
+        "vision_proximity_height_frac": 0.20,
+        "vision_proximity_debounce_m": 6,
+        "vision_proximity_debounce_n": 2,
+        "vision_proximity_refresh_s": 0.0,
+        "vision_proximity_pi_track_hold": False,
+    })
+    cap = FrameCapture()
+    fires = asyncio.run(_run_seq(cap, [_state(200), _state(200)]))
+    assert len(fires) == 1 and cap._prox_engaged
+    # Pi says track, but the hold is disabled -> window clear must disengage.
+    asyncio.run(_run_seq(cap, [_state()] * 6, behavior_mode="track"))
+    assert not cap._prox_engaged, "kill switch off -> disengage on empty window"
+    print("case7 kill-switch off (pure-window hysteresis restored): OK")
 
     print("\nALL PROXIMITY-GATE CASES PASSED" if ok else "FAILURES")
     return 0 if ok else 1

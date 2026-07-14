@@ -324,6 +324,18 @@ _DEFAULTS: dict = {
     # OFF = rising-edge only (leanest; avoids reintroducing a duty cycle). The
     # 10s VLM cooldown still floors it. Default 0.0.
     "vision_proximity_refresh_s": 0.0,
+    # Trust-the-Pi disengage gate (2026-07-13). When True, the proximity latch
+    # will NOT disengage on an empty /faces window while the Pi tracker is still
+    # holding the person (behavior mode "track" or "scan"); it only drops once
+    # the Pi reaches "idle" ("scan complete, no face found"). This stops a
+    # working subject who turns to a bench / stands in profile from chattering
+    # engage->disengage->"person appeared" every time YuNet loses the frontal
+    # face, while _debounce_m stays a fail-open floor for when behavior is
+    # unreachable. Mirrors the body-behavior trust-the-Pi fix (48e8abd). Only
+    # fetches /behavior/status at the disengage edge (window empty), so no extra
+    # steady-state HTTP. Read live per poll. Default True; kill to revert to the
+    # pure-window hysteresis. See project_expo_vision_poll_gate.
+    "vision_proximity_pi_track_hold": True,
     # --- Auto-enroll live operator switch (2026-07-09, LT-OS Services toggle) --
     # Live enable/disable for BOTH auto-enrollment paths: the voiceprint
     # face-hint STREAK (main.py) and the interactive face-enroll consent FSM

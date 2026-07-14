@@ -25,8 +25,10 @@ DEFAULT_TIMEOUT = httpx.Timeout(2.0, connect=1.0)
 class RemoteFaceClient:
     """HTTP client for streamerpi's /faces endpoint."""
 
-    def __init__(self, url: Optional[str] = None, max_age_s: float = 5.0):
+    def __init__(self, url: Optional[str] = None, max_age_s: float = 5.0,
+                 behavior_url: Optional[str] = None):
         self.url = url or config.STREAMERPI_FACES_URL
+        self.behavior_url = behavior_url or config.STREAMERPI_BEHAVIOR_URL
         self.max_age_s = max_age_s
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -70,6 +72,29 @@ class RemoteFaceClient:
             log.debug("face data stale (age=%s, max=%.1fs)", age, self.max_age_s)
             return []
         return data.get("faces", [])
+
+    async def fetch_behavior_mode(self) -> Optional[str]:
+        """Fetch the Pi tracker's current behavior mode.
+
+        Returns "track" | "scan" | "idle" (the streamerpi behavior state
+        machine's mode), or None on any failure so callers fail open. The Pi
+        holds "track" through ~8 s of face loss then "scan"s (head searches)
+        before falling to "idle" via "scan complete, no face found" -- i.e. the
+        mode carries the Pi's own presence hysteresis, which survives the
+        head-turns/profile poses that make raw /faces flicker.
+        """
+        await self._ensure_client()
+        try:
+            resp = await self._client.get(self.behavior_url)
+            resp.raise_for_status()
+            mode = resp.json().get("mode")
+            return str(mode) if mode else None
+        except httpx.ConnectError:
+            log.debug("streamerpi /behavior/status not reachable at %s", self.behavior_url)
+            return None
+        except Exception:
+            log.debug("Failed to fetch /behavior/status", exc_info=True)
+            return None
 
     async def fetch_full(self) -> Optional[dict]:
         """Fetch faces + image_size, applying staleness filter to faces only.

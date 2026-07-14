@@ -291,10 +291,30 @@ class FrameCapture:
                     (time.monotonic() - self._last_vlm_time) >= refresh_s:
                 await self._fire_proximity("refresh", max_hf, count, m)
         elif count == 0:
-            # Window fully clear of close faces -> visitor left; re-arm.
+            # Window fully clear of close faces in the raw /faces feed. Before
+            # declaring departure, defer to the Pi tracker: a working subject
+            # who turns to a bench or glances away drops out of YuNet's frontal
+            # detection for many seconds while still standing right there, which
+            # used to chatter engage/disengage (and re-fire "person appeared").
+            # The Pi's behavior mode carries real presence hysteresis -- it holds
+            # "track", then "scan"s for the face, and only reaches "idle" once it
+            # has genuinely given up ("scan complete, no face found"). So we only
+            # disengage once the raw window is clear AND the Pi is no longer
+            # holding the person. This mirrors the trust-the-Pi body fix
+            # (48e8abd). Fail-open: unreachable behavior -> disengage as before.
+            # Live kill switch: vision_proximity_pi_track_hold.
             if self._prox_engaged:
-                log.info("[CAPTURE] proximity disengaged (face gone)")
-            self._prox_engaged = False
+                pi_mode = None
+                if runtime_toggles.get("vision_proximity_pi_track_hold") \
+                        and self._face_client is not None:
+                    pi_mode = await self._face_client.fetch_behavior_mode()
+                if pi_mode in ("track", "scan"):
+                    log.debug("[CAPTURE] proximity window clear but Pi still "
+                              "holding (mode=%s) -> stay engaged", pi_mode)
+                else:
+                    log.info("[CAPTURE] proximity disengaged (face gone, Pi mode=%s)",
+                             pi_mode)
+                    self._prox_engaged = False
 
     async def _fire_proximity(self, reason: str, max_hf: float, count: int, m: int):
         """Fetch the current frame and fire the VLM for a proximity event,
