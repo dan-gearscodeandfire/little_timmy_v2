@@ -62,6 +62,11 @@ def wav_path(text: str) -> Path:
 # stays ~<=1.2s. Curt acknowledgement/thinking tokens, NOT the pre-2026-06-25
 # "Eh./Huh." dismissive tics. ---
 
+# ⚠️ Piper's espeak-ng phonemizer reads a run of 2+ "m"s as the LETTER NAME
+# "em", so "Hmmmm."/"Mm, okay." synthesize as "aitch-em-em-em-em" / "em-em,
+# okay" (Dan 2026-07-13: "sounds like EM em em em em"). Only the dictionary
+# interjections "Hmm"/"Hmmm" (leading h, <=3 m's) render as a real hum (h'@m).
+# Verify any hum spelling with:  espeak-ng -q -x "your text"  (any Em/eItS = bad).
 # Declarative reply: you TOLD Timmy something; he acknowledges / takes it in.
 SHORT_STATEMENT: tuple[str, ...] = (
     "I see.",
@@ -69,8 +74,8 @@ SHORT_STATEMENT: tuple[str, ...] = (
     "Right.",
     "Ah.",
     "Noted.",
-    "Mm, okay.",
-    "Hmmmm.",
+    "Hmm, okay.",
+    "Hmm.",
     "Um.",
 )
 
