@@ -103,7 +103,7 @@ Dan's rule: *"conversational call always takes preference over summarization."*
 ```
 USB mic 48 kHz → Silero VAD → 16 kHz buffer
   → whisper :8891 STT → user_text
-  → voice-print speaker_id (ECAPA-TDNN cosine)
+  → voice-print speaker_id (WeSpeaker cosine — `pyannote/wespeaker-voxceleb-resnet34-LM`, migrated off Resemblyzer 2026-06-17; voiceprints `models/speaker/<name>_wespeaker.npy`)
   → broadcast turn event (WS fanout: web /ws + booth_display /ws)
   → eye_led AI_THINKING signal (LT → streamerpi → ESP32)
   → parallel:
@@ -155,6 +155,24 @@ Tunables (env-overridable in `config.py`): `PROACTIVE_SPEECH_ENABLED`, `PROACTIV
 
 ---
 
+## Face & voice identity (Phase B + LED-mic anchor, verified 2026-07-15)
+
+**Authority:** okDemerzel owns face identity since 2026-07-05 (`face_authority` toggle = `"okdemerzel"`, live). Per turn: multi-frame `/capture` grab (`face_authority_frames`=3) → YuNet detect → align → **EdgeFace-S on CPU** → `FaceIdentifier`; accept = cosine distance ≤ `face_threshold` (0.50, live-tunable). The Pi's SFace `/faces` remains detection/behavior-fallback only. `face_shadow_enabled` (OFF) was the Phase A A/B instrument.
+
+**Storage (embeddings only, no crops persisted):** ≤12 L2-normed 512-dim prototypes per person in `models/face/<name>_edgeface.npy` (dedup 0.07, min 3 samples — `presence/face_thresholds.py`; voice twin: ≤12, dedup 0.06, `models/speaker/<name>_wespeaker.npy`). Plus shared id-map `models/speaker/_id_map.json` + Postgres `speakers` row (the `facts.speaker_id` FK). **Face is enroll-time only** — no update-on-sight; voice T2 re-enroll / T3 drift have NO face analog. Face identity does NOT write `facts`/`episodes`/`memories`.
+
+**Sole writer:** `presence.identity_commit.commit_identity` — guards: mismatch (known name must match ≥1 enrolled modality), lookalike (unverified modality too close to an existing identity), retired-name tombstone. Call sites: unified enroll (`main._handle_enrollment`, `unified_enroll_enabled`=true) and the introductions name-tell triple below.
+
+**Per-turn co-sampling (feeds enrollment):** the doorway buffers aligned face crops under the pre-fusion voice key (`CoSampleBuffer`). Rule: **sole-face==speaker** (exactly 1 face in frame) — except when the LED-mic anchor is fresh, whose crops WIN over sole-face (crowd-safe).
+
+**LED-mic anchor (EXPO engagement token, 2026-07-06→13):** the green multi-LED handheld mic marks the engaged speaker. CV detector `presence/led_detect.py` (HSV h 65–85 / s≥60 / v≥160, area 4–1500 px, 60 px cluster-merge; exactly ONE cluster else abstain) finds the lit mic; `presence/anchor.pick_anchored_face` picks the sole face directly above it (x-tol 0.25×frame; ambiguity = abstain). State is in-process (`presence/anchor.py`, TTL 30 s, refreshed by a 2 s `anchor_poll_monitor`) — restart wipes to the dark gate by design. **Binding rule (F1/F7):** anchored crops buffer/commit only when face-ID and voice-ID agree — anchored face recognized AS this speaker, or unrecognized face + `unknown_N` voice (the visitor case). **Mic-in-hand = implied consent** (Dan 7-06): the anchor un-darks the SPEECH identity dialogs under EXPO (`anchor.speech_dialogs_allowed`) but never the face-consent FSM.
+
+**Name-tell triple (the constant face↔voice link for new speakers):** unknown_N speaks → intro name-ask, or volunteered "my name is X" (`passive_self_intro_enabled`) → spoken confirm → yes ⇒ `assign_name` (voice T1 persist) + `_maybe_commit_face` → `commit_identity` binds **name↔voiceprint↔faceprint** (crops = LED-anchored at EXPO, sole-face in Shop). Gate: `intro_face_commit_enabled`. **Both toggles flipped ON 2026-07-15 (Dan: "constantly link faceprints with voiceprints for new speakers").** A refused name (tombstone/reserved/taken) commits nothing and the speaker stays unknown_N (F2).
+
+**Mode effects on face memory:** `guest_mode` withholds `facts.sensitive` at prompt-injection ONLY — face storage/recognition unchanged. The EXPO proximity vision gate changes WHEN the VLM polls, never WHAT is stored. EXPO regime darkens identity-MUTATION dialogs; recognition stays read-only-on; the anchor (or `identity_dialogs_override`) re-opens them.
+
+---
+
 ## Repo layout (essentials)
 
 ```
@@ -198,6 +216,9 @@ Tunables (env-overridable in `config.py`): `PROACTIVE_SPEECH_ENABLED`, `PROACTIV
     supervisor.py              # behavioral supervisor
 
   presence/                    # face/voice fusion → RoomLedger; canonical names; auto-enroll; look_at
+                               # + Phase B identity: identity_commit.py (sole writer), face_recognize.py /
+                               # face_identifier.py (EdgeFace), face_thresholds.py, anchor.py + led_detect.py
+                               # (EXPO LED-mic anchor), prototype_base.py (shared .npy store + id-map)
 
   persona/
     state.py                   # deterministic 3×3 mood axes (X engagement, Y warmth)
@@ -292,7 +313,7 @@ curl -X POST http://localhost:8894/api/service/little_timmy/restart
 - **Strix Halo Vulkan: do NOT bump `-np 1` → `2`** on llama.cpp. Per-call latency 2.5–3× worse; can't parallelize matmul across slots.
 - **Qwen3.6 thinking_budget is silently dropped** by llama.cpp Jinja. Use `max_tokens` to cap thinking instead.
 - **streamerpi single-client WebRTC lock** — multiple `/visitor` tabs cause the gray-restart cycle. Guarded by session-token + 409. Check tabs first before suspecting ICE.
-- **face DB lives on streamerpi only** since 2026-05-07. Old `vision/face_id.py` + `~/.face_db/` retired. Enroll via streamerpi `/face_db/enroll` or `enroll_face_remote.py`.
+- **Face identity authority = okDemerzel EdgeFace since 2026-07-05** (`face_authority` runtime toggle, live `"okdemerzel"`). The 2026-05-07 "face DB lives on streamerpi only" era is OVER: the Pi's SFace `/faces` is now detection + legacy-fallback only (it still supplies the BehaviorSnapshot); identities minted by the unified path NEVER reach the Pi face_db. Enroll via `presence.identity_commit.commit_identity` (see **Face & voice identity** section above), not the Pi `/face_db/enroll`.
 - **LT does NOT depend on `demerzel-vision.service` (:8895)** since 2026-05-05. That service is the DeepStack-compatible API for Blue Iris, not LT.
 - **GPT-OSS-120B is retired** (2026-05-24). Local frontier = Qwen3.6 only. Don't suggest it as an alternative.
 - **Retrieval fusion is weighted, not equal-rank** (2026-06-03). `memory/retrieval.py:_fuse` weights channels (default semantic 2.0 / fts 1.0 / trigram 0.5) and folds the semantic cosine distance back in as a tiebreaker (`RRF_COSINE_BONUS`). The `<SEMANTIC_DISTANCE_MAX` (0.50) floor is unchanged; the bonus normalizes *within* the kept band, so re-tuning the floor and the bonus are coupled — change them together. **A/B control:** set `TIMMY_RRF_W_*=1.0` + `TIMMY_RRF_COSINE_BONUS=0.0` + `TIMMY_COREFERENCE_ENABLED=false` to reproduce the old equal-weight, rank-only, bare-utterance behavior exactly. All knobs are env-overridable in `config.py`.
@@ -322,7 +343,7 @@ On okLinuxBoxPC, `MEMORY.md` carries one-line pointers to each.
 
 ## Provenance footer
 
-- **Last edited:** 2026-06-06 by Claude (Opus 4.8), with Dan in the loop.
-- **Verified against code on:** 2026-06-07 (`main`; vision-freshness Group C — **averted-gaze guard** `f78731b` + self-ref detector gap `4ae4c75` + **visual-question grounding** block-on-fresh & raw injection `7b67a44` + **LT-OS frame-source** `98e8c15`; all deployed and **live-validated in front of Timmy**). Prior: 2026-06-06 (`main`; proactive-speech **barge-in guard** added — `capture.user_speaking`/`last_voice_ts` + `PROACTIVE_USER_SPEECH_GRACE_SEC`, supervisor issue #1, deployed live, live in-frame test pending). Prior: 2026-06-03 (`main`; weighted-RRF + coreference `d2af1e1`, proactive-speech + LT-OS toggle `696a961`, extraction queue/re-enqueue `31ed259`; vision localized scene-gate + speech-onset capture). 2026-05-30 (HEAD `5b435d3`).
+- **Last edited:** 2026-07-15 by Claude (Opus 4.8), with Dan in the loop — face-identity drift correction: new **Face & voice identity** section (Phase B okDemerzel EdgeFace authority, LED-mic anchor, name-tell triple), stale "face DB lives on streamerpi only" gotcha rewritten, pipeline voice-print line ECAPA-TDNN→WeSpeaker, presence/ layout entry expanded. Same session: `intro_face_commit_enabled` + `passive_self_intro_enabled` flipped ON in `data/lt_runtime_toggles.json` (Dan: constant face↔voice linking for new speakers).
+- **Verified against code on:** 2026-07-15 (face-identity sections only — `presence/{anchor,identity_commit,face_thresholds,face_shadow}.py`, `conversation/introductions.py`, `main.py` co-sample doorway, `persistence/runtime_toggles.py`, live `data/lt_runtime_toggles.json`). Prior full pass: 2026-06-07 (`main`; vision-freshness Group C — **averted-gaze guard** `f78731b` + self-ref detector gap `4ae4c75` + **visual-question grounding** block-on-fresh & raw injection `7b67a44` + **LT-OS frame-source** `98e8c15`; all deployed and **live-validated in front of Timmy**). Prior: 2026-06-06 (`main`; proactive-speech **barge-in guard** added — `capture.user_speaking`/`last_voice_ts` + `PROACTIVE_USER_SPEECH_GRACE_SEC`, supervisor issue #1, deployed live, live in-frame test pending). Prior: 2026-06-03 (`main`; weighted-RRF + coreference `d2af1e1`, proactive-speech + LT-OS toggle `696a961`, extraction queue/re-enqueue `31ed259`; vision localized scene-gate + speech-onset capture). 2026-05-30 (HEAD `5b435d3`).
 - **Spawned this primer:** session 2026-05-29/30 (conv-tier memory refresh + Booth Display button + primer creation).
 - **Next refresh expected:** when any item in the "Refresh trigger checklist" above fires. Do **not** wait for a calendar interval — drift in this file directly mis-leads future sessions.
