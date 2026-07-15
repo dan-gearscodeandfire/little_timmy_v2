@@ -33,8 +33,9 @@ def recognize_frame(jpeg: bytes, led_xy=None, detect_led: bool = False):
     prediction list if no recognized face. detected_face_count is the number of
     DETECTED+alignable faces in the frame (recognized or not) — the input to the
     "sole face == speaker" rule; None if the frame failed to decode. sole_crop is
-    the aligned 112x112 RGB crop when EXACTLY one face was detected (the
-    unambiguous speaker, for Phase B co-sampling), else None. anchored_pick is
+    an (aligned 112x112 RGB crop, frontal_ratio) pair when EXACTLY one face was
+    detected (the unambiguous speaker, for Phase B co-sampling), else None —
+    the ratio is the frontality-gate shadow signal. anchored_pick is
     the LED-mic anchor selection when ``led_xy`` is given or ``detect_led``
     found one: {"crop", "bbox", "led_xy", "cv_led", "name"} for the face
     directly above the lit LED (presence/anchor.pick_anchored_face, abstain on
@@ -52,12 +53,15 @@ def recognize_frame(jpeg: bytes, led_xy=None, detect_led: bool = False):
     fi = get_shared_identifier()
     crops = aligned_crops(frame)
     preds = []
-    for crop, bbox in crops:
+    for crop, bbox, _frontal in crops:
         p = fi.identify_crop(crop, bbox)
         if p is not None:
             preds.append(p)
     h, w = frame.shape[:2]
-    sole_crop = crops[0][0] if len(crops) == 1 else None
+    # Enroll-bound crops carry their frontality ratio (shadow mode, Dan
+    # 2026-07-15): sole_crop is (crop, frontal); anchored_pick gains "frontal".
+    # Recognition above is NOT gated — identify_crop sees every aligned face.
+    sole_crop = (crops[0][0], crops[0][2]) if len(crops) == 1 else None
     cv_led = False
     # Faceless-frame guard (review 7-07): an anchor pick needs a face, so the
     # LED mask on a frame with zero alignable faces is pure waste — skip it.
@@ -68,12 +72,13 @@ def recognize_frame(jpeg: bytes, led_xy=None, detect_led: bool = False):
     anchored_pick = None
     if led_xy is not None and crops:
         from presence.anchor import pick_anchored_face
-        idx = pick_anchored_face([bbox for _, bbox in crops], led_xy, (w, h))
+        idx = pick_anchored_face([bbox for _, bbox, _f in crops], led_xy, (w, h))
         if idx is not None:
             a_bbox = crops[idx][1]
             a_name = next((p.user_id for p in preds if p.bbox == a_bbox), None)
             anchored_pick = {"crop": crops[idx][0], "bbox": a_bbox,
-                             "led_xy": led_xy, "cv_led": cv_led, "name": a_name}
+                             "led_xy": led_xy, "cv_led": cv_led, "name": a_name,
+                             "frontal": crops[idx][2]}
     return preds, (w, h), len(crops), sole_crop, anchored_pick
 
 
@@ -133,6 +138,7 @@ def _recognize_many(jpegs: list, led_xy=None, detect_led: bool = False,
     size = None
     detected = 0
     sole_crops = []
+    sole_frontals = []
     anchored_picks = []
     for jpeg in jpegs:
         preds, sz, n, sole, anchored = recognize_frame(
@@ -142,7 +148,8 @@ def _recognize_many(jpegs: list, led_xy=None, detect_led: bool = False,
         if n is not None:
             detected = max(detected, n)
         if sole is not None:
-            sole_crops.append(sole)
+            sole_crops.append(sole[0])
+            sole_frontals.append(sole[1])
         if anchored is not None:
             anchored_picks.append(anchored)
         for p in preds:
@@ -152,11 +159,24 @@ def _recognize_many(jpegs: list, led_xy=None, detect_led: bool = False,
     # Only surface co-sample crops when the WHOLE grab was unambiguously one
     # face (detected == 1). If any frame caught a second face, drop them all —
     # we won't risk co-sampling the wrong person. Multiple frames of a lone
-    # speaker yield several crops (pose diversity for enrollment).
+    # speaker yield several crops (sample diversity for enrollment — expression/
+    # lighting spread, NOT pose: enroll is frontal-only, Dan 2026-07-15).
     if detected != 1:
         sole_crops = []
+        sole_frontals = []
     anchored_crops, anchored_name = _resolve_anchored(
         anchored_picks, size, publish_cv=publish_cv)
+    # Frontality-gate SHADOW log (Dan 2026-07-15): report the yaw-proxy ratio
+    # of every enroll-bound crop this grab, but filter nothing yet — calibrate
+    # FRONTAL_MAX_RATIO from these lines on real booth frames, then flip the
+    # gate to enforcing. One line per turn-grab with crops; the 2s anchor poll
+    # (poll_anchor_frame) buffers no crops and stays silent.
+    if sole_crops or anchored_crops:
+        from presence.face_align import FRONTAL_MAX_RATIO
+        a_frontals = [p["frontal"] for p in anchored_picks] if anchored_crops else []
+        log.info("[FRONTAL-SHADOW] sole=%s anchored=%s (would-gate>%s)",
+                 [round(f, 2) for f in sole_frontals],
+                 [round(f, 2) for f in a_frontals], FRONTAL_MAX_RATIO)
     return (tuple(best.values()), size, detected, sole_crops,
             anchored_crops, anchored_name)
 

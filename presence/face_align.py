@@ -39,6 +39,29 @@ ARCFACE_REF_5PT = np.array([
 # Measured in the ORIGINAL crop's pixel space (inter-ocular distance).
 MIN_INTEROCULAR_PX = 12.0
 
+# Frontality ceiling (yaw proxy) — SHADOW MODE (Dan 2026-07-15: enroll crops
+# are frontal-only; frontality gate > pose diversity). Currently compute-and-
+# log only ([FRONTAL-SHADOW] in face_recognize) so the threshold can be
+# calibrated on real booth frames before it filters anything. 0 = dead-on;
+# ~0.35 ≈ moderate yaw. Recognition-path crops are NEVER gated by this —
+# it applies (once enforcing) to enroll-bound sole/anchored crops only.
+FRONTAL_MAX_RATIO = 0.35
+
+
+def frontal_ratio(landmarks5: np.ndarray) -> float:
+    """Yaw proxy from the 5-point set: nose x-offset from the eye midpoint,
+    normalized by inter-ocular distance (original crop pixel space). Lower is
+    more frontal. Returns inf on degenerate geometry — callers should already
+    have passed :func:`landmarks_ok`."""
+    lm = np.asarray(landmarks5, dtype=np.float32)
+    if lm.shape != (5, 2) or not np.isfinite(lm).all():
+        return float("inf")
+    inter_ocular = float(np.linalg.norm(lm[0] - lm[1]))
+    if inter_ocular <= 0.0:
+        return float("inf")
+    mid_x = (lm[0][0] + lm[1][0]) / 2.0
+    return abs(float(lm[2][0]) - mid_x) / inter_ocular
+
 
 def landmarks_ok(landmarks5: np.ndarray) -> bool:
     """True if the 5-point set is geometrically plausible for alignment.

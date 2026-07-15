@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from presence.face_align import align_face, landmarks_ok
+from presence.face_align import align_face, frontal_ratio, landmarks_ok
 
 log = logging.getLogger(__name__)
 
@@ -86,10 +86,13 @@ def align_one(frame_bgr: np.ndarray, box, lm):
 
 
 def aligned_crops(frame_bgr: np.ndarray):
-    """Detect + align every face -> [(aligned_rgb_112, bbox_xyxy), ...].
+    """Detect + align every face -> [(aligned_rgb_112, bbox_xyxy, frontal), ...].
 
     bbox_xyxy is (x0,y0,x1,y1) in original-frame pixels (for FacePrediction).
-    Faces with degenerate landmarks are skipped (landmark-quality reject)."""
+    frontal is the yaw-proxy ratio from :func:`face_align.frontal_ratio` (lower
+    = more frontal), computed pre-alignment while the landmarks still exist —
+    the frontality-gate shadow signal (Dan 2026-07-15). Faces with degenerate
+    landmarks are skipped (landmark-quality reject)."""
     out = []
     for box, lm in detect_faces(frame_bgr):
         aligned = align_one(frame_bgr, box, lm)
@@ -97,5 +100,5 @@ def aligned_crops(frame_bgr: np.ndarray):
             continue
         x, y, bw, bh = box
         bbox_xyxy = (int(x), int(y), int(x + bw), int(y + bh))
-        out.append((aligned, bbox_xyxy))
+        out.append((aligned, bbox_xyxy, frontal_ratio(lm)))
     return out

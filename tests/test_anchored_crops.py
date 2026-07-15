@@ -51,7 +51,9 @@ def _fake_frames(frames_spec, names=None):
         crops = frames_spec[jpeg]
         preds = []
         size = (640, 480)
-        sole = crops[0][0] if len(crops) == 1 else None
+        # Mirror the live contract: sole is (crop, frontal_ratio); anchored
+        # carries a "frontal" key (frontality shadow, 2026-07-15).
+        sole = (crops[0][0], 0.0) if len(crops) == 1 else None
         anchored = None
         if led_xy is not None and crops:
             from presence.anchor import pick_anchored_face
@@ -59,7 +61,8 @@ def _fake_frames(frames_spec, names=None):
             if idx is not None:
                 anchored = {"crop": crops[idx][0], "bbox": crops[idx][1],
                             "led_xy": led_xy, "cv_led": False,
-                            "name": (names or {}).get(jpeg)}
+                            "name": (names or {}).get(jpeg),
+                            "frontal": 0.0}
         return preds, size, len(crops), sole, anchored
     return fake
 

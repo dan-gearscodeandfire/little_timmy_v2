@@ -642,9 +642,10 @@ class Orchestrator:
         """Async generator over streamerpi's SSE /face_db/enroll/stream.
 
         Yields (event_type, payload) tuples — 'started' | 'progress' | 'complete'
-        | 'error' — so FaceEnroller can pace pose cues in real time and abort if
-        the person leaves. Fixed enrollment (/face_db/enroll) stays the voice-
-        triggered path; this streaming variant is for interactive auto-enroll."""
+        | 'error' — so FaceEnroller can track capture progress and abort if the
+        person leaves. Fixed enrollment (/face_db/enroll) stays the voice-
+        triggered path; this streaming variant is for interactive auto-enroll.
+        Capture is frontal hold-still only (pose-cue coaching retired 7-15)."""
         payload = {"name": name, "count": count, "interval_s": interval_s, "mode": mode}
         timeout = httpx.Timeout(60.0, connect=5.0)
         async with httpx.AsyncClient(verify=False, timeout=timeout) as client:

@@ -36,6 +36,9 @@ def test_aligned_crops_shape():
     frame = cv2.imread(str(SCENE))
     crops = fd.aligned_crops(frame)
     assert len(crops) >= 1
-    aligned, bbox = crops[0]
+    aligned, bbox, frontal = crops[0]
     assert aligned.shape == (INPUT_SIZE, INPUT_SIZE, 3)
     assert len(bbox) == 4 and bbox[2] > bbox[0] and bbox[3] > bbox[1]
+    # Frontality shadow signal (Dan 2026-07-15): a finite non-negative yaw
+    # proxy must ride along with every alignable crop.
+    assert frontal >= 0.0 and np.isfinite(frontal)

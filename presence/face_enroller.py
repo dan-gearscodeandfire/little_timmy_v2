@@ -1,6 +1,11 @@
 """Interactive auto-enrollment FSM — LT notices a genuinely new person who is
-talking to him, asks consent + name, guides a head-pose capture, and verifies
-the face now recognises before announcing.
+talking to him, asks consent + name, runs a frontal hold-still capture, and
+verifies the face now recognises before announcing.
+
+Capture is FRONTAL-ONLY (Dan, 2026-07-15): no "turn your head left/right"
+pose coaching. Booth UX + pose-consistent prototypes — the recognition path
+(YuNet detection + ArcFace alignment) is frontal-biased anyway, so profile
+prototypes buy flap, not recall.
 
 This is the dialog/orchestration layer that sits on top of the read-only
 discriminator in `new_face_trigger.py`. The trigger answers the hard question
@@ -129,8 +134,10 @@ class EnrollerConfig:
     response_timeout_s: float = _f("TIMMY_AE_RESPONSE_TIMEOUT_S", 45.0)
     # After a decline / failure / completion, suppress any new offer this long.
     cooldown_s: float = _f("TIMMY_AE_OFFER_COOLDOWN_S", 90.0)
-    # Capture parameters handed to /face_db/enroll/stream.
-    capture_count: int = _i("TIMMY_AE_CAPTURE_COUNT", 24)  # ~5 frames/zone over frontal+L/R/U/D
+    # Capture parameters handed to /face_db/enroll/stream. Frontal-only
+    # (Dan 2026-07-15): 12 hold-still frames (~8s), matching the ≤12
+    # prototype cap — was 24 sized for the retired frontal+L/R/U/D zones.
+    capture_count: int = _i("TIMMY_AE_CAPTURE_COUNT", 12)
     capture_interval_s: float = _f("TIMMY_AE_CAPTURE_INTERVAL_S", 0.7)
     # Verify step: poll /faces this many times looking for the new name.
     verify_polls: int = _i("TIMMY_AE_VERIFY_POLLS", 8)
@@ -402,8 +409,8 @@ class FaceEnroller:
                 name = self._pending_name
                 log.info("[AUTOENROLL] name confirmed: %s -> capture", name)
                 self.state = State.ENROLLING
-                # Capture is long (~15s) and paces poses; run it off the turn so
-                # this turn can release the lock, which the capture task re-takes.
+                # Capture is long (~8s of hold-still frames); run it off the turn
+                # so this turn can release the lock, which the capture task re-takes.
                 self._capture_task = asyncio.create_task(self._run_capture(name))
                 return EnrollOutcome(handled=True)
             if verdict == "no":
@@ -467,33 +474,16 @@ class FaceEnroller:
             self._reset(cooldown=True)
             self._turn_lock.release()
 
-    # Pose cues spread across the capture so head movement yields distinct
-    # prototypes (the multi-prototype DB clusters by angle -> min-distance match
-    # kills the recognition flap). Slow movement only — fast motion blurs frames
-    # the Pi skips. (fraction-of-count, line).
-    _POSE_CUES = (
-        (0.20, "Now turn your head slowly to the left."),
-        (0.40, "And slowly to the right."),
-        (0.60, "Now tip your chin up a little."),
-        (0.80, "And down, like you're looking just below me."),
-    )
-
     async def _drive_enroll(self, name: str) -> bool:
-        """Run the SSE enroll stream, pacing left/right/up/down pose cues off the
-        progress events. Returns True if the Pi reported saved."""
+        """Run the SSE enroll stream to completion (frontal hold-still capture —
+        the pose-cue pacing is retired, Dan 2026-07-15). Returns True if the
+        Pi reported saved."""
         saved = False
-        count = max(1, self.cfg.capture_count)
-        idx = 0
         try:
             async for evt, payload in self._enroll_stream(
                 name, self.cfg.capture_count, self.cfg.capture_interval_s, "add"
             ):
-                if evt == "progress":
-                    captured = int(payload.get("captured", 0))
-                    while idx < len(self._POSE_CUES) and captured >= self._POSE_CUES[idx][0] * count:
-                        await self._safe_speak(self._POSE_CUES[idx][1])
-                        idx += 1
-                elif evt == "complete":
+                if evt == "complete":
                     saved = bool(payload.get("saved"))
                 elif evt == "error":
                     log.warning("[AUTOENROLL] enroll error: %s", payload.get("error"))
@@ -563,8 +553,8 @@ class FaceEnroller:
             log.exception("[AUTOENROLL] speak failed")
             return None
         # Record the fixed line in conversation history so the LLM knows it
-        # said it (theme B — the consent ask / pose cues otherwise never reach
-        # hot_turns and the model contradicts its own enroll requests). The
+        # said it (theme B — the consent ask / capture lines otherwise never
+        # reach hot_turns and the model contradicts its own enroll requests). The
         # _safe_say path already records via ConversationTurn.say().
         if self._record_action is not None:
             try:
@@ -712,7 +702,11 @@ def _run_selftest() -> int:
               any(n == "sarah" and m["source"] == "auto" for n, m in h.enrolled))
         check("announce spoken", any("nice to meet you" in s.lower() for s in h.said))
         check("returned to IDLE", e.state == State.IDLE)
-        check("pose cues spoken", any("left" in s.lower() for s in h.spoke))
+        # Frontal-only capture (Dan 2026-07-15): the retired left/right/up/down
+        # pose coaching must never come back.
+        check("no pose cues spoken",
+              not any("turn your head" in s.lower() or "chin up" in s.lower()
+                      for s in h.spoke))
 
     async def scenario_decline():
         print("Scenario B: stranger declines -> cooldown, no enroll")

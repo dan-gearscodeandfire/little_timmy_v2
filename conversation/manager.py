@@ -176,12 +176,12 @@ class ConversationManager:
         self._enforce_hard_ceiling()
 
     async def add_system_action_turn(self, text: str):
-        """Record a SYSTEM-initiated spoken action (enroll consent ask, pose
-        cue, capture prompt) into history as an assistant turn, so the LLM's
-        next-turn context reflects what Timmy actually said/did.
+        """Record a SYSTEM-initiated spoken action (enroll consent ask, capture
+        prompt) into history as an assistant turn, so the LLM's next-turn
+        context reflects what Timmy actually said/did.
 
         Fixed-TTS lines spoken outside the normal reply path (e.g. the enroll
-        FSM's "turn your head to the left") otherwise never enter `hot_turns`,
+        FSM's "hold still and look right at me") otherwise never enter `hot_turns`,
         so the model has no record of issuing them and confabulates a denial
         ("I did not ask you to move your head"). Structurally identical to an
         assistant turn — this is a named seam so call sites read clearly and so

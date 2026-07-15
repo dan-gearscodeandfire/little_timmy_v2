@@ -14,8 +14,13 @@ Usage:
     python3 enroll_face_remote.py --list
     python3 enroll_face_remote.py --delete Dan
 
-Stand in front of the camera and slowly turn your head left/right and
-tilt up/down during capture for diverse angle coverage.
+Stand in front of the camera and look straight at it, holding still for the
+capture. Enrollment is frontal-only (Dan 2026-07-15) — no head-turning; a
+pose-consistent prototype set beats angle coverage.
+
+NOTE: this drives the LEGACY Pi SFace gallery, which stopped feeding
+recognition 2026-07-01 (authority = okDemerzel EdgeFace). Kept for gallery
+maintenance (--list/--delete) only.
 """
 import argparse
 import json
@@ -79,7 +84,7 @@ def cmd_delete(name: str) -> int:
 def cmd_enroll(name: str, count: int, interval: float) -> int:
     print(f"\n=== Enrolling '{name}' on streamerpi ===")
     print(f"{count} samples at {interval}s intervals (~{count * interval:.0f}s total)")
-    print("Stand in front of the camera and slowly turn your head left/right.")
+    print("Stand in front of the camera, look straight at it, and hold still.")
     print("(Streamerpi tracking thread will pull samples from its live buffer.)\n")
 
     timeout_s = count * interval + 15
