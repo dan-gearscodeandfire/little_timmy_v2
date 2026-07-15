@@ -64,8 +64,10 @@
 
   /* full-screen FX: scanlines + red vignette */
   .fx { position: fixed; inset: 0; pointer-events: none; z-index: 55; }
-  .fx::before { content: ''; position: absolute; inset: 0;
-    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(40,0,0,0.18) 2px 3px); }
+  /* scanlines live INSIDE .stage (directly on the feed, below reticle/telemetry text) for readability;
+     only the red vignette stays on the top .fx layer. Relocated out of .fx::before 2026-07-14. */
+  .scanlines { position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(78,16,16,0.42) 2px 4px); }
   .fx::after { content: ''; position: absolute; inset: 0;
     background: radial-gradient(130% 105% at 50% 48%, transparent 64%, rgba(0,0,0,0.66) 100%); }
 
@@ -419,6 +421,7 @@
   </div>
   <div class="stage">
     <div id="feed"></div>
+    <div class="scanlines"></div>
 
     <!-- contrast scrim (above video, below text overlays) -->
     <div class="scrim"></div>
