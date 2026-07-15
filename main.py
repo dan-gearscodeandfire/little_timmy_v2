@@ -1718,6 +1718,33 @@ class Orchestrator:
                     async def _delayed_recapture():
                         # Let the look-at pan land before grabbing a fresh frame.
                         await asyncio.sleep(config.VISION_RECAPTURE_DELAY_S)
+                        # Never contend with the in-flight turn (2026-07-15
+                        # double-VLM diagnosis): trigger() bypasses the poll
+                        # pause, so a recapture here ran concurrently with the
+                        # reply's generation+TTS and both halved. Wait for the
+                        # turn to release the pause; past the cap, skip -- the
+                        # next visual question's block-on-fresh captures anyway.
+                        waited = 0.0
+                        while (self.vision.is_polling_paused
+                                and waited < config.VISION_RECAPTURE_MAX_WAIT_S):
+                            await asyncio.sleep(0.25)
+                            waited += 0.25
+                        if self.vision.is_polling_paused:
+                            log.info(
+                                "[VISION] recapture skipped (turns still "
+                                "holding the GPU after %.1fs)", waited)
+                            return
+                        # Detection-not-ID gate (proximity-gate idiom): the
+                        # recapture exists to catch the subject once the pan
+                        # lands -- if the Pi still sees no face, the VLM would
+                        # burn GPU on another empty frame. Fail open (None =
+                        # /faces unreachable) to preserve the C6 behavior.
+                        face_now = await self.vision.face_currently_visible()
+                        if face_now is False:
+                            log.info(
+                                "[VISION] recapture skipped (no face visible "
+                                "after look-at pan)")
+                            return
                         await self.vision.trigger_capture("visual_question_recapture")
                     asyncio.create_task(_delayed_recapture())
 

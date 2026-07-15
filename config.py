@@ -432,6 +432,13 @@ VISION_SCENE_ILLUM_INVARIANT = os.getenv("TIMMY_SCENE_ILLUM_INVARIANT", "false")
 VISION_AVERTED_GAZE_GUARD = os.getenv("TIMMY_VISION_AVERTED_GAZE_GUARD", "true").lower() == "true"
 # Delay before the background recapture so the look-at pan has time to land.
 VISION_RECAPTURE_DELAY_S = float(os.getenv("TIMMY_VISION_RECAPTURE_DELAY_S", "0.6"))
+# The recapture used to fire mid-turn: trigger() bypasses the poll pause, so
+# the VLM ran concurrently with the reply's conversation-tier generation and
+# both halved (2026-07-15 double-VLM diagnosis; cf. the 6-23 cross-process
+# bench). Now the recapture waits for the turn to release the poll pause, up
+# to this cap -- past it, skip entirely (the next visual question's
+# block-on-fresh captures anyway).
+VISION_RECAPTURE_MAX_WAIT_S = float(os.getenv("TIMMY_VISION_RECAPTURE_MAX_WAIT_S", "10.0"))
 # Scene-grounding guard: a tail-of-context directive forbidding the persona from
 # INVENTING people in the room (e.g. "the guest who just walked in" — 2026-06-16,
 # no such guest; face/vision/presence all showed only Dan). A negative constraint

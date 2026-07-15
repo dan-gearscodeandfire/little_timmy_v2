@@ -145,6 +145,23 @@ class VisionContext:
         """Resume the periodic VLM poll loop."""
         self._capture.resume()
 
+    @property
+    def is_polling_paused(self) -> bool:
+        """Whether a turn currently holds the poll pause (GPU-quiet window)."""
+        return self._capture.is_paused
+
+    async def face_currently_visible(self) -> bool | None:
+        """Cheap live face-presence check from streamerpi's /faces JSON
+        (detection-not-ID, same idiom as the proximity gate -- no frame
+        transfer, no VLM). Returns None when the remote face state is
+        unavailable so callers can fail open."""
+        if not self._face_remote_ready:
+            return None
+        state = await self._face_remote.fetch_full()
+        if state is None:
+            return None
+        return bool(state["faces"])
+
     def set_auto_poll(self, enabled: bool):
         """User-facing auto-poll toggle (orthogonal to pause/resume).
 
