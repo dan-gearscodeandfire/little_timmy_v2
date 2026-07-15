@@ -38,6 +38,11 @@ STATUS_URL = "https://192.168.1.110:8080/behavior/status"
 # Timing thresholds
 IDLE_AFTER_SILENCE = 45.0    # seconds of no speech → idle
 SCAN_AFTER_IDLE = 60.0       # seconds of idle → occasional scan
+# B5/B6 fix (2026-07-15): a Pi face fix older than this is not "tracking a
+# face" for gating purposes, even if face_visible is still True (the Pi flips
+# that flag 5s AFTER the last detection, and a phantom once pinned it True at
+# an empty rail). Pi exports face_fix_age_s on its own clock — no NTP skew.
+PI_FACE_FIX_FRESH_S = 6.0
 # Was 15.0 — too aggressive. 2026-05-11 session: scan kicked in mid-turn
 # while Dan was actively talking but his utterance got mis-IDed as
 # unknown_1 (speaker distance 0.45 vs 0.30 threshold), so the supervisor
@@ -153,8 +158,19 @@ class BehaviorSupervisor:
     async def on_tts_end(self):
         """Timmy finished speaking."""
         self._last_tts_end_time = time.time()
-        # Stay in track for a bit — conversation may continue
-        await self._send_command("track", priority="high", timeout_ms=15000)
+        # Stay in track for a bit — conversation may continue.
+        # B5 fix (2026-07-15): this was the last UNGATED track send. Landing a
+        # high-priority `track` on a Pi that has NO face (e.g. mid face_search
+        # after the speaker stepped away) stamped a fresh 15s window over the
+        # Pi's own recovery and helped park the head at a rail staring at
+        # nothing. Only reaffirm track onto a Pi that actually holds a fresh
+        # face; otherwise leave the Pi's engage-grace → face_search logic to
+        # do its job.
+        if await self._pi_tracking_face():
+            await self._send_command("track", priority="high", timeout_ms=15000)
+        else:
+            log.info("[SUPERVISOR] TTS end but Pi has no fresh face — "
+                     "not reaffirming track (Pi recovery owns it)")
 
     async def on_conversation_idle(self):
         """No speech for a while — wind down body behavior."""
@@ -328,6 +344,20 @@ class BehaviorSupervisor:
         we defer to it. Fail-open to False so a Pi hiccup never freezes the body
         into a permanent track. (Dan 2026-07-13: the supervisor scanned off a
         present, tracked subject because the VLM had dropped them at working
-        distance while the Pi still had the lock.)"""
+        distance while the Pi still had the lock.)
+
+        B5/B6 fix (2026-07-15): face_visible alone is not enough — it is an FSM
+        artifact that can run seconds stale (the Pi only flips it 5s after the
+        last detection) and a phantom commit once set it with nobody there,
+        which made this gate reaffirm `track` onto an empty rail and park the
+        head 14s. When the Pi exports face_fix_age_s (Pi-clock age of the last
+        COMMITTED face fix, added same day) we additionally require the fix to
+        be FRESH. Older Pi payloads without the field keep the bare-flag
+        behavior."""
         st = await self.get_pi_status()
-        return bool(st and st.get("face_visible"))
+        if not (st and st.get("face_visible")):
+            return False
+        age = st.get("face_fix_age_s")
+        if age is None:
+            return True  # old Pi payload — bare-flag behavior
+        return age <= PI_FACE_FIX_FRESH_S
