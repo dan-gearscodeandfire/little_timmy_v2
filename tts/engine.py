@@ -1,6 +1,7 @@
 """Piper TTS engine — in-process ONNX with raw PCM streaming to audio output."""
 
 import asyncio
+import re
 import time
 import logging
 from dataclasses import dataclass
@@ -8,6 +9,23 @@ from typing import Callable, Optional
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+
+def _apply_pronunciations(text: str) -> str:
+    """Respell name/word manglings before espeak phonemization.
+
+    Whole-word, case-insensitive substitution from config.TTS_PRONUNCIATIONS.
+    Whole-word (`\\b`) is essential: a bare replace would rewrite "erin" inside
+    "gathering"/"engineering". Fails open (returns text unchanged) so a config
+    glitch can never break synthesis."""
+    try:
+        import config as cfg
+        overrides = getattr(cfg, "TTS_PRONUNCIATIONS", None) or {}
+        for word, say_as in overrides.items():
+            text = re.sub(rf"\b{re.escape(word)}\b", say_as, text, flags=re.IGNORECASE)
+    except Exception as e:
+        log.warning("pronunciation substitution skipped: %s", e)
+    return text
 
 
 @dataclass
@@ -69,6 +87,7 @@ def _synthesize_raw(text: str, model_path: str) -> tuple[np.ndarray, int]:
     from piper.config import SynthesisConfig
     import config as cfg
     voice = _load_voice(model_path)
+    text = _apply_pronunciations(text)
     syn_config = SynthesisConfig(length_scale=cfg.TTS_LENGTH_SCALE)
     chunks = []
     sr = voice.config.sample_rate

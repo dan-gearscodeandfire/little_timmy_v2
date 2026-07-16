@@ -55,6 +55,18 @@ DB_DSN = os.getenv("TIMMY_DB_DSN", "postgresql://gearscodeandfire@localhost/litt
 # --- TTS ---
 TTS_LENGTH_SCALE = 0.6  # speech speed (lower = faster, default 1.0)
 
+# Whole-word pronunciation overrides applied to text just before Piper
+# synthesis. Piper phonemizes via espeak-ng, which mangles some names (live
+# 2026-07-16: "Erin" came out "Karen" twice at the booth). Each key is respelled
+# to a form espeak phonemizes correctly. Matching is WHOLE-WORD and
+# case-insensitive -- whole-word is load-bearing, "erin" is a substring of
+# "gathering"/"engineering" (the same trap that fooled the handoff's fact-CSV
+# query). Applied at synth time, so edits take effect on the next utterance with
+# NO re-render; audibly confirm/tune a new entry once, then leave it.
+TTS_PRONUNCIATIONS = {
+    "Erin": "Airin",
+}
+
 # --- Audio ---
 SAMPLE_RATE = 16000
 CHUNK_FRAMES = 4096  # ~256ms at 16kHz
