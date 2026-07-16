@@ -283,6 +283,39 @@ def test_new_name_matching_existing_voice_is_lookalike(stores):
     assert id_map.id_for("karla") is None
 
 
+def test_explicit_name_tell_forks_past_lookalike(stores):
+    """fork_on_lookalike (Dan 2026-07-15, Open Sauce spec 5): a visitor who
+    SAID and CONFIRMED "my name is X" gets X even when their samples resemble
+    an enrolled Z — the refusal trapped Tushar under a mis-heard name. The
+    resemblance is surfaced (lookalike_of + warning) so the caller can speak
+    the "you look like Z" disclosure."""
+    id_map, voice, face = stores
+    base = _unit(88)
+    commit_identity_stores(
+        "zora", id_map=id_map, face_store=face,
+        face_embeddings=[base, _near(base, seed=6)])
+    res = commit_identity_stores(
+        "zola", id_map=id_map, voice_store=voice, face_store=face,
+        face_embeddings=[_near(base, seed=7)],
+        fork_on_lookalike=True)
+    assert res.status == "ok"
+    assert res.face_committed
+    assert res.lookalike_of == "zora"          # disclosure input
+    assert any(w.startswith("lookalike_fork:zora") for w in res.warnings)
+    # A genuinely NEW identity minted alongside the existing one.
+    assert id_map.id_for("zola") is not None
+    assert id_map.id_for("zola") != id_map.id_for("zora")
+    assert face.path_for("zola").exists()
+    # S3 mismatch guard is untouched: a stranger claiming the EXISTING name
+    # is still refused even with the fork flag.
+    stranger = _unit(99)
+    res2 = commit_identity_stores(
+        "zora", id_map=id_map, face_store=face,
+        face_embeddings=[stranger],
+        fork_on_lookalike=True)
+    assert res2.status == "mismatch"
+
+
 def test_genuinely_new_person_not_lookalike(stores):
     id_map, voice, face = stores
     commit_identity_stores(

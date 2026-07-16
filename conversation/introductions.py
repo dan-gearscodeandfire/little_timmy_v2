@@ -209,8 +209,12 @@ class Introductions:
             if committer is None:
                 from presence.identity_commit import commit_identity
                 committer = commit_identity
+            # The visitor just spoke AND confirmed this name — an explicit
+            # name-tell forks past the lookalike refusal (Dan 2026-07-15,
+            # spec 5) with a spoken resemblance disclosure below.
             res = await committer(name, face_crops=crops,
-                                  speaker_identifier=self._spk)
+                                  speaker_identifier=self._spk,
+                                  fork_on_lookalike=True)
             if getattr(res, "face_committed", False):
                 self._cosample.clear_speaker(temp_id)
                 self._cosample.clear_speaker(name)
@@ -233,6 +237,18 @@ class Introductions:
                 log.info("[INTRO] name-tell triple: %s face committed "
                          "(id=%s, %d crops)", name,
                          getattr(res, "speaker_id", None), len(crops))
+                lk = getattr(res, "lookalike_of", None)
+                if lk:
+                    # Fork-allowed lookalike: disclose the resemblance so a
+                    # genuine misID can be corrected on the spot.
+                    disclose = (
+                        f'You just enrolled "{name.title()}", who strongly '
+                        f'resembles "{lk.title()}" whom you already know. '
+                        f'Briefly tell them: you look a lot like '
+                        f'{lk.title()}, but I\'ll remember you as '
+                        f'{name.title()}. One short sentence, in-character.')
+                    result = await self._turn.say(disclose)
+                    log.info("[TIMMY] %s (lookalike disclosure)", result.text)
             else:
                 log.info("[INTRO] face commit declined for %s (status=%s) — "
                          "voice-only promotion stands", name,

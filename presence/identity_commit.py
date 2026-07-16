@@ -238,6 +238,7 @@ def commit_identity_stores(
     min_face: int = MIN_FACE_ENROLL_SAMPLES,
     on_voice=None,
     on_face=None,
+    fork_on_lookalike: bool = False,
 ) -> CommitResult:
     """Pure-store core: canonicalize, guard, allocate id, persist prototypes.
 
@@ -325,13 +326,28 @@ def commit_identity_stores(
             retired=frozenset(id_map.retired())) \
             if (scan_v or scan_f) else None
         if hit is not None:
-            res.status = "lookalike"
-            res.lookalike_of = hit[0]
-            res.error = (f"samples for {clean!r} match existing "
-                         f"{hit[0]!r} (d={hit[1]:.3f}); refusing to fork — "
-                         "disambiguate")
-            log.warning("[COMMIT] lookalike: %s", res.error)
-            return res
+            if fork_on_lookalike:
+                # Explicit name-tell (Dan 2026-07-15, Open Sauce spec 5): a
+                # visitor who SAID "my name is X" gets X, even when their
+                # samples resemble an enrolled Z — refusing trapped Tushar
+                # under a mis-heard name with no escape. The caller speaks
+                # the disclosure ("You look like Z, but I'll remember you as
+                # X") via res.lookalike_of. Auto/implicit paths keep the
+                # refusal: this flag is only ever set by a confirmed,
+                # user-spoken name.
+                res.lookalike_of = hit[0]
+                res.warnings.append(f"lookalike_fork:{hit[0]}:d={hit[1]:.3f}")
+                log.info("[COMMIT] lookalike FORK-ALLOWED (explicit "
+                         "name-tell): %r resembles %r (d=%.3f) — committing "
+                         "as new identity", clean, hit[0], hit[1])
+            else:
+                res.status = "lookalike"
+                res.lookalike_of = hit[0]
+                res.error = (f"samples for {clean!r} match existing "
+                             f"{hit[0]!r} (d={hit[1]:.3f}); refusing to fork — "
+                             "disambiguate")
+                log.warning("[COMMIT] lookalike: %s", res.error)
+                return res
 
     # (1) FK precondition — allocate/confirm the shared speaker_id. Idempotent;
     # the live wrapper has already upserted the Postgres row against this id.
@@ -405,9 +421,14 @@ async def commit_identity(
     augment: bool | None = None,
     require_match_for_known: bool = True,
     db_sync: bool = True,
+    fork_on_lookalike: bool = False,
 ) -> CommitResult:
     """Live dual-modality commit: embed crops, upsert the Postgres row FIRST,
     then persist voice + face and refresh the shared in-memory identifiers.
+
+    ``fork_on_lookalike``: commit a lookalike as a NEW identity instead of
+    refusing — for EXPLICIT confirmed name-tells only (Dan 2026-07-15); the
+    caller speaks the "you look like Z" disclosure via res.lookalike_of.
 
     ``face_crops`` are aligned 112x112 RGB crops (embedded here via the shared
     EdgeFace encoder); pass ``face_embeddings`` instead to skip embedding.
@@ -490,13 +511,17 @@ async def commit_identity(
             face_store=face_store, face_thr=accept_threshold(),
             retired=frozenset(id_map.retired())) \
             if (scan_v or scan_f) else None
-        if hit is not None:
+        if hit is not None and not fork_on_lookalike:
             res = CommitResult(name=clean, status="lookalike",
                                lookalike_of=hit[0])
             res.error = (f"samples for {clean!r} match existing "
                          f"{hit[0]!r} (d={hit[1]:.3f}); refusing to fork")
             log.warning("[COMMIT] lookalike (pre-alloc): %s", res.error)
             return res
+        if hit is not None:
+            log.info("[COMMIT] lookalike (pre-alloc) FORK-ALLOWED: %r "
+                     "resembles %r (d=%.3f) — explicit name-tell proceeds",
+                     clean, hit[0], hit[1])
 
     # S2 (1): FK precondition BEFORE any biometric write — allocate the id and
     # upsert the Postgres speakers row so a fact extracted mid-commit can't
@@ -527,6 +552,7 @@ async def commit_identity(
         face_match_thr=accept_threshold(),
         on_voice=_refresh_voice,
         on_face=_refresh_face,
+        fork_on_lookalike=fork_on_lookalike,
     )
     res.db_synced = db_synced
     log.info("[COMMIT] %s -> id=%s status=%s voice=%s(+%d) face=%s(+%d) db=%s%s",

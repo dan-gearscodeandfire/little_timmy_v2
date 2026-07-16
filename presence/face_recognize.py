@@ -166,17 +166,30 @@ def _recognize_many(jpegs: list, led_xy=None, detect_led: bool = False,
         sole_frontals = []
     anchored_crops, anchored_name = _resolve_anchored(
         anchored_picks, size, publish_cv=publish_cv)
-    # Frontality-gate SHADOW log (Dan 2026-07-15): report the yaw-proxy ratio
-    # of every enroll-bound crop this grab, but filter nothing yet — calibrate
-    # FRONTAL_MAX_RATIO from these lines on real booth frames, then flip the
-    # gate to enforcing. One line per turn-grab with crops; the 2s anchor poll
-    # (poll_anchor_frame) buffers no crops and stays silent.
+    # Frontality gate — ENFORCING (Dan 2026-07-15: "only a frontal face view
+    # should be mapped", keep-watching flavor). Shadowed 7-15 morning
+    # (Tushar session read 0.05-0.31, all under the 0.35 gate), flipped to
+    # enforcement the same evening for the Open Sauce enroll flow: an
+    # off-angle enroll-bound crop is DROPPED here so only frontal looks ever
+    # reach the co-sample buffer / commit — the buffer keeps accumulating on
+    # later grabs, so an off-angle first look just means the face binds a few
+    # turns later (never a poor print, never an abandon). The ANCHOR publish
+    # above is deliberately ungated: targeting/dialog-gating must keep
+    # tracking the mic-holder at any pose; only what gets SAVED is frontal.
     if sole_crops or anchored_crops:
         from presence.face_align import FRONTAL_MAX_RATIO
         a_frontals = [p["frontal"] for p in anchored_picks] if anchored_crops else []
-        log.info("[FRONTAL-SHADOW] sole=%s anchored=%s (would-gate>%s)",
+        kept_sole = [c for c, f in zip(sole_crops, sole_frontals)
+                     if f <= FRONTAL_MAX_RATIO]
+        kept_anchored = [c for c, f in zip(anchored_crops, a_frontals)
+                         if f <= FRONTAL_MAX_RATIO]
+        log.info("[FRONTAL-GATE] sole=%s anchored=%s (gate>%s) kept %d/%d",
                  [round(f, 2) for f in sole_frontals],
-                 [round(f, 2) for f in a_frontals], FRONTAL_MAX_RATIO)
+                 [round(f, 2) for f in a_frontals], FRONTAL_MAX_RATIO,
+                 len(kept_sole) + len(kept_anchored),
+                 len(sole_crops) + len(anchored_crops))
+        sole_crops = kept_sole
+        anchored_crops = kept_anchored
     return (tuple(best.values()), size, detected, sole_crops,
             anchored_crops, anchored_name)
 

@@ -472,9 +472,17 @@ class Orchestrator:
                 # over sole-face, so an anchored enroll in a CROWD (the exact
                 # scenario the anchor exists for) no longer grabs zero crops.
                 if obs.anchored_face_crops:
+                    # Same binding rule as the co-sample feed (incl. the
+                    # known-but-face-less bootstrap, 2026-07-15 — this
+                    # fallback kept the old unknown_-only guard and refused
+                    # a voice-known visitor's live grab).
                     _n = obs.anchored_face_name
-                    if (_n == speaker_name if _n is not None
-                            else speaker_name.startswith("unknown_")):
+                    if _n is not None:
+                        _ok = (_n == speaker_name)
+                    else:
+                        _ok = (speaker_name.startswith("unknown_")
+                               or not _speaker_has_enrolled_face(speaker_name))
+                    if _ok:
                         face_crops = list(obs.anchored_face_crops)
                 elif obs.sole_face_crops:
                     face_crops = list(obs.sole_face_crops)
@@ -607,6 +615,11 @@ class Orchestrator:
                 voice_embeddings=voice_embs,
                 face_crops=(face_crops or None),
                 speaker_identifier=self.speaker_id_module,
+                # The name was spoken AND confirmed by the visitor — an
+                # explicit name-tell forks past the lookalike refusal (Dan
+                # 2026-07-15, spec 5); the disclosure line below tells them
+                # who they resemble.
+                fork_on_lookalike=True,
             )
         except Exception:
             log.exception("[ENROLL] unified commit failed for %s", name)
@@ -650,8 +663,16 @@ class Orchestrator:
             got.append("voice")
         log.info("[ENROLL] unified %s -> id=%s (%s) status=%s warnings=%s",
                  res.name, res.speaker_id, "+".join(got), res.status, res.warnings)
-        await self._speak_direct(
-            f"Got it — I'll recognize your {' and '.join(got)} now, {disp}.")
+        if res.lookalike_of:
+            # Fork-allowed lookalike (Dan spec 5): disclose the resemblance
+            # so a genuine misID can be corrected on the spot.
+            who = self._display_name(res.lookalike_of)
+            await self._speak_direct(
+                f"You look and sound a lot like {who}, but I'll remember "
+                f"you as {disp}.")
+        else:
+            await self._speak_direct(
+                f"Got it — I'll recognize your {' and '.join(got)} now, {disp}.")
 
     async def _enroll_stream(self, name: str, count: int, interval_s: float, mode: str):
         """Async generator over streamerpi's SSE /face_db/enroll/stream.
