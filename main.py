@@ -1114,7 +1114,15 @@ class Orchestrator:
         # every visitor is a stable unknown, and the name-ask both seizes
         # the turn and feeds assign_name (a store write). The unknown stays
         # un-marked so the ask can still happen post-show.
-        if speaker_result.should_ask_name and _dialogs_ok:
+        # Guard on introductions.awaiting (rig f0b, 2026-07-15): the stable-
+        # unknown threshold can trip on the very turn AFTER a passive
+        # self-intro armed the confirm ("my name is X" on utterance #3 ->
+        # confirm pending; utterance #4's "yes" landed HERE first, spoke a
+        # fresh name-ask over the armed confirm, and the stale confirm then
+        # swallowed the next turn silently). An in-flight name exchange owns
+        # the dialog — don't stomp it with a new ask.
+        if (speaker_result.should_ask_name and _dialogs_ok
+                and not self._introductions.awaiting):
             unknown_info = self.speaker_id_module.get_unknown_for_name_ask(
                 speaker_result.name
             )
