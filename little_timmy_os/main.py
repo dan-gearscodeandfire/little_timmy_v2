@@ -437,6 +437,52 @@ async def memory_fact_delete(fact_id: int, password: str | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+# --- Enrolled Identities ----------------------------------------------------
+# Browsable roster of face/voice enrollments (Dan 2026-07-15): list, RENAME
+# in place (speaker_id preserved; reflected in Timmy's thinking on the next
+# turn — no restart), retire, revive. Same self-contained-SPA + proxy shape
+# as the Memory Inspector; LT (:8893) is the authority.
+
+@app.get("/enrolled", response_class=HTMLResponse)
+async def enrolled_page():
+    """Serve the Enrolled Identities single-page app."""
+    page = _STATIC_DIR / "enrolled.html"
+    if not page.is_file():
+        return HTMLResponse("<h1>enrolled.html missing</h1>", status_code=500)
+    return HTMLResponse(page.read_text(encoding="utf-8"))
+
+
+async def _proxy_identity_post(path: str, payload: dict | None):
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + path,
+                                  json=payload or {})
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/enrolled/list")
+async def enrolled_list():
+    return await _proxy_memory("/api/identity/list", {})
+
+
+@app.post("/api/enrolled/rename")
+async def enrolled_rename(payload: dict | None = None):
+    return await _proxy_identity_post("/api/identity/rename", payload)
+
+
+@app.post("/api/enrolled/retire")
+async def enrolled_retire(payload: dict | None = None):
+    return await _proxy_identity_post("/api/identity/retire", payload)
+
+
+@app.post("/api/enrolled/revive")
+async def enrolled_revive(payload: dict | None = None):
+    return await _proxy_identity_post("/api/identity/revive", payload)
+
+
 @app.get("/api/timmy/metrics")
 async def get_timmy_metrics():
     """Proxy metrics from Little Timmy if it is running."""
@@ -1558,6 +1604,10 @@ header .uptime {
        style="font-family:'Courier New',monospace; font-size:12px; letter-spacing:1px; color:#39c5cf;
               text-decoration:none; border:1px solid #39c5cf; border-radius:4px; padding:5px 11px;
               background:#1f3a3a; white-space:nowrap;">&#129504; MEMORY</a>
+    <a href="/enrolled" title="Enrolled face/voice identities — rename in place (applies live), retire, revive"
+       style="font-family:'Courier New',monospace; font-size:12px; letter-spacing:1px; color:#bc8cff;
+              text-decoration:none; border:1px solid #bc8cff; border-radius:4px; padding:5px 11px;
+              background:#2a1f3a; white-space:nowrap;">&#129333; ENROLLED</a>
     <span class="uptime" id="uptime">Connecting...</span>
   </span>
 </header>

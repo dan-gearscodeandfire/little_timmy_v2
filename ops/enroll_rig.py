@@ -294,7 +294,16 @@ async def run_scenario(mock: Mock, scenario: dict) -> dict:
 
     stop = asyncio.Event()
     msgs: list = []
-    col = asyncio.create_task(drv.ws_collector(stop, msgs))
+
+    async def _resilient_collector():
+        # The plain collector exits when its socket drops (e.g. the restart
+        # durability step) — reconnect until the scenario ends.
+        while not stop.is_set():
+            await drv.ws_collector(stop, msgs)
+            if not stop.is_set():
+                await asyncio.sleep(1.0)
+
+    col = asyncio.create_task(_resilient_collector())
     await asyncio.sleep(1.0)
 
     t_start = time.time()
@@ -304,6 +313,22 @@ async def run_scenario(mock: Mock, scenario: dict) -> dict:
             print(f"\n# {step['note']}")
         if "frame" in step:
             mock.set_frame(step["frame"])
+        if "api" in step:
+            # Mid-scenario API call against :8893 (e.g. a rename) — the
+            # response is printed so asserts can eyeball it in the log.
+            spec = step["api"]
+            path = spec["path"]
+            if spec.get("method", "GET").upper() == "POST":
+                code, body = http_post(f"{API}{path}", spec.get("json") or {})
+            else:
+                code, body = http_get(f"{API}{path}")
+            print(f"  api {path} -> {code}: {body.decode()[:400]}")
+        if "restart" in step:
+            # Durability step: bounce the service (still on the mock — the
+            # drop-in holds) and wait for audio. In-memory state is wiped;
+            # whatever survives is what's actually on disk.
+            print("  [restart] bouncing service (durability check) ...")
+            restart_and_wait(svc_start_ts(), "restart", wait_audio=True)
         if "sleep" in step:
             await asyncio.sleep(float(step["sleep"]))
         if "say" in step:

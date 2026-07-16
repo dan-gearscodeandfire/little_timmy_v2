@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Enrolled · Little Timmy OS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#11161d; --line:#21262d; --line2:#30363d;
+    --txt:#c9d1d9; --muted:#8b949e; --dim:#6e7681;
+    --accent:#e94560; --blue:#58a6ff; --green:#3fb950; --red:#f85149;
+    --orange:#f0883e; --cyan:#39c5cf; --purple:#bc8cff; --yellow:#d29922;
+    --mono:'Courier New',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scrollbar-color:#30363d #0d1117}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);min-height:100vh;
+       font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+
+  header{position:sticky;top:0;z-index:20;background:rgba(22,27,34,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line2);
+    padding:14px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+  header .brand{display:flex;align-items:baseline;gap:12px}
+  header h1{font-family:var(--mono);color:var(--accent);font-size:18px;letter-spacing:2px;font-weight:700}
+  header .sub{font-family:var(--mono);color:var(--dim);font-size:11px;letter-spacing:1px}
+  .back{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--blue);
+    text-decoration:none;border:1px solid var(--line2);border-radius:6px;padding:6px 12px;
+    transition:.15s;white-space:nowrap}
+  .back:hover{background:#1f2a3a;border-color:var(--blue)}
+
+  .stats{display:flex;gap:10px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:20px;padding:5px 12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .chip b{color:var(--txt);font-size:13px}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:22px 24px 60px}
+  .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  label.check{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;
+    color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  label.check input{accent-color:var(--blue);width:15px;height:15px}
+  .count{font-family:var(--mono);font-size:11px;color:var(--dim);margin-left:auto;white-space:nowrap}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{font-family:var(--mono);font-size:10px;letter-spacing:.5px;text-transform:uppercase;
+    color:var(--dim);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2);
+    position:sticky;top:64px;background:var(--bg);z-index:5}
+  tbody tr{border-bottom:1px solid var(--line)}
+  tbody tr:hover{background:#161b22}
+  tbody tr.retired{opacity:.45}
+  td{padding:9px 10px;vertical-align:middle}
+  td.name{font-weight:600;color:#e6edf3;font-family:var(--mono)}
+  td.id{font-family:var(--mono);color:var(--dim);font-size:11px}
+  td.when{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap}
+
+  .badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;
+    padding:2px 7px;border-radius:10px;border:1px solid;display:inline-block;white-space:nowrap}
+  .b-yes{color:var(--green);border-color:#1f3a25;background:rgba(63,185,80,.08)}
+  .b-no{color:var(--dim);border-color:var(--line2);background:none}
+  .b-retired{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.1)}
+  .b-reserved{color:var(--yellow);border-color:#4a3a1f;background:rgba(210,153,34,.08)}
+
+  .act{font-family:var(--mono);font-size:11px;color:var(--blue);background:none;
+    border:1px solid var(--line2);border-radius:6px;padding:4px 9px;cursor:pointer;transition:.12s}
+  .act:hover{background:#1f2a3a;border-color:var(--blue)}
+  .act.danger{color:var(--red)}
+  .act.danger:hover{background:#3a1f22;border-color:var(--red)}
+  .act[disabled]{opacity:.35;cursor:default}
+  td.actions{white-space:nowrap;display:flex;gap:6px}
+
+  .rename-input{background:var(--panel2);border:1px solid var(--blue);border-radius:6px;
+    color:var(--txt);font-family:var(--mono);font-size:13px;padding:4px 8px;width:140px}
+  .rename-input:focus{outline:none;box-shadow:0 0 0 2px rgba(88,166,255,.2)}
+
+  #toast{display:none;position:fixed;bottom:26px;left:50%;transform:translateX(-50%);
+    z-index:99;background:#1f6feb;color:#fff;padding:10px 18px;border-radius:8px;
+    font-family:var(--mono);font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.5);
+    border:1px solid var(--blue);max-width:80vw}
+  #toast.err{background:#6e1620;border-color:var(--red)}
+  .empty{padding:40px;text-align:center;color:var(--dim);font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>ENROLLED</h1>
+    <span class="sub">face &amp; voice identities · rename applies live</span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <a class="back" href="/">&larr; DASHBOARD</a>
+</header>
+
+<div class="wrap">
+  <div class="toolbar">
+    <label class="check"><input type="checkbox" id="showRetired"> show retired</label>
+    <span class="count" id="count"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Name</th><th>ID</th><th>Voice</th><th>Face</th><th>Created</th><th></th><th style="width:220px">Actions</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none">no enrolled identities</div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let DATA=[];
+
+function toast(msg, err=false){
+  const t=$("#toast"); t.textContent=msg; t.className=err?"err":"";
+  t.style.display="block"; clearTimeout(t._h);
+  t._h=setTimeout(()=>t.style.display="none", err?6000:3000);
+}
+
+async function api(path, opts){
+  const r=await fetch(path, opts);
+  let j={}; try{ j=await r.json(); }catch(e){}
+  if(!r.ok || j.ok===false){
+    throw new Error(j.error || (j.status?`refused: ${j.status}`:`HTTP ${r.status}`));
+  }
+  return j;
+}
+
+async function load(){
+  try{
+    const j=await api("/api/enrolled/list");
+    DATA=j.identities||[];
+    render();
+  }catch(e){ toast("load failed: "+e.message, true); }
+}
+
+function badge(on){ return on?'<span class="badge b-yes">yes</span>':'<span class="badge b-no">—</span>'; }
+
+function render(){
+  const showRet=$("#showRetired").checked;
+  const rows=DATA.filter(r=>showRet||!r.retired);
+  $("#rows").innerHTML=rows.map(r=>{
+    const reserved=!!r.reserved;
+    const canEdit=!r.retired && !reserved;
+    return `<tr class="${r.retired?"retired":""}" data-name="${r.name}">
+      <td class="name">${r.name}${reserved?' <span class="badge b-reserved">reserved</span>':''}${r.retired?' <span class="badge b-retired">retired</span>':''}</td>
+      <td class="id">${r.speaker_id??"—"}</td>
+      <td>${badge(r.voice)}</td>
+      <td>${badge(r.face)}</td>
+      <td class="when">${r.created_at?String(r.created_at).slice(0,16).replace("T"," "):"—"}</td>
+      <td></td>
+      <td class="actions">
+        ${canEdit?`<button class="act" onclick="startRename('${r.name}',this)">rename</button>
+        <button class="act danger" onclick="doRetire('${r.name}')">retire</button>`:""}
+        ${r.retired?`<button class="act" onclick="doRevive('${r.name}')">revive</button>`:""}
+      </td></tr>`;
+  }).join("");
+  $("#empty").style.display=rows.length?"none":"block";
+  $("#count").textContent=`${rows.length} shown / ${DATA.length} total`;
+  const v=DATA.filter(r=>r.voice&&!r.retired).length, f=DATA.filter(r=>r.face&&!r.retired).length;
+  $("#stats").innerHTML=`<span class="chip">active <b>${DATA.filter(r=>!r.retired).length}</b></span>
+    <span class="chip">voice <b>${v}</b></span><span class="chip">face <b>${f}</b></span>`;
+}
+
+function startRename(name, btn){
+  const td=btn.closest("tr").querySelector("td.name");
+  td.innerHTML=`<input class="rename-input" value="${name}" id="ri">
+    <button class="act" onclick="commitRename('${name}')">save</button>
+    <button class="act" onclick="render()">cancel</button>`;
+  const inp=$("#ri"); inp.focus(); inp.select();
+  inp.addEventListener("keydown", e=>{
+    if(e.key==="Enter") commitRename(name);
+    if(e.key==="Escape") render();
+  });
+}
+
+async function commitRename(oldName){
+  const newName=($("#ri").value||"").trim().toLowerCase().replace(/\s+/g,"_");
+  if(!newName || newName===oldName){ render(); return; }
+  try{
+    const j=await api("/api/enrolled/rename",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({old:oldName,new:newName})});
+    toast(`renamed ${oldName} → ${newName} (id ${j.speaker_id} kept) — live now`);
+    await load();
+  }catch(e){ toast("rename refused: "+e.message, true); render(); }
+}
+
+async function doRetire(name){
+  if(!confirm(`Retire "${name}"? Biometrics archive to models/trash/ (reversible via revive).`)) return;
+  try{
+    await api("/api/enrolled/retire",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({name})});
+    toast(`retired ${name}`); await load();
+  }catch(e){ toast("retire refused: "+e.message, true); }
+}
+
+async function doRevive(name){
+  try{
+    await api("/api/enrolled/revive",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({name})});
+    toast(`revived ${name}`); await load();
+  }catch(e){ toast("revive refused: "+e.message, true); }
+}
+
+$("#showRetired").addEventListener("change", render);
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

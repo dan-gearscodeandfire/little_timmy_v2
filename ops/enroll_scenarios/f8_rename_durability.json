@@ -1,0 +1,21 @@
+{
+  "persona": "rocky",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Enroll rocky (voice+face)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Rocky. Spelled R, O, C, K, Y.", "expect": "confirm-back Rocky"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] rocky voice+face"},
+
+    {"note": "F8 rename: operator relabels rocky -> rick IN PLACE via the API (what the ENROLLED tab calls). Next turn must recognize RICK -- no restart."},
+    {"api": {"method": "POST", "path": "/api/identity/rename", "json": {"old": "rocky", "new": "rick"}}},
+    {"say": "So do you remember who I am?", "expect": "speaker=rick, reply addresses Rick"},
+
+    {"note": "F8 durability: bounce the service -- the renamed identity must survive from disk (id-map + npy + speakers row)."},
+    {"restart": true},
+    {"say": "Hello again, it is me once more.", "expect": "speaker=rick AFTER restart (durable print + id-map entry)"}
+  ]
+}
