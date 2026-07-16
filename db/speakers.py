@@ -56,8 +56,34 @@ async def sync_speakers_from_id_map(conn: asyncpg.Connection | None = None) -> i
                 )
             except asyncpg.UniqueViolationError:
                 # The name already exists under a DIFFERENT id than the id-map
-                # assigns -> a genuine id-map/DB desync. Don't crash the caller
-                # (startup); surface it loudly for manual reconcile instead.
+                # assigns. If that stale row is RETIRED, this is a retired-name
+                # re-enroll (booth-critical FK bug, live 2026-07-16): retire keeps
+                # the old row's UNIQUE name, and the id-map tombstone may since
+                # have been purged (rig _purge_tombstone frees the name in
+                # _id_map.json only, not the DB row) -- so the `retired` loop
+                # below no longer sees it. Free the name off the retired row by
+                # renaming it (this preserves the row + its historical fact/memory
+                # FKs) so the newly enrolled live id can claim the name, then retry
+                # the insert. Without this the new id never gets a speakers row and
+                # every subsequent store_fact FK-fails silently. A NON-retired
+                # collision is a genuine live desync -> leave it and surface loudly
+                # for manual reconcile.
+                stale = await c.fetchrow(
+                    "SELECT id, retired_at FROM speakers WHERE name = $1", name)
+                if stale and stale["retired_at"] is not None and stale["id"] != sid:
+                    freed = f"{name}#{stale['id']}.retired"
+                    await c.execute(
+                        "UPDATE speakers SET name = $2 WHERE id = $1",
+                        stale["id"], freed)
+                    await c.execute(
+                        "INSERT INTO speakers (id, name) VALUES ($1, $2) "
+                        "ON CONFLICT (id) DO NOTHING",
+                        sid, name)
+                    inserted += 1
+                    log.warning("speakers sync: freed retired name %r off old id=%d "
+                                "(renamed -> %s) so re-enrolled id=%d can claim it",
+                                name, stale["id"], freed, sid)
+                    continue
                 log.error("speakers sync: name %r already present under a different "
                           "id than id-map's %d -- manual reconcile needed", name, sid)
                 continue
