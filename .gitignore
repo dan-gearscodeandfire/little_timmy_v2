@@ -61,3 +61,4 @@ backups/
 
 # live-session capture artifacts (transcripts/audio, may contain PII)
 recordings/
+models/trash/

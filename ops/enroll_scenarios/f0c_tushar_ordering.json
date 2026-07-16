@@ -1,0 +1,24 @@
+{
+  "persona": "otis",
+  "voice": "en_US-ryan-high",
+  "reply_window": 14.0,
+  "initial_frame": {"face": "/tmp/pi_work/blank.jpg"},
+  "steps": [
+    {"note": "Phase 1: NO face, NO LED -- deterministic voice-only enrollment via the enroll keyword (not the fragile passive self-intro)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1 small talk, zero crops anywhere"},
+    {"say": "Please enroll me.", "expect": "unified enroll latches, asks for the name"},
+    {"say": "My name is Otis.", "expect": "confirm-back: Otis -- did I get that right?"},
+    {"say": "Yes that is correct.", "expect": "[COMMIT] otis voice=True face=False -> KNOWN-BUT-FACE-LESS (the Tushar precondition)"},
+
+    {"note": "Phase 2: face + LED appear. OLD code: '[ANCHOR] ... skip co-sample' forever (the catch-22). FIX: unrecognized anchored face + known face-less voice -> crops bind silently."},
+    {"frame": {"face": "scene", "led_below_face": true}},
+    {"sleep": 4.0},
+    {"say": "Nice to meet you Timmy.", "expect": "speaker=otis; FIX branch fills cosample, NO skip line"},
+    {"say": "I am really glad to be here today.", "expect": "more crops under otis"},
+
+    {"note": "Phase 3: commit the buffered crops -- the recovery flow Tushar never had."},
+    {"say": "Please enroll my face.", "expect": "gather takes crops_for(otis) = the buffer the FIX filled; asks name"},
+    {"say": "My name is Otis.", "expect": "confirm-back"},
+    {"say": "Yes that is correct.", "expect": "[COMMIT] otis face=True -> face binds; /api/identity/list face:true"}
+  ]
+}

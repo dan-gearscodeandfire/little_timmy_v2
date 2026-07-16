@@ -1,0 +1,24 @@
+{
+  "persona": "oliver",
+  "voice": "en_US-ryan-high",
+  "reply_window": 14.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Anchor should publish the unrecognized synthetic face under the LED."},
+    {"frame": {"face": "scene", "led_below_face": true}},
+    {"sleep": 3.0},
+
+    {"note": "Lead-in turns: speaker=unknown_N; anchored crops co-sample onto it."},
+    {"say": "Hello there, how is it going?", "expect": "unknown speaker, small talk"},
+    {"say": "This is a really cool booth.", "expect": "co-sampling continues"},
+    {"say": "I like your skeleton design.", "expect": "third voice sample"},
+
+    {"note": "Name-tell: voice-only promotion to 'oliver' (known, face may be unbound)."},
+    {"say": "My name is Oliver.", "expect": "name-tell, confirm-back or link"},
+    {"say": "Yes that is correct.", "expect": "filter-surviving affirmative"},
+
+    {"note": "Post-turns: THE FIX -- oliver is a known but face-less speaker; the anchored unrecognized face must now BIND (old code skipped this = the Tushar catch-22)."},
+    {"say": "Nice to meet you.", "expect": "face binds to oliver"},
+    {"say": "So what can you do?", "expect": "face bind should be committed by now"}
+  ]
+}

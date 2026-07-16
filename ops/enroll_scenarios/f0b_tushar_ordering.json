@@ -1,0 +1,24 @@
+{
+  "persona": "oliver",
+  "voice": "en_US-ryan-high",
+  "reply_window": 14.0,
+  "initial_frame": {"face": "/tmp/pi_work/blank.jpg"},
+  "steps": [
+    {"note": "Phase 1: NO face, NO LED in view -- voice-only promotion (the exact Tushar ordering)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1, zero face crops anywhere"},
+    {"say": "This is a really cool booth.", "expect": "still no crops"},
+    {"say": "My name is Oliver.", "expect": "name-tell -> confirm-back"},
+    {"say": "Yes that is correct.", "expect": "VOICE-ONLY promotion: oliver known, NO face"},
+
+    {"note": "Phase 2: face + LED appear -- oliver is now known-but-face-less; OLD code logged 'skip co-sample' forever here. The FIX must bind (silently) instead."},
+    {"frame": {"face": "scene", "led_below_face": true}},
+    {"sleep": 3.0},
+    {"say": "Nice to meet you Timmy.", "expect": "FIX branch: anchored crops accumulate under oliver, NO skip line"},
+    {"say": "I am really glad to be here today.", "expect": "more crops, still no skip line"},
+
+    {"note": "Phase 3: commit the buffered crops -- the Tushar recovery flow."},
+    {"say": "Please enroll me.", "expect": "unified enroll latches, asks for the name"},
+    {"say": "My name is Oliver.", "expect": "name reply -> confirm-back"},
+    {"say": "Yes that is correct.", "expect": "[COMMIT] oliver face=True from crops_for(oliver) -- the buffer the FIX filled"}
+  ]
+}
