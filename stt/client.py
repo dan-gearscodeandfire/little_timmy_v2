@@ -243,14 +243,30 @@ def _apply_stt_corrections(text: str) -> str:
     return " ".join(corrected)
 
 
-def _is_likely_hallucination(text: str, no_speech_prob: float) -> bool:
-    """Check if transcription is likely a whisper hallucination."""
+def _is_likely_hallucination(text: str, no_speech_prob: float,
+                             allow_short_replies: bool = False) -> bool:
+    """Check if transcription is likely a whisper hallucination.
+
+    ``allow_short_replies`` (Dan 2026-07-15): while Timmy is awaiting an
+    answer to a question he just asked (enroll confirm, name-ask, consent
+    FSM — main._dialog_owns_turn), a one-word "Yes."/"No."/"Sure." is the
+    EXPECTED reply, not noise — the pattern/repetition checks below were
+    silently eating them and stalling the dialog (visitors had to be coached
+    into "yes that is correct"). Within the window only the acoustic
+    no_speech_prob gate applies: a real whisper-on-silence hallucination
+    still carries high no_speech_prob, and a mumble that slips through just
+    reads as an unclear verdict -> a visible re-ask (cheap) instead of a
+    silent stall (the Tushar-class failure). Outside the window behavior is
+    unchanged."""
     clean = text.strip().lower().rstrip(".!?,;:")
 
     # High no_speech_prob = probably not real speech
     if no_speech_prob > _NO_SPEECH_THRESHOLD:
         log.debug("Filtered hallucination (no_speech_prob=%.2f): %r", no_speech_prob, text)
         return True
+
+    if allow_short_replies:
+        return False
 
     # Very short text with common filler words
     words = clean.split()
@@ -289,9 +305,14 @@ def _audio_to_wav_bytes(audio: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-async def transcribe(audio: np.ndarray) -> "Transcription":
+async def transcribe(audio: np.ndarray,
+                     allow_short_replies: bool = False) -> "Transcription":
     """Send audio to whisper.cpp /inference and return a Transcription
     (text + acoustic confidence + per-word probabilities).
+
+    ``allow_short_replies``: relax the hallucination filter's pattern checks
+    for this utterance (caller is awaiting a yes/no answer — see
+    _is_likely_hallucination).
 
     Uses verbose_json to get no_speech_prob (hallucination filter), segment
     avg_logprob (utterance confidence) and word probabilities (value-level
@@ -332,8 +353,13 @@ async def transcribe(audio: np.ndarray) -> "Transcription":
     # Get no_speech_prob from segments (use max across segments)
     no_speech_prob = max((s.get("no_speech_prob", 0.0) for s in segments), default=0.0)
 
-    if _is_likely_hallucination(text, no_speech_prob):
+    if _is_likely_hallucination(text, no_speech_prob, allow_short_replies):
         return Transcription()
+    if allow_short_replies:
+        # Visibility for live debugging: note when the reply window admitted
+        # a text the standing filter would have dropped.
+        if _is_likely_hallucination(text, no_speech_prob):
+            log.info("[STT] short-reply window admitted %r", text)
 
     # Utterance confidence: exp(mean segment avg_logprob), clamped to [0,1].
     logps = [s["avg_logprob"] for s in segments if s.get("avg_logprob") is not None]

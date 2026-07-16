@@ -168,18 +168,49 @@ _EVASIVE_RE = re.compile(
     r"don'?t\s+(?:want|worry|care)|nothing|nobody)\b", re.IGNORECASE)
 
 
+def extract_spelled_name(text: str) -> Optional[str]:
+    """Join a spelled-out letter run into a name: "T-U-S-H-A-R", "o t i s",
+    "B, O, B" -> "tushar"/"otis"/"bob". The spelled form is the attendee's
+    most deliberate signal (Dan 2026-07-15 — "Tushar" was mis-heard and the
+    spelling was IGNORED), so callers should prefer it over a word-form name
+    in the same utterance ("Odis, O-T-I-S" -> "otis"). Requires a run of >=3
+    single-letter tokens — ordinary sentences don't produce those, and 2-runs
+    collide with "a"/"I"."""
+    if not text:
+        return None
+    toks = re.sub(r"[-,.]", " ", text.lower()).split()
+    best: list = []
+    run: list = []
+    for t in toks:
+        if len(t) == 1 and t.isalpha():
+            run.append(t)
+        else:
+            if len(run) > len(best):
+                best = run
+            run = []
+    if len(run) > len(best):
+        best = run
+    if len(best) >= 3:
+        return "".join(best)
+    return None
+
+
 def extract_reply_name(text: str) -> Optional[str]:
     """Extract a canonical name from a reply to the ask-name latch.
 
     Unlike _extract_name (full enroll utterances), this handles bare replies:
-    "Mary Jane." / "It's Bob" / "My name is Mary Jane". Runs the local
-    multi-word-capable patterns FIRST (the shared extractor captures a single
-    \\w+ and would truncate "My name is Mary Jane" to 'mary' — code review
-    C6), rejects evasive replies (C5), and only then falls back to treating a
-    short 1-3-token utterance as the name itself.
+    "Mary Jane." / "It's Bob" / "My name is Mary Jane". A spelled-out letter
+    run wins over everything (it corrects the very mishear the word form just
+    made); then the local multi-word-capable patterns (the shared extractor
+    captures a single \\w+ and would truncate "My name is Mary Jane" to
+    'mary' — code review C6), rejects evasive replies (C5), and only then
+    falls back to treating a short 1-3-token utterance as the name itself.
     """
     if not text or _EVASIVE_RE.search(text):
         return None
+    spelled = extract_spelled_name(text)
+    if spelled:
+        return spelled
     cand = _extract_name(text)
     if cand:
         return cand
@@ -307,10 +338,13 @@ def confirm_reask_line(display_name: str, attempt: int) -> str:
 
 def name_reask_line(attempt: int) -> str:
     """Scripted re-ask after a name-turn miss. Coaches the explicit phrasing
-    that the extractor (and STT) parse most reliably."""
+    that the extractor (and STT) parse most reliably; the escalation asks for
+    a SPELLING (Dan 2026-07-15 — a spelled run beats an STT mishear, see
+    extract_spelled_name)."""
     if attempt <= 1:
         return "I didn't catch a name. Say 'my name is', then the name."
-    return "I still didn't catch it. Say: MY NAME IS, then your name."
+    return ("I still didn't catch it. Say your name, then spell it out "
+            "letter by letter.")
 
 
 def detect_enroll_intent(text: str, speaker_name: Optional[str] = None) -> EnrollIntent:

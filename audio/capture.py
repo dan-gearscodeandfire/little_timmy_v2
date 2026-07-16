@@ -348,6 +348,22 @@ class AudioCapture:
                     # Hybrid endpointing
                     complete_threshold = config.SILENCE_CHUNKS_COMPLETE
                     incomplete_threshold = config.SILENCE_CHUNKS_INCOMPLETE
+                    # Reply window (Dan 2026-07-15): while Timmy awaits an
+                    # answer he just asked for (enroll confirm / name-ask —
+                    # main._dialog_owns_turn via set_reply_window_fn), give
+                    # the speaker extra-long pauses (~2 s) so a hesitant
+                    # name ("My name is ... Tushar") isn't clipped mid-turn.
+                    if self._reply_window_fn is not None:
+                        try:
+                            if self._reply_window_fn():
+                                complete_threshold = max(
+                                    complete_threshold,
+                                    config.SILENCE_CHUNKS_REPLY_WINDOW)
+                                incomplete_threshold = max(
+                                    incomplete_threshold,
+                                    config.SILENCE_CHUNKS_REPLY_WINDOW)
+                        except Exception:
+                            pass
 
                     if silence_count >= complete_threshold:
                         # Only trust the partial if it came from a submit made
@@ -396,6 +412,15 @@ class AudioCapture:
                             segment_so_far = np.concatenate(audio_buffer)
                             self._submit_live_audio(segment_so_far)
                             last_transcription = self._latest_live_text
+
+    _reply_window_fn = None
+
+    def set_reply_window_fn(self, fn):
+        """Register a no-arg bool callable: True while a confirm/name dialog
+        is awaiting the speaker's answer (main._dialog_owns_turn). Read from
+        the capture thread each chunk — must be cheap, lock-free attribute
+        reads only; any exception reads as False."""
+        self._reply_window_fn = fn
 
     def set_speech_onset_callback(self, fn):
         """Register a no-arg callable fired (on the event loop, thread-safe)

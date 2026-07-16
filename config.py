@@ -76,6 +76,11 @@ PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
 # longer slows normal turns.
 SILENCE_CHUNKS_COMPLETE = 2     # 2 x 256ms = 0.51s — finalize if sentence looks complete
 SILENCE_CHUNKS_INCOMPLETE = 10  # 10 x 256ms = 2.56s — timeout finalize if mid-sentence
+# Floor for BOTH thresholds while Timmy awaits an answer to a question he
+# just asked (main._dialog_owns_turn -> capture.set_reply_window_fn): a
+# hesitant attendee answering "My name is ... Tushar" must not be clipped
+# by the 0.51s fast path (Dan 2026-07-15, Open Sauce enroll flow).
+SILENCE_CHUNKS_REPLY_WINDOW = 8  # 8 x 256ms = 2.05s
 
 # --- Conversation ---
 HOT_MAX_TOKENS = 2500          # token budget for hot tier

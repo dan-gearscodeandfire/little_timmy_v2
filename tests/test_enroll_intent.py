@@ -227,7 +227,26 @@ def test_reask_scripts_escalate():
     assert "YES THAT IS CORRECT" in later and "Joe" in later
     assert confirm_reask_line("Joe", 7) == later    # blunt level is terminal
     assert "my name is" in name_reask_line(1)
-    assert "MY NAME IS" in name_reask_line(2)
+    # Escalation coaches a spelled-out name (Dan 2026-07-15): a letter run
+    # beats an STT mishear — see extract_spelled_name.
+    assert "spell" in name_reask_line(2)
+
+
+def test_extract_spelled_name():
+    # Dan 2026-07-15: "Tushar" was mis-heard and the spelling was ignored.
+    from conversation.enroll_intent import (extract_spelled_name,
+                                            extract_reply_name)
+    assert extract_spelled_name("T-U-S-H-A-R") == "tushar"
+    assert extract_spelled_name("o t i s") == "otis"
+    assert extract_spelled_name("B, O, B") == "bob"
+    assert extract_spelled_name("My name is Otis, O-T-I-S.") == "otis"
+    # <3 letters or no run: not a spelling
+    assert extract_spelled_name("B-O") is None
+    assert extract_spelled_name("I am a person") is None
+    assert extract_spelled_name("") is None
+    # The spelled form WINS over the (possibly mis-heard) word form.
+    assert extract_reply_name("Odis, O-T-I-S") == "otis"
+    assert extract_reply_name("My name is Odis. O-T-I-S.") == "otis"
 
 
 def test_full_name_inference_with_connective():

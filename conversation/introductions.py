@@ -95,6 +95,7 @@ class Introductions:
         """Process a heard utterance against any in-progress name exchange."""
         # --- waiting for yes/no on a guessed name ---
         if self._pending_confirm and speaker_name.startswith("unknown_"):
+            from conversation.enroll_intent import is_enroll_cancel
             lower = user_text.lower().strip().rstrip(".!?,")
             if any(w in lower for w in _AFFIRMATIVE):
                 name = self._pending_confirm["name"]
@@ -119,6 +120,15 @@ class Introductions:
                 # name. Refused -> stay the unknown_N.
                 return IntroOutcome(handled=False,
                                     speaker_name=name if ok else speaker_name)
+            elif is_enroll_cancel(user_text):
+                # Cancel AFTER yes ("yeah, don't bother re-asking" confirms)
+                # but BEFORE no ("no thanks" contains a negation cue and
+                # would re-ask instead of aborting) — same ordering as the
+                # enroll confirm latch (Dan 2026-07-15, spec 8).
+                log.info("[INTRO] name confirm aborted by user: %r", user_text)
+                self._pending_confirm = None
+                await self._say_abort()
+                return IntroOutcome(handled=True, speaker_name=speaker_name)
             elif any(w in lower for w in _NEGATIVE):
                 log.info("Name rejected by user, will re-ask next stable utterance")
                 temp_id = self._pending_confirm["temp_id"]
@@ -136,11 +146,29 @@ class Introductions:
                     self._pending_confirm["name"] = name
                     await self._say_confirm(name)
                     return IntroOutcome(handled=True, speaker_name=speaker_name)
-                else:
-                    self._pending_confirm = None
+                # Never-silent confirm (rig f0b, 2026-07-15): the old silent
+                # clear here let ANY interstitial utterance (echo, aside,
+                # noise) destroy the latch — the next "yes" then fell to the
+                # LLM. Re-ask up to twice, then bow out AUDIBLY.
+                tries = self._pending_confirm.get("attempts", 0) + 1
+                if tries <= 2:
+                    self._pending_confirm["attempts"] = tries
+                    await self._say_confirm(self._pending_confirm["name"])
+                    return IntroOutcome(handled=True, speaker_name=speaker_name)
+                log.info("[INTRO] confirm unanswered after %d tries -> drop",
+                         tries)
+                self._pending_confirm = None
+                await self._say_abort()
+                return IntroOutcome(handled=True, speaker_name=speaker_name)
 
         # --- waiting for the speaker to state their name ---
         if self._pending_capture and speaker_name.startswith("unknown_"):
+            from conversation.enroll_intent import is_enroll_cancel
+            if is_enroll_cancel(user_text):
+                log.info("[INTRO] name ask aborted by user: %r", user_text)
+                self._pending_capture = None
+                await self._say_abort()
+                return IntroOutcome(handled=True, speaker_name=speaker_name)
             name = _extract_name(user_text)
             if name:
                 # Confirm before committing.
@@ -212,6 +240,15 @@ class Introductions:
         except Exception:
             log.exception("[INTRO] face commit failed for %s — voice-only "
                           "promotion stands", name)
+
+    async def _say_abort(self) -> None:
+        """Spoken ack when the visitor aborts (or exhausts) a name exchange —
+        the exchange must never just go silent (Dan 2026-07-15, spec 8)."""
+        abort_prompt = (
+            "The visitor doesn't want to give their name right now. Briefly "
+            "acknowledge that and move on, in-character. One short sentence.")
+        result = await self._turn.say(abort_prompt)
+        log.info("[TIMMY] %s (name-ask abort)", result.text)
 
     async def _say_confirm(self, name: str) -> None:
         confirm_prompt = (

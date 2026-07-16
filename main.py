@@ -789,7 +789,11 @@ class Orchestrator:
 
         # --- STT ---
         t0 = time.time()
-        transcription = await transcribe(audio)
+        # Short-reply window (Dan 2026-07-15): while a confirm/name dialog is
+        # mid-flight, "Yes."/"No."/"Sure." is the expected answer — relax the
+        # hallucination filter's pattern checks for this utterance only.
+        transcription = await transcribe(
+            audio, allow_short_replies=self._dialog_owns_turn())
         user_text = transcription.text
         stt_words = transcription.words           # per-word probs for value-confidence
         stt_ms = int((time.time() - t0) * 1000)
@@ -925,8 +929,13 @@ class Orchestrator:
                     ("scope", "speaker_key", "voice_embs", "face_crops",
                      "correction", "denied") if k in _latch}
                 self._enroll_latch_ts = time.time()
+                # Ask for the spelling too (Dan 2026-07-15): a "no" here
+                # usually means STT mis-heard the name ("Tushar"->"too
+                # sharp"); a spelled letter run is parseable even when the
+                # word form isn't (extract_spelled_name).
                 await self._speak_direct(
-                    "Okay, scratch that — what name should I go with?")
+                    "Okay, scratch that — say the name again, then spell it "
+                    "out letter by letter.")
                 return
             # A restated enroll intent is a CORRECTION, not an unclear reply
             # (review 7-05): "Actually, enroll me as Sarah" has no yes/no cue
@@ -2211,6 +2220,9 @@ async def main():
             return ""
 
     orch.capture.set_live_transcribe(live_transcribe)
+    # Reply window (Dan 2026-07-15): the capture thread lengthens its VAD
+    # pause (~2 s) while a confirm/name dialog awaits the speaker's answer.
+    orch.capture.set_reply_window_fn(orch._dialog_owns_turn)
 
     # speech_onset vision trigger: REMOVED 2026-06-23 (latency).
     # It used to kick a fresh VLM capture at VAD speech-onset on the premise
