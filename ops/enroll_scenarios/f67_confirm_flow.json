@@ -1,0 +1,21 @@
+{
+  "persona": "pavel",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Confirm flow with natural short replies (bare one-word 'Yes.' is unit-tested; the synthetic voice garbles it acoustically -- validate live with a human)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1 small talk"},
+    {"say": "Please enroll me.", "expect": "asks for the name"},
+    {"say": "My name is Pavel.", "expect": "confirm-back (likely mis-heard: Pable/Pablo)"},
+    {"say": "No, that is wrong.", "expect": "F7: re-ask asks for name AND spelling"},
+
+    {"note": "F7: the spelled run wins over the mis-heard word form."},
+    {"say": "The name is Pavel. Spelled P, A, V, E, L.", "expect": "extract_spelled_name -> confirm-back Pavel"},
+    {"say": "Yes, correct.", "expect": "commit under pavel (voice+face)"},
+
+    {"note": "F7: abort phrase cleanly ends a fresh ask instead of a silent stall."},
+    {"say": "Please enroll my voice.", "expect": "asks for the name again"},
+    {"say": "Never mind, forget it.", "expect": "spoken abort ack, dialog ends"}
+  ]
+}
