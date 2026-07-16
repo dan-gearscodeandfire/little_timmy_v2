@@ -1,0 +1,29 @@
+{
+  "persona": "mike",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: enroll the FIRST Mike (ryan voice)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Mike. Spelled M, I, K, E.", "expect": "confirm-back Mike"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] mike voice(+face)"},
+    {"say": "Remember that my favorite color is green.", "expect": "fact stored subject=mike"},
+
+    {"note": "Phase 2: a SECOND, different-voiced Mike enrolls the same name (amy voice). Expo ruling (Dan 7-16): silent auto-suffix fork — journal shows [COMMIT] mike_2 / name_fork:mike->mike_2; the SPOKEN reply says only 'Mike', never 'mike 2' or any fork disclosure."},
+    {"say": "Hi Timmy, nice to meet you.", "voice": "en_US-amy-medium", "expect": "unknown_N (not mike)"},
+    {"say": "Please enroll me.", "voice": "en_US-amy-medium", "expect": "asks name"},
+    {"say": "The name is Mike. Spelled M, I, K, E.", "voice": "en_US-amy-medium", "expect": "confirm-back Mike"},
+    {"say": "Yes, correct.", "voice": "en_US-amy-medium", "expect": "[COMMIT] mike_2 (name_fork warning in journal); spoken reply addresses 'Mike' with NO suffix"},
+    {"say": "Remember that my favorite color is purple.", "voice": "en_US-amy-medium", "expect": "fact stored subject=mike_2 (distinct from mike's green)"},
+
+    {"note": "Phase 3: each Mike keeps their own facts + recognition."},
+    {"say": "What is my favorite color?", "voice": "en_US-amy-medium", "expect": "purple (mike_2's fact, addressed as Mike)"},
+    {"say": "And what is my favorite color?", "expect": "green (mike's fact — first voice again)"},
+
+    {"note": "Phase 4: durability — the fork's id-map _meta marker, npy, and speakers row must survive a bounce."},
+    {"restart": true},
+    {"say": "Hello again, it is me once more.", "voice": "en_US-amy-medium", "expect": "speaker=mike_2 AFTER restart, addressed as 'Mike' (display marker durable)"}
+  ]
+}

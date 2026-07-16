@@ -331,8 +331,11 @@ class Orchestrator:
 
     @staticmethod
     def _display_name(name: str) -> str:
-        """Canonical (lowercase, underscore-joined) -> spoken form."""
-        return (name or "").replace("_", " ").title()
+        """Canonical (lowercase, underscore-joined) -> spoken form. Auto-suffix
+        forks (``mike_2``, expo duplicate names) render as their base display
+        name — see ``presence.display``."""
+        from presence.display import display_name
+        return display_name(name)
 
     async def _fetch_face_safe(self):
         # Wrapper that never raises; returns None on any failure or timeout.
@@ -530,7 +533,8 @@ class Orchestrator:
 
     async def _ask_enroll_confirm(self, name: str, scope: str,
                                   speaker_name: str,
-                                  snapshot: dict | None = None) -> None:
+                                  snapshot: dict | None = None,
+                                  prompt_override: str | None = None) -> None:
         """Speak the parsed name back and latch for a yes/no next turn
         (2026-07-02, tests E/F/G): STT homophones ("Jon"->"John") and garbled
         names must never bind silently. One extra turn, max.
@@ -573,10 +577,14 @@ class Orchestrator:
         # filters one-word turns, so an uncoached "Yes." never even arrives —
         # every uncoached confirm reply is a paraphrase the verdict may miss.
         # A misID-correction latch owns the mistake out loud (Dan 7-06).
+        # prompt_override lets the correction RENAME branch word the confirm
+        # for a relabel ("I had you down as ...") while keeping this single
+        # latch-arming path (2026-07-16).
         _prefix = "My mistake. " if snapshot.get("correction") else ""
         await self._speak_direct(
-            f"{_prefix}{self._display_name(name)} — did I get that right? "
-            f"Say 'yes that is right' or 'no that is wrong'.")
+            prompt_override
+            or f"{_prefix}{self._display_name(name)} — did I get that right? "
+               f"Say 'yes that is right' or 'no that is wrong'.")
 
     async def _handle_unified_enroll(self, name: str, scope: str,
                                      speaker_name: str, speaker_result,
@@ -641,6 +649,11 @@ class Orchestrator:
                 # 2026-07-15, spec 5); the disclosure line below tells them
                 # who they resemble.
                 fork_on_lookalike=True,
+                # Duplicate display names fork silently to mike_2/mike_3
+                # (Dan 2026-07-16, expo): a second, biometrically-different
+                # "Mike" is a new person, not a mismatch error. Display
+                # strips the suffix, so the spoken reply is identical.
+                fork_on_name_collision=True,
             )
         except Exception:
             log.exception("[ENROLL] unified commit failed for %s", name)
@@ -649,6 +662,10 @@ class Orchestrator:
             return
 
         if res.status == "mismatch":
+            # Unreachable for this caller since fork_on_name_collision routes
+            # collisions to a sibling/fork — kept as belt-and-suspenders.
+            log.error("[ENROLL] unexpected mismatch despite "
+                      "fork_on_name_collision: %s", res.error)
             await self._speak_direct(
                 f"Hmm — you don't quite match the {disp} I already know, so I'll "
                 "hold off for now.")
@@ -676,6 +693,11 @@ class Orchestrator:
                 "Sorry, I couldn't get a good enough look or listen just then. Try again?")
             return
 
+        # The commit may have landed on a different canonical (sibling
+        # augment / auto-suffix fork) — bookkeeping and the spoken display
+        # name follow res.name (display strips the fork suffix, so a forked
+        # "mike_2" still hears exactly "Mike").
+        disp = self._display_name(res.name)
         self._cosample.clear_speaker(key)
         got = []
         if res.face_committed:
@@ -694,6 +716,70 @@ class Orchestrator:
         else:
             await self._speak_direct(
                 f"Got it — I'll recognize your {' and '.join(got)} now, {disp}.")
+
+    def _route_correction(self, latch: dict):
+        """Distance-route a misID protest (Dan 2026-07-16 three-way ruling):
+        rename / rebind / fork — see ``classify_correction``. Returns None
+        when the snapshot has no voice to classify with (legacy fallback:
+        the plain confirm-then-augment path)."""
+        embs = latch.get("voice_embs")
+        if not embs:
+            return None
+        try:
+            from presence.identity_commit import classify_correction
+            return classify_correction(
+                latch.get("denied"), latch["name"], embs,
+                attributed=latch.get("speaker_key"),
+                id_map=self.speaker_id_module._id_map,
+                voice_store=self.speaker_id_module._store)
+        except Exception:
+            log.exception("[ENROLL] correction routing failed; "
+                          "falling back to confirm-then-augment")
+            return None
+
+    async def _handle_correction_rename(self, latch: dict, route) -> None:
+        """MisID correction branch (a): the protester's fresh voice matches
+        the record filed under the DENIED name — same person, wrong label
+        (the classic ASR mishear: "Tushar" enrolled as "too_sharp"). Rename
+        the identity IN PLACE via rename_identity (id preserved, facts +
+        possessive subjects follow) instead of augmenting the claimed name;
+        this is the voice path out of a mis-heard enrollment the lookalike
+        guard used to block (F4/F8)."""
+        denied, target = route.denied_canonical, route.target
+        disp = self._display_name(target)
+        try:
+            from presence.identity_commit import (commit_identity,
+                                                  rename_identity)
+            res = await rename_identity(
+                denied, target,
+                speaker_identifier=self.speaker_id_module,
+                room_ledger=self.room_ledger,
+                # Set when the claimed name was taken and the rename landed
+                # on a pre-resolved auto-suffixed fork — the display marker
+                # keeps the spoken name clean.
+                auto_suffix_base=route.target_base)
+        except Exception:
+            log.exception("[RENAME] correction rename failed %s -> %s",
+                          denied, target)
+            res = None
+        if res is None or not res.ok:
+            await self._speak_direct(
+                "Sorry — I couldn't fix that just now. Say the whole "
+                "correction again in a moment.")
+            return
+        log.info("[ENROLL] correction rename: %s -> %s (id=%s, d=%.3f)",
+                 denied, target, res.speaker_id, route.d_denied or -1.0)
+        # Reinforce the relabelled record with the protest turn's own voice
+        # (never blocks the rename — the label fix already landed).
+        if latch.get("voice_embs"):
+            try:
+                await commit_identity(
+                    target, voice_embeddings=latch["voice_embs"],
+                    speaker_identifier=self.speaker_id_module, augment=True)
+            except Exception:
+                log.debug("[RENAME] post-rename augment failed (non-fatal)",
+                          exc_info=True)
+        await self._speak_direct(f"Fixed — {disp} it is. Sorry about that.")
 
     async def _enroll_stream(self, name: str, count: int, interval_s: float, mode: str):
         """Async generator over streamerpi's SSE /face_db/enroll/stream.
@@ -967,17 +1053,32 @@ class Orchestrator:
             # ("never mind" contains a negation cue and would otherwise
             # re-open the name ask instead of aborting).
             if _verdict == "yes":
+                _commit_name = _latch["name"]
                 if _latch.get("correction"):
-                    # MisID protest confirmed (Dan 7-06). Commit mechanics are
-                    # identical — commit_identity augments a matching known Y
-                    # (the augmented prototypes ARE the re-bind: next turn's
-                    # nearest-prototype match flips to Y) and its mismatch/
-                    # lookalike guards refuse a claim the biometrics reject.
+                    # MisID protest confirmed — three-way distance routing
+                    # (Dan 2026-07-16), re-derived NOW so store changes
+                    # during the 30s latch can't act on a stale plan:
+                    #   rename — protester IS the mis-labelled record ->
+                    #            relabel in place (id + facts follow; the
+                    #            Tushar/F4-F8 fix);
+                    #   rebind — protester matches the claimed identity ->
+                    #            augment it (the augmented prototypes ARE
+                    #            the re-bind, as before);
+                    #   fork   — matches neither -> fresh enroll (suffixed
+                    #            by fork_on_name_collision if taken).
+                    _route = self._route_correction(_latch)
                     log.info("[ENROLL] identity correction confirmed: "
-                             "%s -> %s (attributed %s)",
-                             _latch.get("denied"), _latch["name"], speaker_name)
+                             "%s -> %s (attributed %s, branch=%s)",
+                             _latch.get("denied"), _latch["name"],
+                             speaker_name,
+                             _route.branch if _route else "legacy-augment")
+                    if _route is not None and _route.branch == "rename":
+                        await self._handle_correction_rename(_latch, _route)
+                        return
+                    if _route is not None:
+                        _commit_name = _route.target
                 await self._handle_unified_enroll(
-                    _latch["name"], _latch["scope"], speaker_name,
+                    _commit_name, _latch["scope"], speaker_name,
                     speaker_result, snapshot=_latch)
                 return
             if is_enroll_cancel(user_text):
@@ -1138,10 +1239,15 @@ class Orchestrator:
         # above — a gated-out speaker's misID protest must not replace the
         # armed latch (it can re-arm cleanly after the 30s TTL).
         if _unified and _dialogs_ok and not _latch_live:
+            from presence.display import display_base
             corr = detect_identity_correction(
                 user_text, speaker_name,
                 speaker_enrolled=self.speaker_id_module.is_known_speaker(
-                    speaker_name))
+                    speaker_name),
+                # An auto-suffixed fork (mike_2) is SPOKEN as its display
+                # base — without this, its owner saying "My name is Mike"
+                # self-protests forever (expo 2026-07-16).
+                speaker_display_base=display_base(speaker_name))
             if corr.matched:
                 log.info("[ENROLL] misID correction: denied=%s claim=%s "
                          "(attributed %s)", corr.denied, corr.name,
@@ -1160,8 +1266,23 @@ class Orchestrator:
                          "correction": True,
                          "denied": corr.denied or speaker_name}
                 if corr.name:
+                    # Distance-route the protest NOW so the confirm question
+                    # can be worded for the branch (Dan 2026-07-16 three-way:
+                    # rename / rebind / fork). The route is re-derived at
+                    # confirm time — this call only shapes the wording.
+                    _prompt = None
+                    _route = self._route_correction({**_snap,
+                                                     "name": corr.name})
+                    if _route is not None and _route.branch == "rename":
+                        _prompt = (
+                            "My mistake — I had you down as "
+                            f"{self._display_name(_route.denied_canonical)}. "
+                            f"You're {self._display_name(_route.target)}, "
+                            "right? Say 'yes that is right' or 'no that is "
+                            "wrong'.")
                     await self._ask_enroll_confirm(
-                        corr.name, "voice", speaker_name, snapshot=_snap)
+                        corr.name, "voice", speaker_name, snapshot=_snap,
+                        prompt_override=_prompt)
                 else:
                     # Denial without a claim ("that's not my name") ->
                     # ask-name latch, same never-silent semantics.

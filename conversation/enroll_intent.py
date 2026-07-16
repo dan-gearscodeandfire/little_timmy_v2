@@ -452,16 +452,25 @@ _DENY_NAMED_STRONG_RES = [
 ]
 
 
-def _deny_weak_re(spk: str) -> re.Pattern:
+def _deny_weak_re(spk: str, display_base: Optional[str] = None) -> re.Pattern:
     """Compile "I'm not <attributed name>" for the CURRENT speaker. The frame
     only ever counts when the denied name equals the attribution, so matching
     the attribution directly sidesteps span-capture pitfalls entirely: the
     greedy _NAME_SPAN swallowed the claim in unpunctuated STT ("i'm not
     walter i'm flynn" -> capture 'walter i'm flynn' != spk -> protest
     silently dropped, review 7-06), and a lazy span would under-capture
-    multi-word attributions ("dan the barbarian" -> 'dan' != spk)."""
-    toks = r"\s+".join(re.escape(t) for t in spk.split("_") if t)
-    return re.compile(rf"\bI(?:'m|\s+am)\s+not\s+{toks}\b", re.IGNORECASE)
+    multi-word attributions ("dan the barbarian" -> 'dan' != spk).
+
+    ``display_base`` (expo 2026-07-16): a speaker attributed as an
+    auto-suffixed fork (``mike_2``) says "I'm not Mike" — the SPOKEN form is
+    the display base, never the canonical (``mike\\s+2`` cannot occur in
+    speech), so both spellings must count as denying the attribution."""
+    names = [spk]
+    if display_base and display_base.strip().lower() != spk:
+        names.append(display_base.strip().lower())
+    alts = "|".join(
+        r"\s+".join(re.escape(t) for t in n.split("_") if t) for n in names)
+    return re.compile(rf"\bI(?:'m|\s+am)\s+not\s+(?:{alts})\b", re.IGNORECASE)
 # Frameless denials. No bare "wrong name" — too loose outside this frame.
 _DENY_BARE_RE = re.compile(
     r"\bthat(?:'s|\s+is)\s+not\s+my\s+name\b|"
@@ -490,7 +499,8 @@ def _claim_name(text: str, allow_weak: bool) -> Optional[str]:
 
 def detect_identity_correction(
         text: str, speaker_name: Optional[str] = None,
-        speaker_enrolled: bool = False) -> CorrectionIntent:
+        speaker_enrolled: bool = False,
+        speaker_display_base: Optional[str] = None) -> CorrectionIntent:
     """Detect a misidentification protest.
 
     Args:
@@ -500,6 +510,12 @@ def detect_identity_correction(
             gates the bare-claim path (unknown speakers are introductions'
             turf; enroll keywords are detect_enroll_intent's, which the
             caller must run FIRST).
+        speaker_display_base: the attribution's DISPLAY base when it is an
+            auto-suffixed fork (``mike_2`` -> ``mike``, expo 2026-07-16).
+            A speaker only ever speaks the display form, so claiming or
+            denying it must compare against BOTH spellings — otherwise the
+            person filed as mike_2 saying "My name is Mike" reads as an
+            eternal self-protest.
 
     Matches:
       * denial + claim  ("no, my name is not Walter, my name is Flynn")
@@ -513,6 +529,7 @@ def detect_identity_correction(
     if not text:
         return CorrectionIntent(matched=False)
     spk = (speaker_name or "").strip().lower()
+    spk_base = (speaker_display_base or "").strip().lower()
 
     denied: Optional[str] = None
     stripped = text
@@ -525,7 +542,7 @@ def detect_identity_correction(
                 stripped = stripped[:m.start()] + " , " + stripped[m.end():]
                 break
     if denied is None and spk:
-        m = _deny_weak_re(spk).search(stripped)
+        m = _deny_weak_re(spk, spk_base or None).search(stripped)
         if m:
             denied = spk
             stripped = stripped[:m.start()] + " , " + stripped[m.end():]
@@ -538,9 +555,10 @@ def detect_identity_correction(
     # weak frame swallow "supposed to" as the claim. Bare-denial turns route
     # to the ask-name latch instead — never-silent, one extra turn at worst.
     claim = _claim_name(stripped, allow_weak=denied is not None)
-    if claim and spk and claim == spk:
+    if claim and spk and claim in (spk, spk_base or None):
         # Claiming the CURRENT attribution corrects nothing ("My name is
-        # Dan" while attributed dan) — stay out of the LLM's way.
+        # Dan" while attributed dan; "My name is Mike" while filed as the
+        # auto-suffixed mike_2) — stay out of the LLM's way.
         return CorrectionIntent(matched=False)
 
     if claim:

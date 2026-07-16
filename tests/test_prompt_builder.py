@@ -63,6 +63,64 @@ def test_who_is_present_omits_provisional_face():
     assert "Charlotte" not in block
 
 
+def _fork_idmap(tmp_path, monkeypatch):
+    """Point presence.display at a tmp id-map holding mike + fork mike_2."""
+    import presence.display as display
+    from presence.prototype_base import IdMap
+    p = tmp_path / "_id_map.json"
+    monkeypatch.setattr(display, "_SHARED_ID_MAP", p)
+    monkeypatch.setattr(display, "_cache", None)
+    m = IdMap(p, reserved_ids={}, first_free_id=3)
+    m.allocate("mike")
+    m.allocate("mike_2")
+    m.mark_auto_suffixed("mike_2", "mike")
+    return m
+
+
+def test_duplicate_display_names_disambiguated_in_present(tmp_path, monkeypatch):
+    """Two co-present people sharing a display name (auto-suffixed fork, expo
+    2026-07-16) get the canonical appended so the model can join fact
+    subjects — without ever being told to SPEAK the suffix."""
+    _fork_idmap(tmp_path, monkeypatch)
+    presence = {"present": [
+        {"name": "mike", "on_camera_now": True, "provisional": False},
+        {"name": "mike_2", "on_camera_now": False, "provisional": False,
+         "last_seen_voice_age_s": 30.0},
+    ]}
+    block = build_ephemeral_block([], [], presence_state=presence)
+    assert "- Mike (mike; visible right now)" in block
+    assert "- Mike (mike_2; last heard" in block
+
+
+def test_present_no_canonical_tag_without_collision(tmp_path, monkeypatch):
+    _fork_idmap(tmp_path, monkeypatch)
+    presence = {"present": [
+        {"name": "mike_2", "on_camera_now": True, "provisional": False},
+    ]}
+    block = build_ephemeral_block([], [], presence_state=presence)
+    assert "- Mike (visible right now)" in block
+    assert "mike_2" not in block          # sole Mike present -> no tag needed
+
+
+def test_speaking_clause_joins_fork_subject(tmp_path, monkeypatch):
+    """WHO IS SPEAKING for a fork: address by display name, with the one
+    clause that joins the canonical fact subject."""
+    _fork_idmap(tmp_path, monkeypatch)
+    block = build_ephemeral_block([], [], speaker_name="mike_2",
+                                  fusion_source="voice")
+    assert "You are speaking with Mike right now" in block
+    assert "filed under the subject 'mike_2'" in block
+    assert "address them simply as Mike" in block
+
+
+def test_speaking_clause_absent_for_plain_names(tmp_path, monkeypatch):
+    _fork_idmap(tmp_path, monkeypatch)
+    block = build_ephemeral_block([], [], speaker_name="mike",
+                                  fusion_source="voice")
+    assert "You are speaking with Mike right now" in block
+    assert "filed under the subject" not in block
+
+
 def test_face_trust_addresses_recognized_face_when_voice_unknown():
     """PARTY-2 (2026-07-09): an unknown VOICE with a confidently-recognized SOLE
     face (face_trust_name set at the doorway) must be addressed by the recognized

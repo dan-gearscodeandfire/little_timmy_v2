@@ -499,6 +499,33 @@ def test_correction_real_claims_survive_stoplist():
     assert r.matched and r.name == "flynn"
 
 
+# --- auto-suffixed forks (expo duplicate names, 2026-07-16) ------------------
+
+def test_correction_claiming_display_base_is_noop():
+    # mike_2's owner is SPOKEN to as "Mike"; claiming it corrects nothing.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("My name is Mike", "mike_2", True,
+                                   speaker_display_base="mike")
+    assert not r.matched
+
+
+def test_correction_display_base_still_fires_on_contradiction():
+    # ...but a DIFFERENT claim from the fork's owner is a real protest.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("My name is Flynn", "mike_2", True,
+                                   speaker_display_base="mike")
+    assert r.matched and r.name == "flynn" and r.denied == "mike_2"
+
+
+def test_correction_weak_denial_matches_display_base():
+    # "I'm not Mike" while attributed mike_2 — the spoken form is the display
+    # base; the canonical "mike 2" can never occur in speech.
+    from conversation.enroll_intent import detect_identity_correction
+    r = detect_identity_correction("I'm not Mike, I'm Flynn", "mike_2", True,
+                                   speaker_display_base="mike")
+    assert r.matched and r.name == "flynn" and r.denied == "mike_2"
+
+
 # --- cross-category latch speaker gate (option C, Dan 2026-07-16) ----------
 
 from conversation.enroll_intent import latch_speaker_ok  # noqa: E402

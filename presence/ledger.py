@@ -290,9 +290,28 @@ class RoomLedger:
         return rec.last_pose if rec else None
 
     def _save_to_disk(self) -> None:
-        """Atomic JSON dump (.tmp + rename). Best-effort; logs on failure."""
+        """Atomic JSON dump (.tmp + rename). Best-effort; logs on failure.
+
+        Prunes records long past presence (2x their TTL) first — nothing else
+        removes them at runtime (only forget() and the load-time TTL drop),
+        so a thousand-visitor expo day would otherwise grow this dump on
+        every face/voice update — a hot-path write (2026-07-16)."""
         if not self._save_path:
             return
+        now = time.time()
+        stale = []
+        for name, rec in self._records.items():
+            newest = max(rec.last_seen_face_ts or 0.0,
+                         rec.last_seen_voice_ts or 0.0)
+            is_unknown = name.startswith("unknown")
+            ttl = self._unknown_ttl if is_unknown else self._ttl
+            if newest and (now - newest) > 2 * ttl:
+                stale.append(name)
+        for name in stale:
+            del self._records[name]
+        if stale:
+            log.info("RoomLedger pruned %d long-gone record(s) at save",
+                     len(stale))
         try:
             self._save_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {

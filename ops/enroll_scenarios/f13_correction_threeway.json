@@ -1,0 +1,27 @@
+{
+  "persona": "tushar",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: enroll under a mishear-shaped name (the Tushar trap: ASR heard 'too sharp')."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Toosharp. Spelled T, O, O, S, H, A, R, P.", "expect": "confirm-back Toosharp"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] toosharp voice(+face)"},
+    {"say": "Remember that I build robots.", "expect": "fact stored subject=toosharp"},
+
+    {"note": "Branch (a) RENAME: the SAME voice protests with the real name. Route=rename (voice matches the denied record): confirm question is the relabel wording ('I had you down as Toosharp. You're Tushar, right?'); yes -> [RENAME] toosharp -> tushar, SAME id, facts follow (possessives too). This is the F4/F8 fix — pre-7-16 the lookalike guard refused this."},
+    {"say": "No, my name is not Toosharp, my name is Tushar.", "expect": "rename-worded confirm ('I had you down as Toosharp')"},
+    {"say": "Yes that is right.", "expect": "[RENAME] toosharp -> tushar id=SAME; spoken 'Fixed — Tushar it is'"},
+    {"say": "Do you remember what I build?", "expect": "robots (fact subject rewritten to tushar)"},
+
+    {"note": "Branch (c) FORK: a DIFFERENT voice (amy) gets misattributed or unknown and claims a NOVEL name via protest — matches neither tushar nor anyone -> fresh enroll fork after confirm."},
+    {"say": "Hello Timmy, good to see you.", "voice": "en_US-amy-medium", "expect": "unknown_N or misattribution"},
+    {"say": "No, my name is not Tushar, my name is Priya.", "voice": "en_US-amy-medium", "expect": "standard confirm-back Priya (fork branch — NOT rename wording)"},
+    {"say": "Yes that is right.", "voice": "en_US-amy-medium", "expect": "[COMMIT] priya as NEW identity; tushar untouched (no silent takeover)"},
+
+    {"note": "Branch (b) REBIND: priya's voice later misattributed as tushar; claiming her OWN enrolled name routes rebind -> augments priya, no new identity."},
+    {"say": "My name is Priya, remember me?", "voice": "en_US-amy-medium", "expect": "if misID protest fires: confirm -> augment priya (no priya_2); else recognized outright as priya"}
+  ]
+}

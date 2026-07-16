@@ -94,10 +94,10 @@ class FakeSpeakerID:
             SimpleNamespace(temp_id="unknown_1", name_asked=False)]
         self.assigned: list[tuple[str, str]] = []
 
-    def assign_name(self, temp_id, name):
+    def assign_name(self, temp_id, name, **kwargs):
         self.assigned.append((temp_id, name))
         self._known_speakers.append(SimpleNamespace(name=name, speaker_id=99))
-        return True
+        return name  # final canonical (may be an auto-suffixed fork)
 
 
 class FakeCommitter:

@@ -645,29 +645,50 @@ class SpeakerIdentifier:
 
     # ---------- Trigger 1 — auto-persist on name assignment ----------
 
-    def assign_name(self, temp_id: str, name: str) -> bool:
+    def assign_name(self, temp_id: str, name: str, *,
+                    fork_on_collision: bool = False) -> str | None:
         """Attach a name to an unknown speaker, persist voiceprint to disk,
         and promote them to a KnownSpeaker for the rest of the session.
 
-        Returns True on success, False if the unknown is missing or the
-        proposed name is invalid/reserved/already-taken.
+        Returns the FINAL canonical name on success (which may be an
+        auto-suffixed fork of the proposed one), or None if the unknown is
+        missing, the proposed name is invalid/reserved, or the name is
+        taken/retired without ``fork_on_collision``.
+
+        ``fork_on_collision`` (expo duplicate names, 2026-07-16) — for the
+        introductions NAME-TELL path only: the claimant is an unknown_N whose
+        voice already failed to match every known (that is what makes them
+        unknown), so a taken or tombstoned name means a DIFFERENT person who
+        happens to share it. They fork to the next free auto-suffixed
+        canonical (``mike_2``); ``presence.display`` strips the suffix on
+        every spoken surface. The retired case mints a NEW id — no tombstone
+        resurrects (the review-7-06 door stays closed). The auto-enroll
+        face-hint streak path must NOT set this: there the face matched the
+        enrolled X, so the human IS X and a fork would split one person into
+        two identities — it keeps the refusal.
         """
         clean = (name or "").strip().lower()
         if clean in RESERVED_NAMES or not _NAME_RE.match(clean):
             log.warning("Refusing to assign invalid name %r", clean)
-            return False
-        if any(ks.name == clean for ks in self._known_speakers):
-            log.warning("Refusing to assign name %r: already a known speaker", clean)
-            return False
-        # Tombstone guard (review 7-06): retirement REMOVES the name from
-        # _known_speakers, so without this check the introductions path was
-        # the one door left open for re-minting a retired identity — and its
-        # fresh .npy would block the archived original at revive time
-        # ('exists_skipped').
-        if self._id_map.is_retired(clean):
-            log.warning("Refusing to assign name %r: identity is retired "
-                        "(revive_identity to restore)", clean)
-            return False
+            return None
+        collided = (any(ks.name == clean for ks in self._known_speakers)
+                    or self._id_map.is_retired(clean))
+        if collided and not fork_on_collision:
+            # Tombstone guard (review 7-06) + already-known refusal: without
+            # the explicit fork opt-in this stays the one CLOSED door for
+            # re-minting a retired identity or shadowing a known one.
+            log.warning("Refusing to assign name %r: already known or "
+                        "retired (fork_on_collision not set)", clean)
+            return None
+        if collided:
+            # Lazy import: identity_commit imports this module at its top.
+            from presence.identity_commit import resolve_fork_name
+            forked = resolve_fork_name(clean, id_map=self._id_map,
+                                       voice_store=self._store)
+            self._id_map.mark_auto_suffixed(forked, clean)
+            log.info("Name %r taken/retired — assigning auto-suffixed fork "
+                     "%r (display %r)", clean, forked, clean)
+            clean = forked
 
         for us in self._unknown_speakers:
             if us.temp_id == temp_id or us.name == temp_id:
@@ -725,8 +746,8 @@ class SpeakerIdentifier:
                                  clean, ONLINE_LEARNING_ENABLED, len(us.embeddings))
                 else:
                     log.warning("[T1] cannot promote %s: no avg_embedding yet", clean)
-                return True
-        return False
+                return clean
+        return None
 
     # ---------- Trigger 2 — voice-command re-enrollment ----------
 

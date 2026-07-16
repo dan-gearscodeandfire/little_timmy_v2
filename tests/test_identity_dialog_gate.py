@@ -153,9 +153,9 @@ class _FakeSpeakerID:
         self._known_speakers = [SimpleNamespace(name="dan")]
         self.assigned: list[tuple[str, str]] = []
 
-    def assign_name(self, temp_id, name):
+    def assign_name(self, temp_id, name, **kwargs):
         self.assigned.append((temp_id, name))
-        return True
+        return name  # final canonical
 
 
 @pytest.mark.asyncio

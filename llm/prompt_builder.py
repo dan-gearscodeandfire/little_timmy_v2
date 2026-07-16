@@ -22,6 +22,7 @@ import logging
 from datetime import datetime
 from memory.retrieval import RetrievedMemory
 from memory.facts import Fact
+from presence.display import display_base, display_name
 import config
 
 
@@ -190,9 +191,8 @@ def build_ephemeral_block(
             # the LLM only hears about confirmed presence.
             if entry.get("provisional"):
                 continue
-            n_title = n.title()
             if entry.get("on_camera_now"):
-                present_lines.append(f"- {n_title} (visible right now)")
+                detail = "visible right now"
             else:
                 face_age = entry.get("last_seen_face_age_s")
                 voice_age = entry.get("last_seen_voice_age_s")
@@ -202,7 +202,16 @@ def build_ephemeral_block(
                 if voice_age is not None:
                     bits.append(f"last heard {_fmt_age(voice_age)} ago")
                 detail = "; ".join(bits) if bits else "present"
-                present_lines.append(f"- {n_title} ({detail})")
+            present_lines.append((n, display_name(n), detail))
+        # Two co-present people can share a display name (auto-suffixed forks,
+        # expo 2026-07-16): append the canonical only then, so the model can
+        # join each line to its fact subjects without ever SPEAKING the suffix.
+        _dupes = {d for _, d, _ in present_lines
+                  if sum(1 for _, d2, _ in present_lines if d2 == d) > 1}
+        present_lines = [
+            (f"- {disp} ({cn}; {detail})" if disp in _dupes
+             else f"- {disp} ({detail})")
+            for cn, disp, detail in present_lines]
         if present_lines:
             parts.append(
                 "[WHO IS PRESENT] People believed to be in the room "
@@ -339,19 +348,21 @@ def build_ephemeral_block(
     # Lower-severity than the promoted case: NO voiceprint was bound.
     face_trust = (face_trust_name or "").strip()
     if fusion_source == "face_hint" and face_hint_name:
+        _fh = display_name(face_hint_name)
         parts.append(
             f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
-            f"Face recognition strongly suggests this is {face_hint_name.title()} "
+            f"Face recognition strongly suggests this is {_fh} "
             f"(only visible person, head centered on them). "
-            f"Treat this as a working hypothesis: address them as {face_hint_name.title()} "
+            f"Treat this as a working hypothesis: address them as {_fh} "
             f"unless they correct you. Do NOT default to calling them Dan."
         )
     elif face_trust and sp.startswith("unknown") and not face_trust.lower().startswith("unknown"):
+        _ft = display_name(face_trust)
         parts.append(
             f"[WHO IS SPEAKING] The voiceprint did not match, but face recognition "
-            f"identifies the person in front of you as {face_trust.title()} — someone "
+            f"identifies the person in front of you as {_ft} — someone "
             f"you have met before and already know things about. Address them as "
-            f"{face_trust.title()} and draw on what you know about them; treat it as a "
+            f"{_ft} and draw on what you know about them; treat it as a "
             f"working hypothesis and go with a correction if they give one. Do NOT tell "
             f"them you don't know them, and do NOT default to calling them Dan."
         )
@@ -364,11 +375,19 @@ def build_ephemeral_block(
             'speaker "Dan".'
         )
     elif sp and sp != "timmy":
-        line = (f"[WHO IS SPEAKING] You are speaking with {sp.title()} right now. "
-                f"Address your reply to {sp.title()}.")
+        sp_disp = display_name(sp)
+        line = (f"[WHO IS SPEAKING] You are speaking with {sp_disp} right now. "
+                f"Address your reply to {sp_disp}.")
         if sp != "dan":
-            line += (f" This is {sp.title()}, NOT Dan — do not address Dan or call "
+            line += (f" This is {sp_disp}, NOT Dan — do not address Dan or call "
                      f"the speaker Dan unless Dan himself is the one speaking.")
+        if display_base(sp) != sp:
+            # Auto-suffixed fork (expo duplicate names): GROUND TRUTH lines
+            # keep the raw canonical subject; this clause supplies the join
+            # so the model uses those facts WITHOUT speaking the suffix.
+            line += (f" (Their remembered facts are filed under the subject "
+                     f"'{sp}' — that is this same person; always address "
+                     f"them simply as {sp_disp}.)")
         parts.append(line)
 
     return "\n\n".join(parts)

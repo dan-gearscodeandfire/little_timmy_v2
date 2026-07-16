@@ -1093,6 +1093,8 @@ async def identity_list(since: float | None = None):
         log.warning("identity_list: speakers query failed: %s", e)
 
     reserved = set(id_map.reserved_ids)
+    meta = id_map.meta()  # auto-suffix display markers (expo 2026-07-16)
+    from presence.display import display_name as _disp
     out = []
     for name, sid in sorted(id_map.enrolled_ids().items(), key=lambda kv: kv[1]):
         db = rows.get(sid)
@@ -1102,6 +1104,8 @@ async def identity_list(since: float | None = None):
         out.append({
             "name": name, "speaker_id": sid, "retired": False,
             "reserved": name in reserved,
+            "display": _disp(name),
+            "auto_suffixed": name in meta,
             "voice": voice_store.path_for(name).exists(),
             "face": face_store.path_for(name).exists(),
             "created_at": created,
@@ -1110,6 +1114,7 @@ async def identity_list(since: float | None = None):
         out.append({
             "name": name, "speaker_id": info["id"], "retired": True,
             "reserved": False, "voice": False, "face": False,
+            "display": _disp(name), "auto_suffixed": name in meta,
             "retired_at": info.get("at"),
         })
     return {"identities": out, "count": len(out)}

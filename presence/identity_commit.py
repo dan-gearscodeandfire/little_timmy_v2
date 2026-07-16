@@ -111,6 +111,9 @@ class CommitResult:
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     lookalike_of: str | None = None  # set when status == "lookalike"
+    requested_name: str | None = None  # caller's name when the commit was
+    #                                    redirected (sibling augment / fork)
+    forked_from: str | None = None     # display base on an auto-suffix fork
 
     @property
     def ok(self) -> bool:
@@ -219,6 +222,167 @@ def _min_distance_to(store: PrototypeFileStore, name: str,
     return min(min_cosine_distance(e, protos) for e in embeddings)
 
 
+# ── Duplicate display names (expo 2026-07-16) ────────────────────────────────
+#
+# Thousands of sequential visitors WILL share first names. Dan's ruling: a
+# biometrically-different second "Mike" silently forks to the canonical
+# ``mike_2`` (id-map ``_meta`` marks the base, ``presence.display`` strips the
+# suffix on every spoken/UI surface) — no extra dialog turn, no announcement.
+# Facts subjects, .npy prototype files, and Postgres rows stay distinct per
+# person because the CANONICAL name keys all three.
+
+def resolve_fork_name(base: str, *, id_map: IdMap,
+                      voice_store: PrototypeFileStore | None = None,
+                      face_store: PrototypeFileStore | None = None) -> str:
+    """First free ``{base}_{n}`` (n>=2) that is not: an active id-map name, a
+    retired tombstone, or an on-disk stray (either store's ``path_for``, or a
+    legacy voice-embedder file). Trims the base if the candidate would bust
+    the 32-char NAME_RE cap."""
+    b = (base or "").strip().lower()
+    active = set(id_map.enrolled_ids())
+    retired = set(id_map.retired())
+
+    def _taken(nm: str) -> bool:
+        if nm in active or nm in retired:
+            return True
+        for store in (voice_store, face_store):
+            if store is not None and store.path_for(nm).exists():
+                return True
+        if voice_store is not None:
+            for suffix in _LEGACY_VOICE_SUFFIXES:
+                if (voice_store.dir / f"{nm}{suffix}.npy").exists():
+                    return True
+        return False
+
+    n = 2
+    while True:
+        tail = f"_{n}"
+        cand = f"{b[:32 - len(tail)]}{tail}"
+        if not _taken(cand):
+            return cand
+        n += 1
+
+
+def _display_siblings(clean: str, id_map: IdMap) -> list[str]:
+    """ACTIVE names sharing ``clean``'s display base, excluding ``clean``
+    itself (the base first, then its marked forks)."""
+    base = id_map.base_name(clean)
+    active = id_map.enrolled_ids()
+    sibs = [n for n, info in id_map.meta().items()
+            if info.get("base") == base and n != clean and n in active]
+    if base != clean and base in active:
+        sibs.insert(0, base)
+    return sibs
+
+
+def _nearest_sibling(clean: str, v_embs: list, f_embs: list, *,
+                     id_map: IdMap,
+                     voice_store: PrototypeFileStore | None,
+                     face_store: PrototypeFileStore | None,
+                     voice_thr: float, face_thr: float,
+                     ) -> tuple[str, float] | None:
+    """Best display-sibling of ``clean`` matched below its modality threshold
+    by any supplied sample, or None. This is what keeps "enroll me as Mike"
+    spoken by the person filed as ``mike_2`` an AUGMENT of mike_2 — never a
+    third identity."""
+    best: tuple[str, float] | None = None
+    for sib in _display_siblings(clean, id_map):
+        for embs, store, thr in ((v_embs, voice_store, voice_thr),
+                                 (f_embs, face_store, face_thr)):
+            if not embs or store is None:
+                continue
+            d = _min_distance_to(store, sib, embs)
+            if d is not None and d < thr and (best is None or d < best[1]):
+                best = (sib, d)
+    return best
+
+
+# ── MisID-correction routing (Dan 2026-07-16, three-way) ─────────────────────
+
+@dataclass
+class CorrectionRoute:
+    """Distance-derived plan for a confirmed "my name is X" protest.
+
+    ``branch``:
+      ``rename`` — the protester's fresh voice MATCHES the record filed
+                   under the DENIED name: same person, wrong label. Rename
+                   in place (id preserved, facts follow) — the fix for the
+                   Tushar/F4-F8 trap, where the lookalike guard blocked
+                   every voice path out of a mis-heard name.
+      ``rebind`` — the voice matches the CLAIMED name's existing prototypes
+                   (or a display-sibling's): the enrolled X was simply
+                   mis-attributed. Augment that identity (current behavior).
+      ``fork``   — matches neither: a new person correcting a wrong guess.
+                   Fresh enroll; ``fork_on_name_collision`` suffixes if the
+                   claimed name is taken.
+    """
+
+    branch: str
+    target: str                 # final canonical to rename to / commit as
+    denied_canonical: str
+    target_base: str | None = None   # set when target is a pre-resolved fork
+    d_denied: float | None = None
+    d_claimed: float | None = None
+
+
+def classify_correction(denied: str | None, claimed: str, voice_embs: list, *,
+                        attributed: str | None = None,
+                        id_map: IdMap,
+                        voice_store: PrototypeFileStore | None,
+                        thr: float = KNOWN_SPEAKER_THRESHOLD,
+                        ) -> CorrectionRoute:
+    """Route a misID protest by voice distance. ``denied`` is the SPOKEN
+    denied token ("Mike"), ``attributed`` the turn's canonical attribution
+    (possibly an auto-suffixed fork like ``mike_2``) — the spoken token is
+    resolved onto the attribution when it names it by display base. The
+    caller re-runs this at confirm time so store changes during the latch
+    TTL can't act on a stale plan."""
+    d = (denied or "").strip().lower()
+    c = (claimed or "").strip().lower()
+    att = (attributed or "").strip().lower()
+    if att and (not d or d == att or id_map.base_name(att) == d):
+        denied_canonical = att
+    else:
+        denied_canonical = d
+    embs = [np.asarray(e, dtype=np.float32) for e in (voice_embs or [])]
+
+    d_denied = None
+    if embs and voice_store is not None and denied_canonical:
+        d_denied = _min_distance_to(voice_store, denied_canonical, embs)
+
+    # (a) rename — protester IS the mis-labelled record.
+    if d_denied is not None and d_denied < thr:
+        target, target_base = c, None
+        owner = id_map.id_for(denied_canonical)
+        tid = id_map.id_for(c)
+        if (tid is not None and tid != owner) or id_map.is_retired(c):
+            # Claimed name belongs to ANOTHER active person (or a
+            # tombstone): rename onto a fresh auto-suffixed fork instead —
+            # display still speaks the claimed name.
+            target = resolve_fork_name(c, id_map=id_map,
+                                       voice_store=voice_store)
+            target_base = c
+        return CorrectionRoute("rename", target, denied_canonical,
+                               target_base=target_base, d_denied=d_denied)
+
+    # (b) rebind — claimed identity (or a display-sibling) matches.
+    if embs and voice_store is not None:
+        cands = ([c] if id_map.id_for(c) is not None else [])
+        cands += _display_siblings(c, id_map)
+        best: tuple[str, float] | None = None
+        for cand in cands:
+            dd = _min_distance_to(voice_store, cand, embs)
+            if dd is not None and dd < thr and (best is None or dd < best[1]):
+                best = (cand, dd)
+        if best is not None:
+            return CorrectionRoute("rebind", best[0], denied_canonical,
+                                   d_denied=d_denied, d_claimed=best[1])
+
+    # (c) fork — a new person; the commit's fork_on_name_collision handles
+    # any suffixing.
+    return CorrectionRoute("fork", c, denied_canonical, d_denied=d_denied)
+
+
 def commit_identity_stores(
     name: str, *,
     id_map: IdMap,
@@ -239,6 +403,7 @@ def commit_identity_stores(
     on_voice=None,
     on_face=None,
     fork_on_lookalike: bool = False,
+    fork_on_name_collision: bool = False,
 ) -> CommitResult:
     """Pure-store core: canonicalize, guard, allocate id, persist prototypes.
 
@@ -248,6 +413,18 @@ def commit_identity_stores(
     are optional callbacks the live wrapper uses to refresh the shared in-memory
     identifiers. Persistence order within this core is voice-then-face; the
     id/DB FK precondition (S2) is enforced by the live wrapper BEFORE this runs.
+
+    ``fork_on_name_collision`` (expo 2026-07-16, explicit confirmed name-tells
+    only): a name collision stops being an error and becomes a routing
+    decision — S3 pass = same person re-enrolling (augment, as ever);
+    S3 mismatch = a DIFFERENT person with the same display name, redirected to
+    a matching display-sibling (augment) or a fresh auto-suffixed fork
+    (``mike_2``, silent — display strips the suffix). A retired base name is
+    routed the same way instead of refused: the fork mints a NEW id, so no
+    tombstone is resurrected. Invariant worth stating once: S3 and the
+    lookalike guard share the same modality thresholds, so a "same-name
+    lookalike stranger" cannot both fail S3 and sit within lookalike distance
+    of that identity — there is no threshold gap between augment and fork.
     """
     clean = (name or "").strip().lower()
     res = CommitResult(name=clean)
@@ -258,21 +435,50 @@ def commit_identity_stores(
         res.error = f"invalid or reserved name {clean!r}"
         return res
 
-    # Tombstone guard: a retired name must not silently re-enroll (the
-    # deletion analogue of the lookalike guard — same "resurrection" class).
-    if id_map.is_retired(clean):
-        res.status = "retired_name"
-        res.error = (f"{clean!r} is retired; refusing to re-enroll — "
-                     "revive explicitly if intended")
-        log.warning("[COMMIT] retired_name: %s", res.error)
-        return res
-
     v_embs = [np.asarray(e, dtype=np.float32) for e in (voice_embeddings or [])]
     f_embs = [np.asarray(e, dtype=np.float32) for e in (face_embeddings or [])]
     if not v_embs and not f_embs:
         res.status = "nothing_to_commit"
         res.error = "no voice or face samples supplied"
         return res
+
+    def _sibling_or_fork() -> str:
+        """Route a collision: nearest matching display-sibling (augment) or a
+        fresh auto-suffixed fork. Returns the FINAL canonical name."""
+        sib = _nearest_sibling(
+            clean, v_embs, f_embs, id_map=id_map,
+            voice_store=voice_store, face_store=face_store,
+            voice_thr=voice_match_thr, face_thr=face_match_thr)
+        if sib is not None:
+            res.warnings.append(f"sibling_augment:{sib[0]}:d={sib[1]:.3f}")
+            log.info("[COMMIT] name collision on %r routed to display-sibling "
+                     "%r (d=%.3f) — augmenting", clean, sib[0], sib[1])
+            return sib[0]
+        base = id_map.base_name(clean)
+        forked = resolve_fork_name(base, id_map=id_map,
+                                   voice_store=voice_store,
+                                   face_store=face_store)
+        id_map.mark_auto_suffixed(forked, base)
+        res.forked_from = base
+        res.warnings.append(f"name_fork:{base}->{forked}")
+        log.info("[COMMIT] name collision on %r forked to %r (display %r)",
+                 clean, forked, base)
+        return forked
+
+    # Tombstone guard: a retired name must not silently re-enroll (the
+    # deletion analogue of the lookalike guard — same "resurrection" class).
+    # Under fork_on_name_collision the visitor is simply a NEW person whose
+    # name collides with a retired one — route to sibling/fork (new id).
+    if id_map.is_retired(clean):
+        if not fork_on_name_collision:
+            res.status = "retired_name"
+            res.error = (f"{clean!r} is retired; refusing to re-enroll — "
+                         "revive explicitly if intended")
+            log.warning("[COMMIT] retired_name: %s", res.error)
+            return res
+        res.requested_name = clean
+        clean = _sibling_or_fork()
+        res.name = clean
 
     known = id_map.id_for(clean) is not None
     res.created = not known
@@ -296,15 +502,44 @@ def commit_identity_stores(
         if checks:
             matched = any(d < thr for _, d, thr in checks)
             if not matched:
-                detail = ", ".join(f"{m}={d:.3f}>={thr:.2f}"
-                                   for m, d, thr in checks)
-                res.status = "mismatch"
-                res.error = (f"samples do not match known {clean!r} ({detail}); "
-                             "refusing to overwrite — disambiguate")
-                log.warning("[COMMIT] mismatch: %s", res.error)
-                return res
+                if fork_on_name_collision:
+                    # A different person with the same display name.
+                    res.requested_name = clean
+                    clean = _sibling_or_fork()
+                    res.name = clean
+                    known = id_map.id_for(clean) is not None
+                    res.created = not known
+                    augment = known
+                else:
+                    detail = ", ".join(f"{m}={d:.3f}>={thr:.2f}"
+                                       for m, d, thr in checks)
+                    res.status = "mismatch"
+                    res.error = (f"samples do not match known {clean!r} "
+                                 f"({detail}); refusing to overwrite — "
+                                 "disambiguate")
+                    log.warning("[COMMIT] mismatch: %s", res.error)
+                    return res
         else:
             res.warnings.append("augment_unverified")
+    elif not known and fork_on_name_collision:
+        # The requested name is FREE, but active display-siblings may exist
+        # (base renamed/retired away while mike_2 remains). If the samples
+        # match a sibling, this is that person re-enrolling under their
+        # display name — augment the sibling instead of minting a duplicate
+        # person under the freed base name.
+        sib = _nearest_sibling(
+            clean, v_embs, f_embs, id_map=id_map,
+            voice_store=voice_store, face_store=face_store,
+            voice_thr=voice_match_thr, face_thr=face_match_thr)
+        if sib is not None:
+            res.requested_name = clean
+            res.warnings.append(f"sibling_augment:{sib[0]}:d={sib[1]:.3f}")
+            log.info("[COMMIT] free name %r matched display-sibling %r "
+                     "(d=%.3f) — augmenting", clean, sib[0], sib[1])
+            clean = sib[0]
+            res.name = clean
+            res.created = False
+            augment = True
 
     # Lookalike guard (test G, 2026-07-02): samples that match an EXISTING
     # identity arriving under a different name are almost always an STT
@@ -422,6 +657,7 @@ async def commit_identity(
     require_match_for_known: bool = True,
     db_sync: bool = True,
     fork_on_lookalike: bool = False,
+    fork_on_name_collision: bool = False,
 ) -> CommitResult:
     """Live dual-modality commit: embed crops, upsert the Postgres row FIRST,
     then persist voice + face and refresh the shared in-memory identifiers.
@@ -429,6 +665,15 @@ async def commit_identity(
     ``fork_on_lookalike``: commit a lookalike as a NEW identity instead of
     refusing — for EXPLICIT confirmed name-tells only (Dan 2026-07-15); the
     caller speaks the "you look like Z" disclosure via res.lookalike_of.
+
+    ``fork_on_name_collision`` (expo 2026-07-16, explicit confirmed name-tells
+    only): duplicate display names route to a sibling augment or a silent
+    auto-suffixed fork instead of the mismatch/retired refusals — see the
+    core's docstring. When the final name may differ from the requested one,
+    the S2 pre-allocation is DEFERRED to the core (pre-allocating the
+    requested name would leak a prototype-less id into the map, the exact
+    resurrection class the pre-flight exists to stop) and the Postgres sync
+    re-runs after the core so the fork's row exists before its first fact.
 
     ``face_crops`` are aligned 112x112 RGB crops (embedded here via the shared
     EdgeFace encoder); pass ``face_embeddings`` instead to skip embedding.
@@ -470,7 +715,8 @@ async def commit_identity(
     # Tombstone guard BEFORE any allocation or scan: a retired name refuses
     # outright (and allocate() below would raise RetiredNameError anyway —
     # this just turns it into a structured result the dialog can speak).
-    if id_map.is_retired(clean):
+    # Under fork_on_name_collision the core routes the collision instead.
+    if id_map.is_retired(clean) and not fork_on_name_collision:
         res = CommitResult(name=clean, status="retired_name")
         res.error = (f"{clean!r} is retired; refusing to re-enroll — "
                      "revive explicitly if intended")
@@ -525,10 +771,15 @@ async def commit_identity(
 
     # S2 (1): FK precondition BEFORE any biometric write — allocate the id and
     # upsert the Postgres speakers row so a fact extracted mid-commit can't
-    # FK-fail. Only meaningful for a valid, brand-new-or-known name.
+    # FK-fail. Only meaningful for a valid, brand-new-or-known name. DEFERRED
+    # when the core may redirect the name (fork_on_name_collision + a name
+    # that is retired or free): pre-allocating the REQUESTED name would leak
+    # a prototype-less id into the map if the core lands elsewhere.
     pre_ok = is_valid_enroll_name(clean)
+    defer_alloc = fork_on_name_collision and (
+        id_map.is_retired(clean) or id_map.id_for(clean) is None)
     db_synced = False
-    if pre_ok and (voice_embeddings or face_embeddings):
+    if pre_ok and (voice_embeddings or face_embeddings) and not defer_alloc:
         id_map.allocate(clean)  # idempotent
         if db_sync:
             try:
@@ -553,8 +804,22 @@ async def commit_identity(
         on_voice=_refresh_voice,
         on_face=_refresh_face,
         fork_on_lookalike=fork_on_lookalike,
+        fork_on_name_collision=fork_on_name_collision,
     )
     res.db_synced = db_synced
+
+    # Post-core FK sync: a deferred allocation or a core redirect (sibling /
+    # fork) means the FINAL name's id was minted inside the core — upsert its
+    # speakers row now, before the visitor's first extracted fact needs the
+    # FK (without this, a forked mike_2 FK-fails facts until restart).
+    if db_sync and res.ok and (defer_alloc or res.name != clean):
+        try:
+            from db.speakers import sync_speakers_from_id_map
+            await sync_speakers_from_id_map()
+            res.db_synced = True
+        except Exception as e:
+            log.warning("[COMMIT] post-core speakers DB sync failed for %s: "
+                        "%s (reconcile at restart)", res.name, e)
     log.info("[COMMIT] %s -> id=%s status=%s voice=%s(+%d) face=%s(+%d) db=%s%s",
              res.name, res.speaker_id, res.status,
              res.voice_committed, res.voice_added,
@@ -956,11 +1221,16 @@ def rename_identity_stores(
     id_map: IdMap,
     voice_store: PrototypeFileStore | None = None,
     face_store: PrototypeFileStore | None = None,
+    auto_suffix_base: str | None = None,
 ) -> RenameResult:
     """Hermetic core: relabel the id-map entry (id preserved) and rename the
     active prototype files. Rolls the files back if the id-map rename or a
     later file move fails. Historic ``.bak`` files keep the old name (they
-    are timestamped archives, not live prototypes)."""
+    are timestamped archives, not live prototypes).
+
+    ``auto_suffix_base``: when the caller pre-resolved a collision and ``new``
+    is an auto-suffixed fork (rename onto ``tushar_2`` because tushar is
+    taken), the display marker lands in the same atomic id-map write."""
     o = (old or "").strip().lower()
     n = (new or "").strip().lower()
     res = RenameResult(old=o, new=n)
@@ -986,7 +1256,8 @@ def rename_identity_stores(
                 src.rename(dst)
                 done.append((src, dst))
                 res.files_moved.append(f"{src.name} -> {dst.name}")
-            res.speaker_id = id_map.rename(o, n)
+            res.speaker_id = id_map.rename(
+                o, n, auto_suffix_base=auto_suffix_base)
         except Exception as e:
             for src, dst in reversed(done):
                 try:
@@ -1008,6 +1279,7 @@ async def rename_identity(
     face_identifier=None,
     room_ledger=None,
     db_sync: bool = True,
+    auto_suffix_base: str | None = None,
 ) -> RenameResult:
     """Live rename: stores + id-map (core), in-memory identifiers relabelled
     in place (recognition flips to the new name on the very next turn — no
@@ -1028,7 +1300,8 @@ async def rename_identity(
     res = rename_identity_stores(
         o, n, id_map=id_map,
         voice_store=speaker_identifier._store,
-        face_store=face_identifier._store)
+        face_store=face_identifier._store,
+        auto_suffix_base=auto_suffix_base)
     if not res.ok:
         return res
 
@@ -1057,6 +1330,15 @@ async def rename_identity(
                     "UPDATE facts SET subject = $1 WHERE lower(subject) = $2",
                     n, o)
                 res.warnings.append(f"fact_subjects:{rewritten}")
+                # Possessive subjects too (review 7-16): _normalize_subject
+                # (memory/extraction.py) mints subjects like "too_sharp's
+                # wife" — the exact-match rewrite above misses them and the
+                # facts would stay filed under the dead name forever.
+                poss = await conn.execute(
+                    "UPDATE facts SET subject = $1 || substr(subject, $3) "
+                    "WHERE lower(subject) LIKE $2",
+                    n, f"{o}'s %", len(o) + 1)
+                res.warnings.append(f"fact_possessives:{poss}")
             res.db_synced = True
         except Exception as e:
             res.warnings.append(f"db_failed:{e}")

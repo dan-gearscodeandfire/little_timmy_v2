@@ -1,0 +1,24 @@
+{
+  "persona": "mike2",
+  "voice": "en_US-amy-medium",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: mint mike (ryan) then the fork mike_2 (amy) — same as f12 phases 1-2."},
+    {"say": "Hello there, how is it going?", "voice": "en_US-ryan-high", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "voice": "en_US-ryan-high", "expect": "asks name"},
+    {"say": "The name is Mike. Spelled M, I, K, E.", "voice": "en_US-ryan-high", "expect": "confirm-back Mike"},
+    {"say": "Yes, correct.", "voice": "en_US-ryan-high", "expect": "[COMMIT] mike"},
+    {"say": "Hi Timmy, nice to meet you.", "expect": "unknown_N"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Mike. Spelled M, I, K, E.", "expect": "confirm-back Mike"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] mike_2 (silent fork)"},
+
+    {"note": "Phase 2: mike_2's OWNER says 'enroll me as Mike' again. Sibling check must AUGMENT mike_2 (journal: sibling_augment:mike_2), never mint mike_3."},
+    {"say": "Please enroll me as Mike.", "expect": "confirm-back Mike"},
+    {"say": "Yes that is right.", "expect": "[COMMIT] augments mike_2 — journal 'sibling_augment:mike_2'; NO mike_3 anywhere"},
+
+    {"note": "Phase 3: no eternal self-protest — mike_2's owner claiming their display name is a no-op for the correction detector."},
+    {"say": "My name is Mike, just so you know.", "expect": "NO misID confirm latch (detector no-op via display base); ordinary LLM reply"}
+  ]
+}

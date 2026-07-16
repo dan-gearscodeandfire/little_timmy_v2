@@ -33,9 +33,9 @@ class FakeSpeakerID:
         ]
         self.assigned: list[tuple[str, str]] = []
 
-    def assign_name(self, temp_id, name):
+    def assign_name(self, temp_id, name, **kwargs):
         self.assigned.append((temp_id, name))
-        return True
+        return name  # final canonical (may be an auto-suffixed fork)
 
 
 def _make(unknown_temp_ids=("unknown_1",)):
@@ -128,9 +128,9 @@ def test_extract_name(text, expected):
 # --- F2 (review 7-07): refused assign_name must not promote ------------------
 
 class RefusingSpeakerID(FakeSpeakerID):
-    def assign_name(self, temp_id, name):
+    def assign_name(self, temp_id, name, **kwargs):
         super().assign_name(temp_id, name)
-        return False    # tombstoned / reserved / already-known
+        return None     # reserved / invalid (post-7-16: taken names fork)
 
 
 @pytest.mark.asyncio
@@ -144,6 +144,29 @@ async def test_refused_assign_keeps_unknown_speaker():
     # The refused name must NOT become the turn's speaker (facts would file
     # under the real person's name); the speaker stays the unknown.
     assert out.speaker_name == "unknown_1"
+
+
+# --- expo 2026-07-16: duplicate name forks to an auto-suffixed canonical -----
+
+class ForkingSpeakerID(FakeSpeakerID):
+    """assign_name resolves a taken name to its auto-suffixed fork."""
+    def assign_name(self, temp_id, name, **kwargs):
+        super().assign_name(temp_id, name)
+        assert kwargs.get("fork_on_collision") is True  # name-tell path opts in
+        return f"{name}_2"
+
+
+@pytest.mark.asyncio
+async def test_forked_assign_promotes_final_canonical():
+    spk = ForkingSpeakerID(unknown_temp_ids=("unknown_1",))
+    turn = FakeTurn()
+    intro = Introductions(speaker_id_module=spk, turn=turn)
+    await intro.offer_confirm("unknown_1", "mike")  # second Mike at the booth
+    out = await intro.handle("yes that is right", "unknown_1")
+    assert out.handled is False
+    # The turn's speaker (and thus fact subjects) must be the FORKED
+    # canonical, never the other Mike's name.
+    assert out.speaker_name == "mike_2"
 
 
 # --- review 7-15: confirm exhaustion must reset name_asked -------------------

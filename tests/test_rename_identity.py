@@ -73,6 +73,24 @@ def test_rename_preserves_id_and_moves_files(enrolled):
                           np.asarray(voice.load(voice.path_for("tushar"))))
 
 
+def test_rename_migrates_auto_suffix_meta(enrolled):
+    """(expo 2026-07-16) Renaming a fork to a chosen name clears its display
+    marker; renaming ONTO a pre-resolved fork sets one atomically."""
+    (id_map, voice, face), sid = enrolled
+    id_map.mark_auto_suffixed("too_sharp", "too")   # pretend it was a fork
+    res = rename_identity_stores("too_sharp", "tushar", id_map=id_map,
+                                 voice_store=voice, face_store=face)
+    assert res.ok
+    assert "too_sharp" not in id_map.meta()          # marker cleared
+    assert id_map.base_name("tushar") == "tushar"
+    # Rename onto a suffixed target (claimed name taken elsewhere).
+    res2 = rename_identity_stores("tushar", "walter_2", id_map=id_map,
+                                  voice_store=voice, face_store=face,
+                                  auto_suffix_base="walter")
+    assert res2.ok and res2.speaker_id == sid
+    assert id_map.base_name("walter_2") == "walter"  # display stays "Walter"
+
+
 def test_rename_refuses_existing_target(enrolled):
     (id_map, voice, face), _sid = enrolled
     setup = commit_identity_stores(

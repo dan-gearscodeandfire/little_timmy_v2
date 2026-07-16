@@ -55,14 +55,15 @@ class FakeSpeakerID:
         self.assigned: list[tuple[str, str]] = []
         self._assign_ok = assign_ok
 
-    def assign_name(self, temp_id, name):
+    def assign_name(self, temp_id, name, **kwargs):
         self.assigned.append((temp_id, name))
         if self._assign_ok:
             # Mirror the real T1 promotion: a session-local id that may
             # differ from the id-map's authoritative allocation.
             self._known_speakers.append(
                 SimpleNamespace(name=name, speaker_id=99))
-        return self._assign_ok
+            return name  # final canonical (may be an auto-suffixed fork)
+        return None
 
 
 class FakeCommitter:
@@ -210,6 +211,34 @@ async def test_commit_declined_keeps_buffer(toggles):
     assert out.speaker_name == "bob"
     assert len(committer.calls) == 1
     assert len(cos.crops_for("unknown_1")) == 2
+
+
+@pytest.mark.asyncio
+async def test_forked_name_face_commits_under_fork(toggles):
+    """Duplicate display name (expo 2026-07-16): assign_name returns the
+    auto-suffixed fork; the face commit and the turn's speaker_name must use
+    the FORKED canonical, never the other person's name."""
+    toggles.set("intro_face_commit_enabled", True)
+    committer = FakeCommitter()
+
+    class ForkingSpeakerID(FakeSpeakerID):
+        def assign_name(self, temp_id, name, **kwargs):
+            FakeSpeakerID.assign_name(self, temp_id, name, **kwargs)
+            forked = f"{name}_2"
+            self._known_speakers[-1].name = forked
+            return forked
+
+    spk = ForkingSpeakerID(unknown_temp_ids=("unknown_1",))
+    cos = CoSampleBuffer()
+    cos.add("unknown_1", [_crop(0), _crop(1)])
+    intro = Introductions(speaker_id_module=spk, turn=FakeTurn(),
+                          cosample=cos, committer=committer)
+    out = await _confirm_yes(intro)
+    assert out.speaker_name == "bob_2"
+    assert committer.calls[0]["name"] == "bob_2"
+    # id sync targets the forked KnownSpeaker.
+    ks = next(k for k in spk._known_speakers if k.name == "bob_2")
+    assert ks.speaker_id == 42
 
 
 @pytest.mark.asyncio

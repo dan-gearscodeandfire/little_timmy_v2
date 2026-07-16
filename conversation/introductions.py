@@ -101,25 +101,30 @@ class Introductions:
                 name = self._pending_confirm["name"]
                 temp_id = self._pending_confirm["temp_id"]
                 # assign_name's verdict is load-bearing (2026-07-06): a
-                # tombstoned / reserved / already-taken name returns False,
-                # and a refused name must NOT get a face committed under it.
-                ok = self._spk.assign_name(temp_id, name)
-                log.info("Confirmed name: %s for %s (assign ok=%s)",
-                         name, temp_id, ok)
+                # reserved/invalid name returns None, and a refused name must
+                # NOT get a face committed under it. Since 2026-07-16 a taken
+                # or tombstoned name is no longer refused — it forks to an
+                # auto-suffixed canonical (``mike_2``), returned here; the
+                # face commit and the turn's speaker_name MUST use that final
+                # canonical or the visitor's face/facts file under the OTHER
+                # Mike's name.
+                final = self._spk.assign_name(temp_id, name,
+                                              fork_on_collision=True)
+                log.info("Confirmed name: %s for %s (assigned=%s)",
+                         name, temp_id, final)
                 self._pending_confirm = None
-                if ok:
+                if final:
                     # Name-tell -> full triple: also bind the co-sampled face
                     # crops (LED-anchored at EXPO — implied consent; sole-face
                     # in Shop) so the name links voice AND face, not voice
                     # only. Never blocks or breaks the promotion.
-                    await self._maybe_commit_face(temp_id, name)
+                    await self._maybe_commit_face(temp_id, final)
                 # Promote ONLY on a successful assign (F2 fix, review 7-07):
-                # a REFUSED name (tombstoned / reserved / already-known) used
-                # to be adopted as the turn's speaker_name anyway, so the
-                # visitor's facts filed under the refused — real person's —
-                # name. Refused -> stay the unknown_N.
+                # a REFUSED name used to be adopted as the turn's
+                # speaker_name anyway, so the visitor's facts filed under the
+                # refused — real person's — name. Refused -> stay the unknown_N.
                 return IntroOutcome(handled=False,
-                                    speaker_name=name if ok else speaker_name)
+                                    speaker_name=final if final else speaker_name)
             elif is_enroll_cancel(user_text):
                 # Cancel AFTER yes ("yeah, don't bother re-asking" confirms)
                 # but BEFORE no ("no thanks" contains a negation cue and
