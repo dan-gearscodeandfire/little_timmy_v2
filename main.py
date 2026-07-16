@@ -106,6 +106,21 @@ def speaker_allowlist_drop(name: str, allowlist) -> bool:
     return n.startswith("unknown") or n not in allow
 
 
+def _speaker_has_enrolled_face(name: str) -> bool:
+    """True when ``name`` already has an on-disk face prototype — the same
+    source /api/identity/list reports as the identity's ``face`` flag
+    (``face_store.path_for(name).exists()``). Used by the anchor co-sample
+    guard to tell a voice-only-promotion bootstrap (known voice, no face yet ->
+    OK to bind the mic-holder's unrecognized face) from an off-mic known
+    speaker (already has a face -> skip). Best-effort: any failure -> False so
+    the guard treats the speaker as face-less and allows the bootstrap bind."""
+    try:
+        from presence.face_identifier import get_shared_identifier
+        return get_shared_identifier()._store.path_for(name).exists()
+    except Exception:
+        return False
+
+
 class Orchestrator:
     def __init__(self):
         self.conversation = ConversationManager()
@@ -1489,8 +1504,23 @@ class Orchestrator:
         if face_obs is not None:
             if face_obs.anchored_face_crops:
                 _n = face_obs.anchored_face_name
-                _bound = (_n == speaker_name if _n is not None
-                          else speaker_name.startswith("unknown_"))
+                # F1 binding: bind the mic-holder's anchored face to this
+                # speaker when the two sensors agree. Recognized anchored face
+                # -> must match the voice. UNRECOGNIZED anchored face -> bind for
+                # a fresh visitor (unknown_N) OR a known speaker who has no face
+                # enrolled yet (voice-only-promotion bootstrap: the name-tell
+                # minted a voiceprint before a face ever bound, so speaker_name
+                # is a known name but the face is still unseen). Keep SKIPPING a
+                # known speaker who ALREADY has an enrolled face: an unrecognized
+                # mic-holder face then means they are off-mic while someone else
+                # holds the lit mic (the wrong-face commit this guard exists to
+                # avoid). Fixes the catch-22 where a voice-known/face-unknown
+                # person could never bootstrap their face (Tushar, 2026-07-15).
+                if _n is not None:
+                    _bound = (_n == speaker_name)
+                else:
+                    _bound = (speaker_name.startswith("unknown_")
+                              or not _speaker_has_enrolled_face(speaker_name))
                 if _bound:
                     self._cosample.add(speaker_name,
                                        list(face_obs.anchored_face_crops))
