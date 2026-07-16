@@ -49,7 +49,8 @@ from web.app import (app, init as web_init, broadcast_event, update_metrics,
 from vision.context import VisionContext
 from vision.visual_question import is_visual_question, is_self_referential_visual_question
 from conversation.enroll_intent import (
-    detect_enroll_intent, detect_identity_correction, detect_self_intro)
+    detect_enroll_intent, detect_identity_correction, detect_self_intro,
+    latch_speaker_ok)
 from presence.cosample import CoSampleBuffer
 from conversation import tool_router
 from vision.supervisor import BehaviorSupervisor
@@ -270,7 +271,10 @@ class Orchestrator:
         # some future turn happens to clear it.
         self._enroll_latch_ts: float = 0.0
 
-    ENROLL_LATCH_TTL_SEC = 120.0
+    # Booth-scale expiry (Dan 2026-07-16, was 120s): every exchange refreshes
+    # the stamp, so TTL measures silence since the LAST exchange — at 120s a
+    # mis-armed latch effectively never died at booth pacing.
+    ENROLL_LATCH_TTL_SEC = 30.0
 
     def _enroll_latch_pending(self) -> bool:
         """True while an enroll latch is armed and fresh; expires stale ones."""
@@ -921,6 +925,27 @@ class Orchestrator:
             self._pending_enroll_confirm = None
             _latch_live = False
 
+        # Cross-category speaker gate (Dan 2026-07-16, option C — rationale
+        # + live failure in latch_speaker_ok's docstring). A gated turn
+        # falls through to normal processing — so the OTHER speaker's
+        # passive self-intro / introductions dialog (separate latch slots)
+        # can proceed — and does NOT refresh the TTL stamp: cross-talk must
+        # not keep a mis-armed latch alive (booth-scale expiry). The enroll
+        # and misID arm sites BELOW are also `not _latch_live`-gated so the
+        # fallthrough can never clobber the armed latch's single slot or
+        # bump the shared stamp (code review 7-16).
+        _latch_gate_ok = True
+        if _latch_live:
+            _armed = self._pending_enroll_confirm or self._pending_enroll
+            if _armed is not None:
+                _latch_gate_ok = latch_speaker_ok(
+                    _armed.get("speaker_key"), speaker_name)
+                if not _latch_gate_ok:
+                    log.info("[ENROLL] latch speaker-gated: armed_by=%s "
+                             "turn=%s — latch stays armed, turn falls "
+                             "through", _armed.get("speaker_key"),
+                             speaker_name)
+
         # Confirm-before-commit latch (2026-07-02, tests E/F/G): a parsed name
         # was spoken back last turn; an explicit yes commits it, an explicit
         # no re-opens the name ask, a cancel aborts. Anything else RE-ASKS
@@ -930,7 +955,8 @@ class Orchestrator:
         # one-word turns, so a paraphrased confirm is the DEFAULT reply, not
         # an edge case. The dialog owns every turn until resolution; the only
         # no-answer exit is the walk-away TTL.
-        if _unified and _latch_live and self._pending_enroll_confirm is not None:
+        if (_unified and _latch_live and _latch_gate_ok
+                and self._pending_enroll_confirm is not None):
             from conversation.enroll_intent import (
                 confirm_verdict, is_enroll_cancel, confirm_reask_line)
             _latch = self._pending_enroll_confirm
@@ -1000,7 +1026,8 @@ class Orchestrator:
         # Two-turn latch: a prior "enroll me" without a name is waiting for one.
         # This turn supplies it -> speak it back for confirmation (NOT a direct
         # commit — a bare name utterance is where STT homophones bite hardest).
-        if _unified and _latch_live and self._pending_enroll is not None:
+        if (_unified and _latch_live and _latch_gate_ok
+                and self._pending_enroll is not None):
             from conversation.enroll_intent import (
                 extract_reply_name, is_enroll_cancel, name_reask_line)
             # Multi-word-capable, evasive-aware reply parsing (code review
@@ -1053,7 +1080,13 @@ class Orchestrator:
         # voice-enroll-shortcut — skipped wholesale (detector included) under
         # the identity-dialog gate: "enroll me as Bob" at the booth becomes
         # ordinary speech for the LLM, no latch, no reply about enrollment.
-        if _dialogs_ok:
+        # `not _latch_live`: reaching here with a live latch means THIS turn
+        # was speaker-gated above (every consume path returns) — a foreign
+        # speaker's "enroll me as X" must not clobber the armed latch's
+        # single slot / snapshot or refresh the shared TTL stamp (code
+        # review 7-16). Their intro still works via the passive self-intro
+        # and introductions blocks below (separate latch storage).
+        if _dialogs_ok and not _latch_live:
             enroll = detect_enroll_intent(user_text, speaker_name)
             if _unified:
                 # Phase B: route through commit_identity (okDemerzel stores),
@@ -1101,7 +1134,10 @@ class Orchestrator:
         # visitor's self-intro, and the off-mic chain collapses visitors
         # onto enrolled voiceprints, so a normal self-intro reads as a misID
         # protest; worse, confirm-yes is an identity-MUTATION surface.
-        if _unified and _dialogs_ok:
+        # `not _latch_live`: same single-slot protection as the enroll block
+        # above — a gated-out speaker's misID protest must not replace the
+        # armed latch (it can re-arm cleanly after the 30s TTL).
+        if _unified and _dialogs_ok and not _latch_live:
             corr = detect_identity_correction(
                 user_text, speaker_name,
                 speaker_enrolled=self.speaker_id_module.is_known_speaker(

@@ -291,6 +291,24 @@ def confirm_verdict(text: str) -> str:
     return "unclear"
 
 
+def latch_speaker_ok(latch_key: Optional[str], speaker_name: str) -> bool:
+    """Cross-category latch speaker gate (Dan 2026-07-16, option C).
+
+    A latch armed by a KNOWN speaker is answerable only by that exact
+    speaker. A latch armed by an unknown_N is answerable by ANY unknown_*
+    — the same human drifts across unknown clusters on short utterances
+    (live-proven 7-16: unknown_10 -> unknown_11 mid-dialog) — but never by
+    a known speaker, whose words near the mic are coaching or cross-talk,
+    not the visitor's reply. Live failure this gates out: a dan-keyed
+    correction latch consumed unknown_11's "My name is Frank!" as a
+    confirm reply, and unknown_11's own self-intro never armed."""
+    if not latch_key:
+        return True  # legacy latch without a key — no gate to apply
+    if latch_key.startswith("unknown_"):
+        return bool(speaker_name) and speaker_name.startswith("unknown_")
+    return speaker_name == latch_key
+
+
 def is_affirmation(text: str) -> bool:
     """True when the turn reads as an explicit yes (negation wins ties)."""
     return confirm_verdict(text) == "yes"

@@ -1,0 +1,20 @@
+{
+  "persona": "waldo",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: enroll waldo fully so phase 2's latch is KNOWN-armed (the live 7-16 failure was a known-keyed latch eating an unknown's turn)."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Waldo. Spelled W, A, L, D, O.", "expect": "confirm-back Waldo"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] waldo voice+face"},
+
+    {"note": "Phase 2: waldo (KNOWN) arms a rename confirm; a DIFFERENT voice answers yes. Option C gate: latch stays armed, NO commit of wally, turn falls through to the LLM ([ENROLL] latch speaker-gated in journal)."},
+    {"say": "Please enroll me as Wally.", "expect": "confirm-back Wally (latch keyed waldo)"},
+    {"say": "Yes that is right, that is my name.", "voice": "en_US-amy-medium", "expect": "GATED: no [COMMIT], no re-ask consumed — journal shows '[ENROLL] latch speaker-gated: armed_by=waldo'"},
+
+    {"note": "Phase 3: the OWNER's yes still resolves — the gate must not break the happy path (fork-allow disclosure expected, same voice as waldo)."},
+    {"say": "Yes that is right.", "expect": "[COMMIT] wally (fork-allow lookalike disclosure OK)"}
+  ]
+}

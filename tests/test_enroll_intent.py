@@ -497,3 +497,43 @@ def test_correction_real_claims_survive_stoplist():
     from conversation.enroll_intent import detect_identity_correction
     r = detect_identity_correction("My name is Flynn actually", "dan", True)
     assert r.matched and r.name == "flynn"
+
+
+# --- cross-category latch speaker gate (option C, Dan 2026-07-16) ----------
+
+from conversation.enroll_intent import latch_speaker_ok  # noqa: E402
+
+
+def test_latch_gate_known_armed_accepts_only_owner():
+    assert latch_speaker_ok("dan", "dan")
+    assert not latch_speaker_ok("dan", "erin")
+
+
+def test_latch_gate_known_armed_rejects_unknown():
+    # THE live failure 7-16 01:33: dan-keyed correction latch must NOT
+    # consume unknown_11's turn.
+    assert not latch_speaker_ok("dan", "unknown_11")
+
+
+def test_latch_gate_unknown_armed_tolerates_cluster_drift():
+    # Same human drifted unknown_10 -> unknown_11 mid-dialog (7-16); the
+    # dialog only completed because unknown-armed accepts any unknown_*.
+    assert latch_speaker_ok("unknown_10", "unknown_10")
+    assert latch_speaker_ok("unknown_10", "unknown_11")
+
+
+def test_latch_gate_unknown_armed_rejects_known():
+    # Option C's second direction: Dan's coaching words near the mic must
+    # not resolve a visitor's confirm.
+    assert not latch_speaker_ok("unknown_10", "dan")
+
+
+def test_latch_gate_legacy_latch_without_key_is_ungated():
+    assert latch_speaker_ok(None, "dan")
+    assert latch_speaker_ok("", "unknown_3")
+
+
+def test_latch_gate_empty_speaker_rejected_by_keyed_latch():
+    # An unattributed turn is never graded as anyone's answer.
+    assert not latch_speaker_ok("dan", "")
+    assert not latch_speaker_ok("unknown_10", "")

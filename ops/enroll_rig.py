@@ -280,7 +280,9 @@ async def wait_mic_open(max_wait: float = 25.0, settle: float = 1.2) -> None:
 async def run_scenario(mock: Mock, scenario: dict) -> dict:
     """A scenario = {persona, voice, reply_window, steps:[...]}. Each step is
     {"frame": {...}} (set mock scene) or {"say": "...", "expect": "..."} (voice
-    turn) or {"sleep": secs} or {"note": "..."}."""
+    turn) or {"sleep": secs} or {"note": "..."}. A say-step may carry its own
+    "voice" to speak as a SECOND person (latch speaker-gate scenarios,
+    2026-07-16) — the scenario-level voice remains the default."""
     from ops import acoustic_convo_driver as drv
 
     persona = scenario.get("persona", "oliver")
@@ -337,7 +339,8 @@ async def run_scenario(mock: Mock, scenario: dict) -> dict:
             turn_idx += 1
             await wait_mic_open()   # never play into Timmy's own TTS (f0b turn 3)
             await drv.run_turn(turn_idx, step["say"], step.get("expect", ""),
-                               voice, length_scale, msgs, reply_window)
+                               step.get("voice", voice), length_scale, msgs,
+                               reply_window)
 
     await asyncio.sleep(1.0)
     stop.set()

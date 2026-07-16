@@ -45,13 +45,13 @@ def test_float_for_int_knob_coerces_when_integral(toggles):
 
 def test_non_integral_float_for_int_knob_drops_to_default(toggles):
     _write(toggles, {"anchor_led_v_min": 180.5})
-    assert toggles.get("anchor_led_v_min") == 200   # design default
+    assert toggles.get("anchor_led_v_min") == 160   # design default (LED recal 7-13)
 
 
 def test_bool_never_coerces_to_number(toggles):
     _write(toggles, {"anchor_ttl_s": True, "anchor_led_v_min": True})
     assert toggles.get("anchor_ttl_s") == 30.0
-    assert toggles.get("anchor_led_v_min") == 200
+    assert toggles.get("anchor_led_v_min") == 160  # default post-recal 7-13
 
 
 def test_number_never_coerces_to_bool(toggles):
