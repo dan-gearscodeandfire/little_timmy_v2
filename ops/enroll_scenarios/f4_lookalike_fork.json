@@ -1,0 +1,17 @@
+{
+  "persona": "quinn",
+  "voice": "en_US-ryan-high",
+  "reply_window": 16.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: enroll quinn fully (face+voice) -- the 'existing person Z'."},
+    {"say": "Hello there, how is it going?", "expect": "unknown_1"},
+    {"say": "Please enroll me.", "expect": "asks name"},
+    {"say": "The name is Quinn. Spelled Q, U, I, N, N.", "expect": "confirm-back Quinn"},
+    {"say": "Yes, correct.", "expect": "[COMMIT] quinn voice+face"},
+
+    {"note": "Phase 2: the SAME face and voice claims a DIFFERENT name -- the doppelganger. OLD: lookalike refusal (Tushar trap). NEW: fork-allow + spoken disclosure."},
+    {"say": "Please enroll me as Quill.", "expect": "confirm-back Quill"},
+    {"say": "Yes, correct.", "expect": "FORK-ALLOWED: 'You look and sound a lot like Quinn, but I'll remember you as Quill.'"}
+  ]
+}
