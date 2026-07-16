@@ -74,6 +74,33 @@ def test_rename_when_voice_matches_denied_record(stores):
     assert route.d_denied is not None and route.d_denied < 0.3
 
 
+def test_rename_when_denied_token_is_stt_fragment(stores):
+    """Rig f13: STT fragmented the enrolled name — "not too sharp" parsed the
+    denied token as "too", not "toosharp". The rename candidate must be the
+    ATTRIBUTED identity (what the protester is recognized as), gated by voice
+    distance, so the fragment can't drop the fix through to a fork."""
+    id_map, voice = stores
+    tushar = _unit(7)
+    _enroll(id_map, voice, "toosharp", tushar)
+    route = classify_correction(
+        "too", "tushar", [_near(tushar, seed=2)],   # denied token is a fragment
+        attributed="toosharp", id_map=id_map, voice_store=voice)
+    assert route.branch == "rename"
+    assert route.denied_canonical == "toosharp"
+    assert route.target == "tushar"
+
+
+def test_different_person_misattributed_still_forks(stores):
+    """The attributed-identity default must NOT force a rename when a DIFFERENT
+    person is misattributed to it — their voice fails the distance gate."""
+    id_map, voice = stores
+    _enroll(id_map, voice, "toosharp", _unit(7))
+    route = classify_correction(
+        "too", "toosharp", [_unit(7777)],           # a stranger's voice
+        attributed="toosharp", id_map=id_map, voice_store=voice)
+    assert route.branch == "fork"                    # not a silent takeover
+
+
 def test_rename_spoken_denied_resolves_to_attributed_fork(stores):
     """Attributed mike_2 (auto-suffix); the protest SAYS "Mike" — the denied
     token must resolve onto the attribution, not the other Mike."""

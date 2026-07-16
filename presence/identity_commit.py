@@ -340,7 +340,16 @@ def classify_correction(denied: str | None, claimed: str, voice_embs: list, *,
     d = (denied or "").strip().lower()
     c = (claimed or "").strip().lower()
     att = (attributed or "").strip().lower()
-    if att and (not d or d == att or id_map.base_name(att) == d):
+    # The record to consider renaming is the identity the protester is
+    # CURRENTLY attributed to, whenever that is a real enrolled speaker — the
+    # parsed denied token is an unreliable STT fragment ("toosharp" heard as
+    # "too" in "my name is not too sharp") and must not defeat the rename
+    # (rig f13, 2026-07-16). The voice-distance gate below still decides
+    # rename-vs-fork, so a genuinely different person misattributed to that
+    # identity falls through to rebind/fork on their own (large) distance.
+    if att and not att.startswith("unknown_") and id_map.id_for(att) is not None:
+        denied_canonical = att
+    elif att and (not d or d == att or id_map.base_name(att) == d):
         denied_canonical = att
     else:
         denied_canonical = d
