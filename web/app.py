@@ -1149,6 +1149,28 @@ async def identity_revive(payload: dict | None = None):
     return {"ok": res.ok, **asdict(res)}
 
 
+@app.post("/api/identity/rename")
+async def identity_rename(payload: dict | None = None):
+    """Relabel an enrolled persona IN PLACE, speaker_id preserved (Dan
+    2026-07-15: the mis-heard-name fix — "too_sharp" -> "tushar" without
+    discarding biometrics or orphaning facts). ``{"old": ..., "new": ...}``.
+    Renames prototype files + id-map entry, relabels the live recognizers
+    (next turn uses the new name, no restart), updates speakers.name, and
+    rewrites the persona's fact subjects."""
+    from dataclasses import asdict
+    from presence.identity_commit import rename_identity
+    old = ((payload or {}).get("old") or "").strip()
+    new = ((payload or {}).get("new") or "").strip()
+    if not old or not new:
+        return {"ok": False, "error": "old and new required"}
+    spk, face = _live_identifiers()
+    ledger = getattr(_orchestrator, "room_ledger", None) if _orchestrator else None
+    res = await rename_identity(
+        old, new, speaker_identifier=spk, face_identifier=face,
+        room_ledger=ledger)
+    return {"ok": res.ok, **asdict(res)}
+
+
 @app.get("/api/vision/auto_poll")
 async def get_vision_auto_poll():
     """Read the periodic-poll-loop toggle. Event-driven trigger_capture

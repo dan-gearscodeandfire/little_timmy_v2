@@ -319,6 +319,36 @@ class IdMap:
         log.info("Revived speaker_id=%d for %s", sid, clean)
         return sid
 
+    def rename(self, old: str, new: str) -> int:
+        """Relabel an active identity IN PLACE, preserving its speaker_id (so
+        facts/memories FK history stays valid — the whole point over
+        retire+re-enroll). Refuses (ValueError) when: old is reserved/absent,
+        new is reserved/invalid/already active, or new is tombstoned (a
+        retired name must not come back via a side door — revive is the
+        explicit path). Returns the preserved id. (Dan 2026-07-15: the
+        mis-heard-name correction path.)"""
+        o = (old or "").strip().lower()
+        n = (new or "").strip().lower()
+        if o in self.reserved_ids or n in self.reserved_ids:
+            raise ValueError("refusing to rename a reserved identity")
+        if not is_valid_enroll_name(n):
+            raise ValueError(f"invalid target name {n!r}")
+        if o == n:
+            raise ValueError("old and new names are identical")
+        m = self.read()
+        retired = m.get(self._RETIRED_KEY, {})
+        if n in retired:
+            raise ValueError(f"target {n!r} is retired — revive explicitly")
+        if isinstance(m.get(n), int):
+            raise ValueError(f"target {n!r} already exists")
+        sid = m.pop(o, None)
+        if not isinstance(sid, int):
+            raise ValueError(f"{o!r} is not an active identity")
+        m[n] = sid
+        self.write(m)
+        log.info("Renamed %s -> %s (speaker_id=%d preserved)", o, n, sid)
+        return sid
+
     def id_for(self, name: str) -> int | None:
         """Return the existing id for ``name`` (reserved or mapped), else None."""
         clean = (name or "").strip().lower()

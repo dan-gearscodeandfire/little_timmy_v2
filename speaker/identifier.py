@@ -683,7 +683,21 @@ class SpeakerIdentifier:
                 # initial prototype set.
                 if us.avg_embedding is not None and len(us.embeddings) >= 1:
                     protos = _build_prototypes(us.embeddings)
-                    new_id = self._next_known_id()
+                    persist = (ONLINE_LEARNING_ENABLED
+                               and len(us.embeddings) >= MIN_ENROLL_SAMPLES)
+                    # Eager id flush (Dan 2026-07-15, rig durability finding):
+                    # a persisting promotion must take the SHARED id-map id,
+                    # not a session-local one — the old _next_known_id() left
+                    # the durable .npy with no id-map entry, so a restart
+                    # re-allocated a fresh id and orphaned the session's
+                    # facts (the 'tushar vanished at 17:48' failure). The
+                    # startup speakers-DB sync mints the Postgres row from
+                    # the id-map; the create_task below just does it eagerly
+                    # so THIS session's facts can FK immediately.
+                    if persist:
+                        new_id = self._id_map.allocate(clean)
+                    else:
+                        new_id = self._next_known_id()
                     self._known_speakers.append(KnownSpeaker(
                         speaker_id=new_id,
                         name=clean,
@@ -693,11 +707,18 @@ class SpeakerIdentifier:
                     log.info("[T1] Promoted %s (was %s) to known speaker_id=%d "
                              "with %d prototype(s) from %d samples",
                              clean, us.temp_id, new_id, protos.shape[0], len(us.embeddings))
-                    if ONLINE_LEARNING_ENABLED and len(us.embeddings) >= MIN_ENROLL_SAMPLES:
+                    if persist:
                         try:
                             self.persist_voiceprint(clean, protos)
                         except Exception as e:
                             log.warning("[T1] persist failed for %s: %s", clean, e)
+                        try:
+                            import asyncio
+                            from db.speakers import sync_speakers_from_id_map
+                            asyncio.get_running_loop().create_task(
+                                sync_speakers_from_id_map())
+                        except Exception:
+                            pass  # no loop / db down — startup sync reconciles
                     else:
                         log.info("[T1] persist skipped for %s (online_learning=%s, "
                                  "samples=%d) — session-only",

@@ -924,3 +924,154 @@ async def revive_identity(
              res.db_synced,
              (" warn=" + ",".join(res.warnings)) if res.warnings else "")
     return res
+
+
+# ── Rename: relabel in place, id preserved ───────────────────────────────────
+#
+# The correction path for a mis-heard enrolled name (Dan 2026-07-15, Open
+# Sauce spec 9: "Tushar" stuck as "too_sharp" with no escape). Same core/
+# wrapper split as retire: a hermetic store core plus a live async wrapper
+# that adds the in-memory relabel, the Postgres name update, and the fact-
+# subject rewrite. The speaker_id NEVER changes — that is the whole point
+# over retire+re-enroll (facts/memories FK history stays valid).
+
+@dataclass
+class RenameResult:
+    old: str
+    new: str
+    speaker_id: int | None = None
+    status: str = "ok"
+    error: str | None = None
+    files_moved: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
+    db_synced: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def rename_identity_stores(
+    old: str, new: str, *,
+    id_map: IdMap,
+    voice_store: PrototypeFileStore | None = None,
+    face_store: PrototypeFileStore | None = None,
+) -> RenameResult:
+    """Hermetic core: relabel the id-map entry (id preserved) and rename the
+    active prototype files. Rolls the files back if the id-map rename or a
+    later file move fails. Historic ``.bak`` files keep the old name (they
+    are timestamped archives, not live prototypes)."""
+    o = (old or "").strip().lower()
+    n = (new or "").strip().lower()
+    res = RenameResult(old=o, new=n)
+
+    moves: list[tuple] = []   # (src, dst) executed, for rollback
+    for store in (voice_store, face_store):
+        if store is None:
+            continue
+        src = store.path_for(o)
+        dst = store.path_for(n)
+        if not src.exists():
+            continue
+        if dst.exists():
+            res.status = "conflict"
+            res.error = f"target file already exists: {dst.name}"
+            break
+        moves.append((src, dst))
+
+    if res.status == "ok":
+        done: list[tuple] = []
+        try:
+            for src, dst in moves:
+                src.rename(dst)
+                done.append((src, dst))
+                res.files_moved.append(f"{src.name} -> {dst.name}")
+            res.speaker_id = id_map.rename(o, n)
+        except Exception as e:
+            for src, dst in reversed(done):
+                try:
+                    dst.rename(src)
+                except Exception:
+                    res.warnings.append(f"rollback_stuck:{dst.name}")
+            res.files_moved.clear()
+            res.status = "error"
+            res.error = str(e)
+
+    if res.status != "ok":
+        log.warning("[RENAME] %s -> %s refused/failed: %s", o, n, res.error)
+    return res
+
+
+async def rename_identity(
+    old: str, new: str, *,
+    speaker_identifier=None,
+    face_identifier=None,
+    room_ledger=None,
+    db_sync: bool = True,
+) -> RenameResult:
+    """Live rename: stores + id-map (core), in-memory identifiers relabelled
+    in place (recognition flips to the new name on the very next turn — no
+    restart), Postgres ``speakers.name`` updated, and the persona's fact
+    SUBJECTS rewritten (``_normalize_subject`` keys facts by speaker name,
+    so ``too_sharp.likes = robots`` must become ``tushar.likes = robots``)."""
+    o = (old or "").strip().lower()
+    n = (new or "").strip().lower()
+
+    if face_identifier is None:
+        from presence.face_identifier import get_shared_identifier
+        face_identifier = get_shared_identifier()
+    if speaker_identifier is None:
+        from speaker.identifier import SpeakerIdentifier
+        speaker_identifier = SpeakerIdentifier()
+
+    id_map = face_identifier._id_map
+    res = rename_identity_stores(
+        o, n, id_map=id_map,
+        voice_store=speaker_identifier._store,
+        face_store=face_identifier._store)
+    if not res.ok:
+        return res
+
+    # In-memory relabel — recognition continuity, no reload needed (the
+    # loaded prototypes are unchanged, only the label moves).
+    for ks in speaker_identifier._known_speakers:
+        if ks.name == o:
+            ks.name = n
+    for kf in face_identifier._known:
+        if kf.name == o:
+            kf.name = n
+    for attr in ("_recent_confident_embs", "_drift_buffers"):
+        d = getattr(speaker_identifier, attr, None)
+        if isinstance(d, dict) and o in d:
+            d[n] = d.pop(o)
+
+    if db_sync and res.speaker_id is not None:
+        try:
+            from db.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE speakers SET name = $1 WHERE id = $2",
+                    n, res.speaker_id)
+                rewritten = await conn.execute(
+                    "UPDATE facts SET subject = $1 WHERE lower(subject) = $2",
+                    n, o)
+                res.warnings.append(f"fact_subjects:{rewritten}")
+            res.db_synced = True
+        except Exception as e:
+            res.warnings.append(f"db_failed:{e}")
+            log.warning("[RENAME] DB update failed for %s->%s: %s "
+                        "(stores renamed; startup sync reconciles speakers)",
+                        o, n, e)
+
+    if room_ledger is not None:
+        try:
+            room_ledger.forget(o)   # ages back in under the new name
+        except Exception as e:
+            res.warnings.append(f"ledger_failed:{e}")
+
+    log.info("[RENAME] %s -> %s id=%s status=%s files=%d db=%s%s",
+             o, n, res.speaker_id, res.status, len(res.files_moved),
+             res.db_synced,
+             (" warn=" + ",".join(res.warnings)) if res.warnings else "")
+    return res
