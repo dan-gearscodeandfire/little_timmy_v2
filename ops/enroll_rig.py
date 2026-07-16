@@ -55,7 +55,9 @@ DROPIN_CONTENT = f"""# INSTALLED BY ops/enroll_rig.py — safe to delete (restor
 Environment=TIMMY_CAPTURE_URL={MOCK_BASE}/capture
 Environment=TIMMY_FACES_URL={MOCK_BASE}/faces
 Environment=TIMMY_BEHAVIOR_URL={MOCK_BASE}/behavior/status
+Environment=TIMMY_BEHAVIOR_MODE_URL={MOCK_BASE}/behavior
 Environment=TIMMY_SERVO_MOVE_URL={MOCK_BASE}/servo/move
+Environment=TIMMY_SERVO_STATUS_URL={MOCK_BASE}/servo/status
 """
 
 
@@ -359,12 +361,14 @@ async def run_scenario(mock: Mock, scenario: dict) -> dict:
              if any(k in ln for k in ("[ANCHOR]", "[INTRO]", "[COMMIT]",
                                       "[FRONTAL-SHADOW]", persona.lower()))]
 
+    slog = mock.servo_log()
     report = {
         "persona": persona,
         "persona_identity": persona_row,
         "new_identities": new_identities,
         "anchor": anchor,
-        "servo_moves": len(mock.servo_log()),
+        "servo_moves": len(slog),
+        "servo_log_tail": slog[-15:],
         "journal_marks": marks[-40:],
         "bound_face": bool(persona_row and persona_row.get("face")),
         "bound_voice": bool(persona_row and persona_row.get("voice")),

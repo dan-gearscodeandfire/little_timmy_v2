@@ -517,6 +517,10 @@ LEDGER_SAVE_PATH = os.getenv(
 )
 LOOK_AT_ENABLED = os.getenv("TIMMY_LOOK_AT_ENABLED", "true").lower() == "true"
 STREAMERPI_SERVO_MOVE_URL = os.getenv("TIMMY_SERVO_MOVE_URL", "https://192.168.1.110:8080/servo/move")
+# Current head pose for the framing controller. NB the reply nests position:
+# read current_position.{horizontal,vertical} — there is no top-level pan/tilt.
+STREAMERPI_SERVO_STATUS_URL = os.getenv(
+    "TIMMY_SERVO_STATUS_URL", "https://192.168.1.110:8080/servo/status")
 LOOK_AT_COOLDOWN_SEC = float(os.getenv("TIMMY_LOOK_AT_COOLDOWN_SEC", "30.0"))
 LOOK_AT_MAX_POSE_AGE_SEC = float(os.getenv("TIMMY_LOOK_AT_MAX_POSE_AGE_SEC", "120.0"))
 LOOK_AT_FRESH_FACE_AGE_SEC = float(os.getenv("TIMMY_LOOK_AT_FRESH_FACE_AGE_SEC", "30.0"))

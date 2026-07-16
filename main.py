@@ -2416,6 +2416,132 @@ async def main():
 
     anchor_poll_task = asyncio.create_task(anchor_poll_monitor())
 
+    async def framing_monitor():
+        """Booth framing controller (Dan 2026-07-15, spec 2): brain-owned
+        head movement under EXPO. Centers on the average centroid of
+        qualifying faces, clamps so the green-LED mic stays in frame, and
+        sweeps to reacquire a lost LED. The Pi's own tracker is leased off
+        with a behavior 'hold' each move (ownership ruling: brain owns,
+        Pi deferred). Gentle by design: slow cadence + deadband + low speed
+        — the anti-darting lessons are baked in as toggles."""
+        from presence.framing import (LedScan, clip_centroid_for_led,
+                                      faces_centroid)
+        from presence.identity import translate_pose
+        scan = LedScan()
+        while True:
+            try:
+                await asyncio.sleep(
+                    float(runtime_toggles.get("framing_interval_s")))
+                if not runtime_toggles.get("centroid_framing_enabled"):
+                    continue
+                if runtime_toggles.get("situation_regime") != "EXPO":
+                    continue
+                remote = getattr(orch.vision, "_face_remote", None) \
+                    if getattr(orch, "vision", None) else None
+                if remote is None:
+                    continue
+                state = await remote.fetch_full()
+                if not state or (state.get("age_s") or 99) > 4.0:
+                    continue
+                size = state.get("image_size")
+                bboxes = [f.get("bbox") for f in state.get("faces", [])
+                          if f.get("bbox")]
+                centroid = faces_centroid(
+                    bboxes, size,
+                    float(runtime_toggles.get("framing_min_face_frac")))
+
+                # Current head pose — nested current_position fields.
+                try:
+                    r = await orch._face_http.get(
+                        config.STREAMERPI_SERVO_STATUS_URL, timeout=1.5)
+                    pos = (r.json() or {}).get("current_position") or {}
+                    cur_pan = float(pos["horizontal"])
+                    cur_tilt = float(pos["vertical"])
+                except Exception:
+                    continue    # can't see the head — never move it blind
+
+                # LED freshness drives the mode: fresh -> clamp; stale with
+                # someone present -> scan for it; no faces at all -> idle.
+                # Keyed on captured_at age (the CV anchor poll restamps it on
+                # every sighting, ~2s), NOT anchor_active() — the 30s dialog
+                # TTL is a different concern and would delay the scan.
+                st = anchor.get_anchor()
+                led_stale_s = (time.time() - st.captured_at) if st else 1e9
+                timeout_s = float(
+                    runtime_toggles.get("led_search_timeout_s"))
+                led_fresh = (runtime_toggles.get("anchor_enabled")
+                             and st is not None and st.led_xy is not None
+                             and led_stale_s < timeout_s)
+
+                target = None
+                if centroid is not None and led_fresh:
+                    scan.reset()
+                    c = clip_centroid_for_led(
+                        centroid, st.led_xy, size,
+                        float(runtime_toggles.get("framing_led_margin")))
+                    tp, tt = translate_pose(cur_pan, cur_tilt, c)
+                    target = (tp, tt)
+                elif centroid is not None and not led_fresh:
+                    if (runtime_toggles.get("anchor_enabled")
+                            and st is not None
+                            and led_stale_s > timeout_s):
+                        # Someone is at the booth but the mic LED is lost —
+                        # sweep pan to reacquire (tilt stays put).
+                        target = (cur_pan + scan.next_offset(), cur_tilt)
+                        log.info("[FRAMING] LED unseen %.0fs -> scan to "
+                                 "pan=%.1f", led_stale_s, target[0])
+                    else:
+                        scan.reset()
+                        tp, tt = translate_pose(cur_pan, cur_tilt, centroid)
+                        target = (tp, tt)
+                else:
+                    scan.reset()
+                    continue
+
+                # Absolute bounds: never command past them even if the
+                # geometry asks (walk-off insurance — see toggle comment).
+                pb = float(runtime_toggles.get("framing_pan_bound"))
+                tb = float(runtime_toggles.get("framing_tilt_bound"))
+                target = (min(max(target[0], -pb), pb),
+                          min(max(target[1], -tb), tb))
+
+                dead = float(runtime_toggles.get("framing_deadband_steps"))
+                if (abs(target[0] - cur_pan)
+                        + abs(target[1] - cur_tilt)) < dead:
+                    continue
+
+                # Lease the Pi tracker off for ~2 ticks, then move.
+                interval_ms = int(float(
+                    runtime_toggles.get("framing_interval_s")) * 2000)
+                try:
+                    await orch._face_http.post(
+                        config.STREAMERPI_BEHAVIOR_MODE_URL,
+                        json={"mode": "hold", "priority": "critical",
+                              "timeout_ms": interval_ms})
+                except Exception:
+                    pass    # hold is best-effort; the move is rate-limited
+                try:
+                    await orch._face_http.post(
+                        config.STREAMERPI_SERVO_MOVE_URL,
+                        json={"pan": round(target[0], 1),
+                              "tilt": round(target[1], 1),
+                              "speed": float(
+                                  runtime_toggles.get("framing_speed"))})
+                    log.info("[FRAMING] move pan=%.1f tilt=%.1f "
+                             "(cur %.1f/%.1f, faces=%d, led=%s)",
+                             target[0], target[1], cur_pan, cur_tilt,
+                             len(bboxes), "fresh" if led_fresh else
+                             f"stale {led_stale_s:.0f}s")
+                except Exception:
+                    log.debug("[FRAMING] servo move failed", exc_info=True)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("[FRAMING] tick error", exc_info=True)
+                await asyncio.sleep(2.0)
+
+    framing_task = asyncio.create_task(framing_monitor())
+
     log.info("=== Little Timmy ready on http://0.0.0.0:%d ===", config.WEB_PORT)
 
     try:
@@ -2452,6 +2578,7 @@ async def main():
         log.info("Shutting down...")
     finally:
         anchor_poll_task.cancel()
+        framing_task.cancel()
         face_enroll_task.cancel()
         await orch.supervisor.stop()
         await orch.vision.stop()

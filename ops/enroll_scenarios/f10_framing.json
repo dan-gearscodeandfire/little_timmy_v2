@@ -1,0 +1,22 @@
+{
+  "persona": "nobody",
+  "voice": "en_US-ryan-high",
+  "reply_window": 10.0,
+  "initial_frame": {"face": "scene", "led_below_face": true},
+  "steps": [
+    {"note": "Phase 1: one face + LED fresh. Face center-x=0.52 -> near-center; deadband should mostly hold (gentle, no darting)."},
+    {"sleep": 8.0},
+
+    {"note": "Phase 2: second (synthetic) face far right -> centroid shifts right -> [FRAMING] move; LED clamp caps the pan so the LED stays in frame."},
+    {"frame": {"face": "scene", "led_below_face": true, "extra_faces": [{"bbox": [500, 130, 620, 300]}]}},
+    {"sleep": 9.0},
+
+    {"note": "Phase 3: LED disappears (face stays). After led_search_timeout_s (5s), [FRAMING] LED-scan sweep steps should appear."},
+    {"frame": {"face": "scene"}},
+    {"sleep": 16.0},
+
+    {"note": "Phase 4: LED returns -> scan stops, clamped centroid resumes."},
+    {"frame": {"face": "scene", "led_below_face": true}},
+    {"sleep": 8.0}
+  ]
+}

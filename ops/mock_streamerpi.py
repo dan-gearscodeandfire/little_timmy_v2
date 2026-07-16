@@ -101,6 +101,11 @@ class Scene:
         self._face_bbox = None
         self._led_xy = None
         self.servo_log: list[dict] = []
+        self.behavior_log: list[dict] = []
+        # Simulated head pose: /servo/move updates it; /servo/status reports
+        # it nested (current_position.{horizontal,vertical} — matching the
+        # real streamerpi shape the framing controller reads).
+        self.servo_pos = {"horizontal": 0.0, "vertical": 0.0}
         self._rendered_at = 0.0
 
     def set_frame(self, face=None, led=None, led_below_face=False,
@@ -233,10 +238,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, jpeg, "image/jpeg")
         elif path == "/faces":
             self._send_json(SCENE.faces_payload())
-        elif path in ("/behavior/status", "/behavior"):
+        elif path in ("/behavior/status",):
             self._send_json(SCENE.behavior_payload())
+        elif path == "/servo/status":
+            self._send_json({"current_position": dict(SCENE.servo_pos)})
         elif path == "/rig/servo_log":
             self._send_json(SCENE.servo_log)
+        elif path == "/rig/behavior_log":
+            self._send_json(SCENE.behavior_log)
         elif path == "/rig/health":
             self._send_json({"ok": True, "has_frame": SCENE._jpeg is not None})
         else:
@@ -248,6 +257,15 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             body["ts"] = time.time()
             SCENE.servo_log.append(body)
+            if "pan" in body:
+                SCENE.servo_pos["horizontal"] = float(body["pan"])
+            if "tilt" in body:
+                SCENE.servo_pos["vertical"] = float(body["tilt"])
+            self._send_json({"ok": True})
+        elif path == "/behavior":
+            body = self._read_json()
+            body["ts"] = time.time()
+            SCENE.behavior_log.append(body)
             self._send_json({"ok": True})
         elif path == "/rig/frame":
             body = self._read_json()

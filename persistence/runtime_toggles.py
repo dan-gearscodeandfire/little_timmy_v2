@@ -179,6 +179,25 @@ _DEFAULTS: dict = {
     # 2026-07-07; the per-turn-only refresh opened the gate one turn late).
     # Keep well under anchor_ttl_s. Only ticks while anchor_enabled.
     "anchor_poll_interval_s": 2.0,
+    # --- Booth framing controller (Dan 2026-07-15, Open Sauce spec 2) -------
+    # Brain-owned head framing at the booth: center on the average centroid
+    # of qualifying faces while ALWAYS keeping the green-LED mic in frame;
+    # sweep to reacquire the LED when it's been unseen too long. Runs ONLY
+    # under the EXPO regime (main.framing_monitor); the Pi's own single-face
+    # tracker is leased off via behavior 'hold' while this drives (Dan
+    # ownership ruling 2026-07-15: brain owns, Pi deferred).
+    "centroid_framing_enabled": True,
+    "framing_interval_s": 2.5,
+    "framing_min_face_frac": 0.10,   # bbox height/frame height to qualify
+    "framing_led_margin": 0.15,      # LED stays >= this frac from any edge
+    "framing_deadband_steps": 3.0,   # skip moves smaller than this (pan+tilt)
+    "framing_speed": 0.6,            # gentle — booth crowd, no darting
+    "led_search_timeout_s": 5.0,     # LED unseen this long -> scan for it
+    # Absolute command bounds (UI steps from center) — brain-side insurance
+    # against open-loop walk-off if /faces ever goes stale-but-served (the
+    # static-mock rig run integrated corrections without physical feedback).
+    "framing_pan_bound": 60.0,
+    "framing_tilt_bound": 30.0,
     # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
     # All default-OFF / today's-behavior. Prototype — enable only after Dan's
     # live review. Read live per turn by presence.identity.IdentityFusion.
