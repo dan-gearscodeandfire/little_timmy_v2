@@ -112,13 +112,35 @@ def _speaker_has_enrolled_face(name: str) -> bool:
     (``face_store.path_for(name).exists()``). Used by the anchor co-sample
     guard to tell a voice-only-promotion bootstrap (known voice, no face yet ->
     OK to bind the mic-holder's unrecognized face) from an off-mic known
-    speaker (already has a face -> skip). Best-effort: any failure -> False so
-    the guard treats the speaker as face-less and allows the bootstrap bind."""
+    speaker (already has a face -> skip). FAILS CLOSED (review 7-15): an error
+    here means we don't know, and "don't know" must SKIP the bind, not allow
+    it — returning False on failure would let an off-mic bystander's
+    unrecognized face bind to a known identity (the exact F1 misID this guard
+    exists to prevent). Worst case of failing closed: a legitimate bootstrap
+    bind waits for a later grab (the co-sample buffer keeps accumulating)."""
     try:
         from presence.face_identifier import get_shared_identifier
         return get_shared_identifier()._store.path_for(name).exists()
     except Exception:
-        return False
+        log.warning("[ANCHOR] enrolled-face check failed for %r — "
+                    "failing CLOSED (skip bind)", name, exc_info=True)
+        return True
+
+
+def _may_bind_anchored(anchored_name, speaker_name: str) -> bool:
+    """Shared F1 bind-eligibility rule for anchored face crops — the SINGLE
+    predicate for both the co-sample feed and the enroll live-grab fallback
+    (review 7-15: was duplicated at both sites; a fix to one would diverge
+    two identity-critical gates). Recognized anchored face -> must match the
+    voice. UNRECOGNIZED anchored face -> bind only for a fresh visitor
+    (unknown_N) or a known speaker with no face enrolled yet (voice-only-
+    promotion bootstrap). A known speaker who ALREADY has an enrolled face
+    keeps SKIPPING: an unrecognized mic-holder face then means they are
+    off-mic while someone else holds the lit mic."""
+    if anchored_name is not None:
+        return anchored_name == speaker_name
+    return (speaker_name.startswith("unknown_")
+            or not _speaker_has_enrolled_face(speaker_name))
 
 
 class Orchestrator:
@@ -476,13 +498,8 @@ class Orchestrator:
                     # known-but-face-less bootstrap, 2026-07-15 — this
                     # fallback kept the old unknown_-only guard and refused
                     # a voice-known visitor's live grab).
-                    _n = obs.anchored_face_name
-                    if _n is not None:
-                        _ok = (_n == speaker_name)
-                    else:
-                        _ok = (speaker_name.startswith("unknown_")
-                               or not _speaker_has_enrolled_face(speaker_name))
-                    if _ok:
+                    if _may_bind_anchored(obs.anchored_face_name,
+                                          speaker_name):
                         face_crops = list(obs.anchored_face_crops)
                 elif obs.sole_face_crops:
                     face_crops = list(obs.sole_face_crops)
@@ -1542,24 +1559,12 @@ class Orchestrator:
         if face_obs is not None:
             if face_obs.anchored_face_crops:
                 _n = face_obs.anchored_face_name
-                # F1 binding: bind the mic-holder's anchored face to this
-                # speaker when the two sensors agree. Recognized anchored face
-                # -> must match the voice. UNRECOGNIZED anchored face -> bind for
-                # a fresh visitor (unknown_N) OR a known speaker who has no face
-                # enrolled yet (voice-only-promotion bootstrap: the name-tell
-                # minted a voiceprint before a face ever bound, so speaker_name
-                # is a known name but the face is still unseen). Keep SKIPPING a
-                # known speaker who ALREADY has an enrolled face: an unrecognized
-                # mic-holder face then means they are off-mic while someone else
-                # holds the lit mic (the wrong-face commit this guard exists to
-                # avoid). Fixes the catch-22 where a voice-known/face-unknown
-                # person could never bootstrap their face (Tushar, 2026-07-15).
-                if _n is not None:
-                    _bound = (_n == speaker_name)
-                else:
-                    _bound = (speaker_name.startswith("unknown_")
-                              or not _speaker_has_enrolled_face(speaker_name))
-                if _bound:
+                # F1 binding — see _may_bind_anchored for the full rule
+                # (recognized-must-match / unknown_N / known-but-face-less
+                # bootstrap). Fixes the catch-22 where a voice-known/
+                # face-unknown person could never bootstrap their face
+                # (Tushar, 2026-07-15).
+                if _may_bind_anchored(_n, speaker_name):
                     self._cosample.add(speaker_name,
                                        list(face_obs.anchored_face_crops))
                 else:
@@ -2441,7 +2446,10 @@ async def main():
                 if remote is None:
                     continue
                 state = await remote.fetch_full()
-                if not state or (state.get("age_s") or 99) > 4.0:
+                # Explicit None check: age_s == 0.0 is the FRESHEST state,
+                # not a missing one (`or` would map it to 99 -> skipped).
+                age_s = state.get("age_s") if state else None
+                if not state or age_s is None or age_s > 4.0:
                     continue
                 size = state.get("image_size")
                 bboxes = [f.get("bbox") for f in state.get("faces", [])
@@ -2474,6 +2482,7 @@ async def main():
                              and led_stale_s < timeout_s)
 
                 target = None
+                is_scan = False
                 if centroid is not None and led_fresh:
                     scan.reset()
                     c = clip_centroid_for_led(
@@ -2488,6 +2497,7 @@ async def main():
                         # Someone is at the booth but the mic LED is lost —
                         # sweep pan to reacquire (tilt stays put).
                         target = (cur_pan + scan.next_offset(), cur_tilt)
+                        is_scan = True
                         log.info("[FRAMING] LED unseen %.0fs -> scan to "
                                  "pan=%.1f", led_stale_s, target[0])
                     else:
@@ -2504,6 +2514,19 @@ async def main():
                 tb = float(runtime_toggles.get("framing_tilt_bound"))
                 target = (min(max(target[0], -pb), pb),
                           min(max(target[1], -tb), tb))
+
+                # Per-tick rate clamp (review 7-15): if /servo/status lags
+                # the last commanded move, the same error re-commands and
+                # oscillates within bounds. Capping the per-tick delta from
+                # the REPORTED pose bounds any stale-status double-command
+                # to one gentle step; a real correction spreads over ticks.
+                # The LED scan is exempt — its expanding sweep (up to ±30)
+                # is deliberate and live-validated, not error integration.
+                if not is_scan:
+                    ms = float(runtime_toggles.get("framing_max_step"))
+                    target = (
+                        cur_pan + min(max(target[0] - cur_pan, -ms), ms),
+                        cur_tilt + min(max(target[1] - cur_tilt, -ms), ms))
 
                 dead = float(runtime_toggles.get("framing_deadband_steps"))
                 if (abs(target[0] - cur_pan)

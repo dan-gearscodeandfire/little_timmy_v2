@@ -2,6 +2,9 @@
 
 import logging
 from dataclasses import dataclass
+
+import asyncpg
+
 from db.connection import get_pool
 
 log = logging.getLogger(__name__)
@@ -165,22 +168,40 @@ async def store_fact(
                      subject, predicate, value, dup["predicate"], dup["id"])
             return dup["id"]
 
-    row = await pool.fetchrow(
-        """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category, source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL
-           DO UPDATE SET value = EXCLUDED.value,
-                         learned_at = now(),
-                         confidence = EXCLUDED.confidence,
-                         source_memory_id = EXCLUDED.source_memory_id,
-                         speaker_id = EXCLUDED.speaker_id,
-                         sensitive = EXCLUDED.sensitive,
-                         pii_category = EXCLUDED.pii_category,
-                         source = EXCLUDED.source
-           RETURNING id, (xmax = 0) AS inserted""",
-        subject, predicate, value, source_memory_id, speaker_id, confidence,
-        sensitive, pii_category, source,
-    )
+    async def _upsert():
+        return await pool.fetchrow(
+            """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category, source)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL
+               DO UPDATE SET value = EXCLUDED.value,
+                             learned_at = now(),
+                             confidence = EXCLUDED.confidence,
+                             source_memory_id = EXCLUDED.source_memory_id,
+                             speaker_id = EXCLUDED.speaker_id,
+                             sensitive = EXCLUDED.sensitive,
+                             pii_category = EXCLUDED.pii_category,
+                             source = EXCLUDED.source
+               RETURNING id, (xmax = 0) AS inserted""",
+            subject, predicate, value, source_memory_id, speaker_id, confidence,
+            sensitive, pii_category, source,
+        )
+
+    try:
+        row = await _upsert()
+    except asyncpg.ForeignKeyViolationError:
+        # Same-turn race (review 7-15): a voice promotion's eager speakers-DB
+        # flush is only SCHEDULED (create_task in assign_name), so a fact
+        # FK-ing the brand-new speaker_id can reach Postgres first — and the
+        # extraction worker's blanket except would drop the fact for good
+        # (startup sync reconciles the row, not the lost fact). Reconcile
+        # inline from the id-map (idempotent) and retry once; a genuinely
+        # unknown speaker_id still raises to the caller.
+        from db.speakers import sync_speakers_from_id_map
+        log.warning("[FACT] speaker FK miss for speaker_id=%s (%s.%s) — "
+                    "syncing speakers from id-map and retrying",
+                    speaker_id, subject, predicate)
+        await sync_speakers_from_id_map()
+        row = await _upsert()
     new_id = row["id"]
     if row["inserted"]:
         log.info("Stored fact #%d: %s.%s = %s", new_id, subject, predicate, value)

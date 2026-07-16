@@ -363,7 +363,18 @@ class AudioCapture:
                                     incomplete_threshold,
                                     config.SILENCE_CHUNKS_REPLY_WINDOW)
                         except Exception:
-                            pass
+                            # Never break the capture loop, but never hide a
+                            # broken callback either (review 7-15: a silent
+                            # pass here means the reply window silently stops
+                            # extending VAD and hesitant replies get clipped
+                            # with no trace). Rate-limited: once a minute.
+                            now_ts = time.time()
+                            if now_ts - self._reply_window_err_ts > 60.0:
+                                self._reply_window_err_ts = now_ts
+                                log.warning(
+                                    "reply-window callback raised — reply "
+                                    "window NOT applied (VAD stays short)",
+                                    exc_info=True)
 
                     if silence_count >= complete_threshold:
                         # Only trust the partial if it came from a submit made
@@ -414,12 +425,14 @@ class AudioCapture:
                             last_transcription = self._latest_live_text
 
     _reply_window_fn = None
+    _reply_window_err_ts = 0.0   # last time a callback error was logged
 
     def set_reply_window_fn(self, fn):
         """Register a no-arg bool callable: True while a confirm/name dialog
         is awaiting the speaker's answer (main._dialog_owns_turn). Read from
         the capture thread each chunk — must be cheap, lock-free attribute
-        reads only; any exception reads as False."""
+        reads only; any exception reads as False (and is logged, rate-
+        limited — a silently broken callback would clip hesitant replies)."""
         self._reply_window_fn = fn
 
     def set_speech_onset_callback(self, fn):

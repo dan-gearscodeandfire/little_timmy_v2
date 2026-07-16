@@ -135,23 +135,29 @@ async function load(){
 
 function badge(on){ return on?'<span class="badge b-yes">yes</span>':'<span class="badge b-no">—</span>'; }
 
+// Escape at RENDER (review 7-15): names are _NAME_RE-constrained at every
+// current writer, but this page must not be one regex relaxation away from
+// injection — never interpolate raw names into markup or inline handlers.
+function esc(s){ return String(s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
 function render(){
   const showRet=$("#showRetired").checked;
   const rows=DATA.filter(r=>showRet||!r.retired);
   $("#rows").innerHTML=rows.map(r=>{
     const reserved=!!r.reserved;
     const canEdit=!r.retired && !reserved;
-    return `<tr class="${r.retired?"retired":""}" data-name="${r.name}">
-      <td class="name">${r.name}${reserved?' <span class="badge b-reserved">reserved</span>':''}${r.retired?' <span class="badge b-retired">retired</span>':''}</td>
+    return `<tr class="${r.retired?"retired":""}" data-name="${esc(r.name)}">
+      <td class="name">${esc(r.name)}${reserved?' <span class="badge b-reserved">reserved</span>':''}${r.retired?' <span class="badge b-retired">retired</span>':''}</td>
       <td class="id">${r.speaker_id??"—"}</td>
       <td>${badge(r.voice)}</td>
       <td>${badge(r.face)}</td>
       <td class="when">${r.created_at?String(r.created_at).slice(0,16).replace("T"," "):"—"}</td>
       <td></td>
       <td class="actions">
-        ${canEdit?`<button class="act" onclick="startRename('${r.name}',this)">rename</button>
-        <button class="act danger" onclick="doRetire('${r.name}')">retire</button>`:""}
-        ${r.retired?`<button class="act" onclick="doRevive('${r.name}')">revive</button>`:""}
+        ${canEdit?`<button class="act" data-act="rename">rename</button>
+        <button class="act danger" data-act="retire">retire</button>`:""}
+        ${r.retired?`<button class="act" data-act="revive">revive</button>`:""}
       </td></tr>`;
   }).join("");
   $("#empty").style.display=rows.length?"none":"block";
@@ -161,11 +167,24 @@ function render(){
     <span class="chip">voice <b>${v}</b></span><span class="chip">face <b>${f}</b></span>`;
 }
 
+// Row actions via delegation on data-act — names travel through
+// dataset/closures, never through inline handler source (see esc()).
+$("#rows").addEventListener("click", e=>{
+  const btn=e.target.closest("button[data-act]");
+  if(!btn) return;
+  const name=btn.closest("tr").dataset.name;
+  if(btn.dataset.act==="rename") startRename(name, btn);
+  else if(btn.dataset.act==="retire") doRetire(name);
+  else if(btn.dataset.act==="revive") doRevive(name);
+});
+
 function startRename(name, btn){
   const td=btn.closest("tr").querySelector("td.name");
-  td.innerHTML=`<input class="rename-input" value="${name}" id="ri">
-    <button class="act" onclick="commitRename('${name}')">save</button>
-    <button class="act" onclick="render()">cancel</button>`;
+  td.innerHTML=`<input class="rename-input" value="${esc(name)}" id="ri">
+    <button class="act" id="ri-save">save</button>
+    <button class="act" id="ri-cancel">cancel</button>`;
+  $("#ri-save").onclick=()=>commitRename(name);
+  $("#ri-cancel").onclick=()=>render();
   const inp=$("#ri"); inp.focus(); inp.select();
   inp.addEventListener("keydown", e=>{
     if(e.key==="Enter") commitRename(name);

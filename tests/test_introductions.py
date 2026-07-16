@@ -144,3 +144,26 @@ async def test_refused_assign_keeps_unknown_speaker():
     # The refused name must NOT become the turn's speaker (facts would file
     # under the real person's name); the speaker stays the unknown.
     assert out.speaker_name == "unknown_1"
+
+
+# --- review 7-15: confirm exhaustion must reset name_asked -------------------
+
+@pytest.mark.asyncio
+async def test_confirm_exhaustion_resets_name_asked():
+    """The never-silent confirm re-asks twice then bows out — and that abort
+    must reset name_asked like the negative path does. Without the reset the
+    flag never decays and Timmy never asks this visitor's name again all
+    session (review 7-15)."""
+    intro, spk, turn = _make()
+    await intro.ask_name(SimpleNamespace(temp_id="unknown_1", last_text="hi"))
+    await intro.handle("I'm Bob", "unknown_1")      # -> pending confirm
+    filler = "the weather is nice today"            # matches nothing
+    out1 = await intro.handle(filler, "unknown_1")  # re-ask 1
+    out2 = await intro.handle(filler, "unknown_1")  # re-ask 2
+    assert out1.handled and out2.handled
+    out3 = await intro.handle(filler, "unknown_1")  # exhausted -> abort
+    assert out3.handled is True
+    assert not intro.awaiting                        # confirm dropped
+    assert spk.assigned == []                        # nothing committed
+    # THE regression: the abort must leave the speaker re-askable.
+    assert spk._unknown_speakers[0].name_asked is False

@@ -198,6 +198,12 @@ _DEFAULTS: dict = {
     # static-mock rig run integrated corrections without physical feedback).
     "framing_pan_bound": 60.0,
     "framing_tilt_bound": 30.0,
+    # Per-tick rate clamp (review 7-15): a stale /servo/status can lag the
+    # last commanded move by a tick, so the controller re-sees the same error
+    # and re-commands it — bounds cap the walk but allow bounded oscillation.
+    # Never command more than this many steps per axis per tick from the
+    # REPORTED pose; a big correction just spreads over a few gentle ticks.
+    "framing_max_step": 12.0,
     # --- Slice B: symmetric + temporal identity fusion (2026-06-12, DARK) -----
     # All default-OFF / today's-behavior. Prototype — enable only after Dan's
     # live review. Read live per turn by presence.identity.IdentityFusion.

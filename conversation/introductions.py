@@ -157,7 +157,18 @@ class Introductions:
                     return IntroOutcome(handled=True, speaker_name=speaker_name)
                 log.info("[INTRO] confirm unanswered after %d tries -> drop",
                          tries)
+                temp_id = self._pending_confirm["temp_id"]
                 self._pending_confirm = None
+                # Reset name_asked like the negative path (review 7-15): this
+                # abort is noise/no-answer, not a refusal — without the reset
+                # the flag never decays and Timmy would never ask this
+                # visitor's name again all session. (The explicit user-cancel
+                # path above deliberately does NOT reset — "don't bother"
+                # means don't re-pester.)
+                for us in self._spk._unknown_speakers:
+                    if us.temp_id == temp_id:
+                        us.name_asked = False
+                        break
                 await self._say_abort()
                 return IntroOutcome(handled=True, speaker_name=speaker_name)
 

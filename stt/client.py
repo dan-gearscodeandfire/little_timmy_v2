@@ -266,6 +266,17 @@ def _is_likely_hallucination(text: str, no_speech_prob: float,
         return True
 
     if allow_short_replies:
+        # The pattern-set check stays skipped ("yes" IS the expected reply),
+        # but a >=3x single-word loop is still classic whisper-on-noise, and
+        # this window is exactly where a false "yes" commits a name (review
+        # 7-15). A real doubled reply ("Yes, yes," — live-seen on the rig)
+        # passes; "yes yes yes" from booth noise re-asks instead.
+        words = clean.split()
+        unique_words = set(w.strip(".,!?;:-") for w in words)
+        if len(unique_words) == 1 and len(words) >= 3:
+            log.debug("Filtered hallucination (repetitive, reply window): %r",
+                      text)
+            return True
         return False
 
     # Very short text with common filler words
