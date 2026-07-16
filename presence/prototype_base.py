@@ -202,6 +202,7 @@ class IdMap:
 
     _NEXT_KEY = "_next_id"
     _RETIRED_KEY = "_retired"
+    _META_KEY = "_meta"
 
     def __init__(self, path: Path, *, reserved_ids: dict, first_free_id: int):
         self.path = Path(path)
@@ -222,6 +223,25 @@ class IdMap:
             for k, v in raw.items():
                 if k == self._NEXT_KEY:
                     out[k] = int(v)
+                elif k == self._META_KEY:
+                    # Per-identity metadata, decoded PER ENTRY like the
+                    # tombstones below. Today the sole payload is the
+                    # auto-suffix marker ``{"base": str, "at": ts}`` minted
+                    # when a duplicate display name forks (mike -> mike_2,
+                    # expo 2026-07-16) — display code strips the suffix ONLY
+                    # on a meta hit, never by parsing (a genuine
+                    # ``dan_the_barbarian`` must not be mangled).
+                    meta = {}
+                    for n, info in dict(v).items():
+                        try:
+                            meta[str(n).lower()] = {
+                                "base": str(info["base"]).lower(),
+                                "at": float(info.get("at", 0.0))}
+                        except Exception as me:
+                            log.warning(
+                                "Skipping malformed meta entry %r in %s: %s",
+                                n, self.path.name, me)
+                    out[k] = meta
                 elif k == self._RETIRED_KEY:
                     # Decode tombstones PER ENTRY (review 7-06): one
                     # malformed entry (hand edit, partial write) used to
@@ -267,7 +287,7 @@ class IdMap:
         This is the source of truth the Postgres ``speakers`` table is reconciled
         against, so an enrolled biometric can never FK-fail a facts insert."""
         mapping = {n: i for n, i in self.read().items()
-                   if n not in (self._NEXT_KEY, self._RETIRED_KEY)
+                   if n not in (self._NEXT_KEY, self._RETIRED_KEY, self._META_KEY)
                    and isinstance(i, int)}
         mapping.update(self.reserved_ids)
         return mapping
@@ -319,14 +339,51 @@ class IdMap:
         log.info("Revived speaker_id=%d for %s", sid, clean)
         return sid
 
-    def rename(self, old: str, new: str) -> int:
+    # ── Per-identity metadata (auto-suffix markers) ──────────────────────────
+
+    def meta(self) -> dict:
+        """``name -> {"base": str, "at": ts}`` for every auto-suffixed fork."""
+        return self.read().get(self._META_KEY, {})
+
+    def base_name(self, name: str) -> str:
+        """Display base for ``name``: the auto-suffix marker's base when one
+        exists (``mike_2`` -> ``mike``), else ``name`` itself (lowercased).
+        NEVER parses the suffix out of the string — only a meta hit strips."""
+        clean = (name or "").strip().lower()
+        info = self.meta().get(clean)
+        return info["base"] if info else clean
+
+    def mark_auto_suffixed(self, name: str, base: str, *,
+                           at: float | None = None) -> None:
+        """Record that ``name`` was minted as an auto-suffixed fork of
+        ``base`` (duplicate display name, expo 2026-07-16). Display code
+        strips the suffix only for marked names."""
+        clean = (name or "").strip().lower()
+        b = (base or "").strip().lower()
+        if not clean or not b or clean == b:
+            raise ValueError(f"bad auto-suffix marker {clean!r} -> {b!r}")
+        m = self.read()
+        meta = m.setdefault(self._META_KEY, {})
+        meta[clean] = {"base": b,
+                       "at": float(at if at is not None else time.time())}
+        self.write(m)
+        log.info("Marked %s as auto-suffixed fork of %s", clean, b)
+
+    def rename(self, old: str, new: str, *,
+               auto_suffix_base: str | None = None) -> int:
         """Relabel an active identity IN PLACE, preserving its speaker_id (so
         facts/memories FK history stays valid — the whole point over
         retire+re-enroll). Refuses (ValueError) when: old is reserved/absent,
         new is reserved/invalid/already active, or new is tombstoned (a
         retired name must not come back via a side door — revive is the
         explicit path). Returns the preserved id. (Dan 2026-07-15: the
-        mis-heard-name correction path.)"""
+        mis-heard-name correction path.)
+
+        Meta migration: the old name's auto-suffix marker is dropped (the
+        identity now bears a deliberately chosen name); when the caller
+        pre-resolved a collision and the NEW name is itself an auto-suffixed
+        fork (rename walter -> tushar_2 because tushar is taken), pass
+        ``auto_suffix_base`` so the marker lands in the same atomic write."""
         o = (old or "").strip().lower()
         n = (new or "").strip().lower()
         if o in self.reserved_ids or n in self.reserved_ids:
@@ -345,6 +402,15 @@ class IdMap:
         if not isinstance(sid, int):
             raise ValueError(f"{o!r} is not an active identity")
         m[n] = sid
+        meta = m.get(self._META_KEY)
+        if meta is not None:
+            meta.pop(o, None)
+        if auto_suffix_base:
+            b = auto_suffix_base.strip().lower()
+            if b == n:
+                raise ValueError(f"bad auto-suffix marker {n!r} -> {b!r}")
+            m.setdefault(self._META_KEY, {})[n] = {
+                "base": b, "at": float(time.time())}
         self.write(m)
         log.info("Renamed %s -> %s (speaker_id=%d preserved)", o, n, sid)
         return sid
@@ -383,7 +449,8 @@ class IdMap:
         # a tombstoned id is burnt forever (S1: FK history stays unambiguous).
         taken = set(self.reserved_ids.values()) | {
             v for k, v in m.items()
-            if k not in (self._NEXT_KEY, self._RETIRED_KEY) and isinstance(v, int)}
+            if k not in (self._NEXT_KEY, self._RETIRED_KEY, self._META_KEY)
+            and isinstance(v, int)}
         taken |= {info["id"] for info in retired.values()}
         while next_id in taken:
             next_id += 1

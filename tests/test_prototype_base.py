@@ -147,3 +147,77 @@ def test_idmap_allocate_persists(tmp_path):
     # A fresh instance reads the persisted allocation.
     m2 = IdMap(p, reserved_ids={"dan": 1}, first_free_id=3)
     assert m2.id_for("pat") == 3
+
+
+# ── Auto-suffix meta (_meta section) ─────────────────────────────────────────
+
+def test_idmap_meta_roundtrip_and_base_name(tmp_path):
+    p = tmp_path / "_id_map.json"
+    m = IdMap(p, reserved_ids={"dan": 1}, first_free_id=3)
+    m.allocate("mike")
+    m.allocate("mike_2")
+    m.mark_auto_suffixed("mike_2", "mike")
+    assert m.base_name("mike_2") == "mike"
+    assert m.base_name("mike") == "mike"           # no marker -> itself
+    assert m.base_name("dan_the_barbarian") == "dan_the_barbarian"
+    # A fresh instance reads the persisted marker.
+    m2 = IdMap(p, reserved_ids={"dan": 1}, first_free_id=3)
+    assert m2.meta()["mike_2"]["base"] == "mike"
+    # Later writes through OTHER paths must round-trip the section.
+    m2.allocate("quinn")
+    assert IdMap(p, reserved_ids={"dan": 1}, first_free_id=3).base_name("mike_2") == "mike"
+    # Bookkeeping keys never leak into the roster.
+    assert "_meta" not in m2.enrolled_ids()
+
+
+def test_idmap_meta_malformed_entry_tolerated(tmp_path):
+    p = tmp_path / "_id_map.json"
+    p.write_text(
+        '{"mike": 3, "mike_2": 4, "_next_id": 5,'
+        ' "_meta": {"mike_2": {"base": "mike", "at": 1.0},'
+        '           "broken": {"nope": true}}}')
+    m = IdMap(p, reserved_ids={"dan": 1}, first_free_id=3)
+    # One malformed meta entry drops alone — bindings and good meta survive.
+    assert m.id_for("mike") == 3 and m.id_for("mike_2") == 4
+    meta = m.meta()
+    assert meta["mike_2"]["base"] == "mike"
+    assert "broken" not in meta
+
+
+def test_idmap_mark_auto_suffixed_validates(tmp_path):
+    m = IdMap(tmp_path / "_id_map.json", reserved_ids={}, first_free_id=3)
+    with pytest.raises(ValueError):
+        m.mark_auto_suffixed("mike", "mike")       # self-marker
+    with pytest.raises(ValueError):
+        m.mark_auto_suffixed("", "mike")
+
+
+def test_idmap_rename_migrates_meta(tmp_path):
+    p = tmp_path / "_id_map.json"
+    m = IdMap(p, reserved_ids={}, first_free_id=3)
+    m.allocate("too_sharp")
+    m.allocate("mike_2")
+    m.mark_auto_suffixed("mike_2", "mike")
+    # Rename to a deliberately chosen name clears the marker.
+    sid = m.rename("mike_2", "tushar")
+    assert m.id_for("tushar") == sid
+    assert "mike_2" not in m.meta()
+    assert m.base_name("tushar") == "tushar"
+    # Rename INTO a pre-resolved suffixed target sets the marker atomically.
+    sid2 = m.rename("too_sharp", "tushar_2", auto_suffix_base="tushar")
+    assert m.id_for("tushar_2") == sid2
+    assert m.base_name("tushar_2") == "tushar"
+    with pytest.raises(ValueError):
+        m.rename("tushar", "zed", auto_suffix_base="zed")  # base == new
+
+
+def test_idmap_retire_keeps_meta(tmp_path):
+    p = tmp_path / "_id_map.json"
+    m = IdMap(p, reserved_ids={}, first_free_id=3)
+    m.allocate("mike_2")
+    m.mark_auto_suffixed("mike_2", "mike")
+    m.retire("mike_2")
+    # Tombstoned forks keep their display marker (identity list rendering).
+    assert m.base_name("mike_2") == "mike"
+    m.revive("mike_2")
+    assert m.base_name("mike_2") == "mike"
