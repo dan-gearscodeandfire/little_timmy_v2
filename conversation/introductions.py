@@ -38,7 +38,8 @@ class IntroOutcome:
 
 
 class Introductions:
-    def __init__(self, *, speaker_id_module, turn, cosample=None, committer=None):
+    def __init__(self, *, speaker_id_module, turn, cosample=None, committer=None,
+                 face_sampler=None):
         self._spk = speaker_id_module
         self._turn = turn               # ConversationTurn, for .say()
         # Three-way link on a name-tell (2026-07-06): the passively co-sampled
@@ -48,6 +49,14 @@ class Introductions:
         # at the confirm (keeps this module import-light).
         self._cosample = cosample
         self._committer = committer
+        # Live-grab fallback for the triple (2026-07-16): async callable
+        # name -> (face_crops, _) with the enroll flow's binding rules
+        # (orchestrator._gather_enroll_samples, scope="face"). The cosample
+        # buffer only fills while the LED anchor is binding crops, and a
+        # brand-new booth visitor often has NONE (anchored=[] all of 7-16) —
+        # without this the passive name-tell silently degraded to voice-only
+        # and the reticle/backfeed could never name them.
+        self._face_sampler = face_sampler
         self._pending_capture: str | None = None          # temp_id awaiting a name
         self._pending_confirm: dict | None = None         # {"temp_id", "name"}
 
@@ -216,6 +225,19 @@ class Introductions:
             return
         crops = (self._cosample.crops_for(temp_id)
                  or self._cosample.crops_for(name))
+        if not crops and self._face_sampler is not None:
+            # Buffer empty -> live grab at confirm time, same binding rules
+            # as the explicit enroll flow (anchored-first via the known-but-
+            # face-less bootstrap, else sole-face; ambiguity abstains). The
+            # visitor is mid-exchange with Timmy, so a camera look is the
+            # expected posture — this is how "enroll me" got Pat face=+3
+            # while the passive path got zero.
+            try:
+                crops, _ = await self._face_sampler(name)
+            except Exception:
+                log.exception("[INTRO] live face grab failed for %s — "
+                              "continuing without", name)
+                crops = []
         if not crops:
             log.info("[INTRO] no co-sampled crops for %s/%s — voice-only "
                      "promotion", temp_id, name)

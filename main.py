@@ -216,6 +216,11 @@ class Orchestrator:
             speaker_id_module=self.speaker_id_module,
             turn=self._turn,
             cosample=self._cosample,
+            # Live-grab fallback for the name-tell triple (7-16): reuse the
+            # enroll flow's face resolution (buffer -> anchored -> sole-face)
+            # so a confirmed passive intro can bind a face even when the
+            # cosample buffer never filled (anchored=[] the whole session).
+            face_sampler=lambda name: self._gather_enroll_samples(name, "face"),
         )
         # When the name-ask was last armed. Introductions has no expiry of
         # its own, so _dialog_owns_turn bounds its term with this stamp
@@ -1361,9 +1366,24 @@ class Orchestrator:
         # this turn -> early return, skipping the brain. Any non-tool utterance
         # (or a classifier-server outage) returns False and falls through to the
         # normal pipeline unchanged. The user turn was already added/broadcast above.
-        outcome = await tool_router.maybe_handle_tool_call(
-                user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
-                t_start=t_start, stt_words=stt_words)
+        #
+        # An in-flight name exchange OUTRANKS the classifier (live 7-16,
+        # supervisor 19:13): Pat's "Yes, yes, my name is Pat." mid-confirm hit
+        # the classifier first (vconf 0.98 store_fact), which stored user.name
+        # and OWNED the turn — Introductions never saw the yes, no identity
+        # was ever minted, and the next "nope" then killed the stale latch.
+        # Same stomp class as rig f0b. Scoped to unknown_* speakers (the only
+        # voices the confirm/capture branches consume — introductions.handle's
+        # own guard) so a known speaker's mid-dialog fact request still routes.
+        if (self._introductions.awaiting and _dialogs_ok
+                and speaker_name.startswith("unknown_")):
+            log.info("[INTRO] name exchange in flight — tool classifier "
+                     "skipped for %s turn", speaker_name)
+            outcome = tool_router.ToolOutcome(handled=False, recall_block=None)
+        else:
+            outcome = await tool_router.maybe_handle_tool_call(
+                    user_text, speaker_name, speaker_db_id, self.conversation, self.tts,
+                    t_start=t_start, stt_words=stt_words)
         if outcome.handled:
             if coref_task is not None:
                 coref_task.cancel()  # tool turn owns the reply; resolved query unused

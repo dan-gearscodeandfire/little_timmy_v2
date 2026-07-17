@@ -254,3 +254,83 @@ async def test_no_cosample_injected_is_inert(toggles):
     out = await intro.handle("yes", "unknown_1")
     assert out.speaker_name == "bob"
     assert committer.calls == []
+
+
+# --- live-grab fallback (2026-07-16: anchored=[] all session -> buffer never
+# --- filled -> passive name-tell degraded to voice-only; sampler closes it) ---
+
+class FakeSampler:
+    """Stands in for orchestrator._gather_enroll_samples(name, "face")."""
+    def __init__(self, crops=None, raises=False):
+        self.calls: list[str] = []
+        self._crops = crops if crops is not None else []
+        self._raises = raises
+
+    async def __call__(self, name):
+        self.calls.append(name)
+        if self._raises:
+            raise RuntimeError("camera down")
+        return list(self._crops), None
+
+
+def _make_with_sampler(*, sampler, committer=None, crops_key=None):
+    spk = FakeSpeakerID(unknown_temp_ids=("unknown_1",))
+    cos = CoSampleBuffer()
+    if crops_key:
+        cos.add(crops_key, [_crop(i) for i in range(2)])
+    intro = Introductions(speaker_id_module=spk, turn=FakeTurn(),
+                          cosample=cos, committer=committer,
+                          face_sampler=sampler)
+    return intro, spk, cos
+
+
+@pytest.mark.asyncio
+async def test_empty_buffer_falls_back_to_live_grab(toggles):
+    """No co-sampled crops -> the sampler's live grab feeds the commit."""
+    toggles.set("intro_face_commit_enabled", True)
+    committer = FakeCommitter()
+    sampler = FakeSampler(crops=[_crop(1), _crop(2), _crop(3)])
+    intro, _, _ = _make_with_sampler(sampler=sampler, committer=committer)
+    out = await _confirm_yes(intro)
+    assert out.speaker_name == "bob"
+    assert sampler.calls == ["bob"]           # grabbed under the FINAL name
+    assert len(committer.calls) == 1
+    assert len(committer.calls[0]["face_crops"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_buffered_crops_skip_live_grab(toggles):
+    """Buffer hit -> no camera round-trip."""
+    toggles.set("intro_face_commit_enabled", True)
+    committer = FakeCommitter()
+    sampler = FakeSampler(crops=[_crop(9)])
+    intro, _, _ = _make_with_sampler(sampler=sampler, committer=committer,
+                                     crops_key="unknown_1")
+    await _confirm_yes(intro)
+    assert sampler.calls == []
+    assert len(committer.calls[0]["face_crops"]) == 2  # the buffered pair
+
+
+@pytest.mark.asyncio
+async def test_live_grab_empty_stays_voice_only(toggles):
+    """Sampler abstains (crowd/no camera) -> voice-only promotion, no commit."""
+    toggles.set("intro_face_commit_enabled", True)
+    committer = FakeCommitter()
+    intro, _, _ = _make_with_sampler(sampler=FakeSampler(crops=[]),
+                                     committer=committer)
+    out = await _confirm_yes(intro)
+    assert out.speaker_name == "bob"          # promotion intact
+    assert committer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_grab_exception_promotion_survives(toggles):
+    """A raising sampler must never break the name promotion."""
+    toggles.set("intro_face_commit_enabled", True)
+    committer = FakeCommitter()
+    intro, spk, _ = _make_with_sampler(sampler=FakeSampler(raises=True),
+                                       committer=committer)
+    out = await _confirm_yes(intro)
+    assert out.handled is False and out.speaker_name == "bob"
+    assert spk.assigned == [("unknown_1", "bob")]
+    assert committer.calls == []
