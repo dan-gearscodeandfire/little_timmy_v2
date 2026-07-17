@@ -376,6 +376,14 @@ STREAMERPI_FACE_ENROLL_STREAM_URL = os.getenv(
 STREAMERPI_FACE_DELETE_URL = os.getenv(
     "TIMMY_FACE_DELETE_URL", "https://192.168.1.110:8080/face_db/delete"
 )
+# EdgeFace identity backfeed (2026-07-16): every successful okDemerzel
+# recognition pushes its name+bbox predictions to the Pi, which latches them
+# onto its live YuNet tracks (identity stabilizer). This is what names the
+# booth reticle / behavior face_identity / engage speaker-lock now that Pi
+# SFace recognition is retired — okDemerzel is the ONE naming authority.
+STREAMERPI_FACE_BACKFEED_URL = os.getenv(
+    "TIMMY_FACE_BACKFEED_URL", "https://192.168.1.110:8080/faces/backfeed"
+)
 # Interactive auto-enrollment (presence/face_enroller.py). Default OFF — flip
 # TIMMY_AUTO_ENROLL_ENABLED=1 to arm. Provenance of auto-enrolled identities is
 # appended here for audit / pruning / a future "forget me" command.

@@ -365,6 +365,13 @@ async def transcribe(audio: np.ndarray,
     no_speech_prob = max((s.get("no_speech_prob", 0.0) for s in segments), default=0.0)
 
     if _is_likely_hallucination(text, no_speech_prob, allow_short_replies):
+        # INFO, not debug: a dropped-but-finalized utterance is invisible in
+        # the journal otherwise — Pat's "Yes" replies on 7-16 vanished with
+        # no trace (Finalized speech -> speaker ID -> whisper -> nothing).
+        # One line per VAD-finalized utterance, so no spam ratio.
+        log.info("[STT] dropped as hallucination (no_speech=%.2f%s): %r",
+                 no_speech_prob,
+                 ", reply window" if allow_short_replies else "", text)
         return Transcription()
     if allow_short_replies:
         # Visibility for live debugging: note when the reply window admitted

@@ -1621,6 +1621,15 @@ class Orchestrator:
         if _dialogs_ok:
             intro = await self._introductions.handle(user_text, speaker_name)
             if intro.handled:
+                # Refresh the short-reply window on EVERY exchange, matching
+                # the enroll latch's 067840b semantics (TTL = silence since
+                # the last exchange, not since the first ask). Without this,
+                # a meandering confirm dialog outlived its own window: Pat's
+                # bare "Yes" at 19:12:31 on 7-16 arrived 30.2s after the
+                # initial ask (4s after the re-ask) and was silently eaten
+                # by the hallucination filter.
+                if self._introductions.awaiting:
+                    self._introductions_asked_ts = time.time()
                 return
             speaker_name = intro.speaker_name
 

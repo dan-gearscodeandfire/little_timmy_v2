@@ -269,6 +269,12 @@ async def fetch_face_observation_okdemerzel(
     except Exception:
         log.info("[FACE-AUTH] recognition failed", exc_info=True)
         return None
+    if preds:
+        # EdgeFace backfeed (2026-07-16): name the Pi's live tracks so the
+        # booth reticle / behavior face_identity / engage speaker-lock keep
+        # working with SFace retired. Fire-and-forget — never blocks the turn.
+        from presence.face_backfeed import push_identities
+        asyncio.create_task(push_identities(http_client, preds, size))
     return FaceObservation(
         captured_at=time.time(),
         predictions=preds,

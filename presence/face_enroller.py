@@ -68,10 +68,12 @@ except Exception:  # pragma: no cover
 
 import re as _re
 
-# Consent parsing, negation-aware ordering (never substring). STT audits out a
-# bare "yes", so real consent replies are LONG and keyword-laden ("yes, you can
-# remember my face", "I give you affirmative consent, Timmy") — they must parse
-# yes, while "I do not consent" / "no thanks" must parse no. Order matters:
+# Consent parsing, negation-aware ordering (never substring). Since 7-15 the
+# STT short-reply window (main._dialog_owns_turn covers this FSM) admits a
+# bare "Yes."/"No." while we're awaiting, so both bare and LONG keyword-laden
+# replies ("yes, you can remember my face") reach this parser — they must
+# parse yes, while "I do not consent" / "no thanks" must parse no. Order
+# matters:
 #   1. affirmative-despite-negative idioms ("don't mind", "why not") -> yes
 #   2. explicit negation (idiom / word-boundary / "do not") -> no
 #   3. affirmative idioms + words (incl. consent vocabulary) -> yes
