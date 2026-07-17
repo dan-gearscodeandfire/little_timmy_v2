@@ -814,6 +814,44 @@ async def set_conversation_idle_gate(payload: dict | None = None):
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
 
 
+# --- Mail-checking master switch (2026-07-16, Dan) --------------------------
+# ON/OFF for email polling entirely, distinct from the defer *window* above.
+# Truth = demerzel-mail-ingest.service ActiveState (no flag files, no LT
+# coupling): OFF stops the unit, ON starts it. The unit stays `enabled` in
+# systemd, so a reboot restores mail checking — this is a session kill switch,
+# not a persistent opt-out.
+
+MAIL_INGEST_UNIT = "demerzel-mail-ingest.service"
+
+
+@app.get("/api/mail/checking")
+async def get_mail_checking():
+    """Read the mail-checking switch: is demerzel-mail-ingest running?"""
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl", "is-active", MAIL_INGEST_UNIT,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, _ = await proc.communicate()
+    state = out.decode().strip() or "unknown"
+    return {"enabled": state == "active", "state": state}
+
+
+@app.post("/api/mail/checking")
+async def set_mail_checking(payload: dict | None = None):
+    """Flip mail checking. Body: {"enabled": bool} (same contract as LT toggles)."""
+    enabled = bool((payload or {}).get("enabled"))
+    verb = "start" if enabled else "stop"
+    proc = await asyncio.create_subprocess_exec(
+        "sudo", "systemctl", verb, MAIL_INGEST_UNIT,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        detail = stderr.decode().strip()[:200]
+        return JSONResponse(
+            {"ok": False, "error": f"systemctl {verb} failed: {detail}"},
+            status_code=500)
+    return await get_mail_checking() | {"ok": True}
+
+
 @app.post("/api/timmy/announce")
 async def timmy_announce(payload: dict | None = None):
     """Proxy: speak text out of Timmy's speaker. Body: {"text": "...",
@@ -1644,6 +1682,18 @@ header .uptime {
           </div>
           <label class="toggle" id="hearing-toggle">
             <input type="checkbox" onchange="toggleLTFlag('hearing', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <!-- Mail-checking master switch: start/stop demerzel-mail-ingest.service.
+             OFF = no email polling at all (the slider below only *defers* it). -->
+        <div class="service-card" id="mail-checking-card" style="border-left:3px solid #484f58;">
+          <div class="service-info">
+            <div class="service-name">Mail checking</div>
+            <div class="service-detail" id="mail-checking-detail">Checking...</div>
+          </div>
+          <label class="toggle" id="mail-checking-toggle">
+            <input type="checkbox" onchange="toggleMailChecking(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -4066,6 +4116,42 @@ async function commitIdleGate(v) {
 }
 loadIdleGate();
 setInterval(loadIdleGate, 15000);
+
+// --- Mail-checking master switch (start/stop demerzel-mail-ingest.service) ---
+let mailCheckHoldUntil = 0;  // suppress poll->checkbox sync briefly after a user flip
+async function loadMailChecking() {
+  const detail = document.getElementById('mail-checking-detail');
+  const box = document.querySelector('#mail-checking-toggle input');
+  try {
+    const d = await (await fetch('/api/mail/checking')).json();
+    if (Date.now() > mailCheckHoldUntil && box) box.checked = !!d.enabled;
+    if (detail) {
+      detail.textContent = d.enabled
+        ? 'polling ON (ingest service running)'
+        : 'OFF — no email is being checked (' + (d.state || 'stopped') + ')';
+      detail.style.color = d.enabled ? '#8b949e' : '#f0883e';
+    }
+  } catch (e) { if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; } }
+}
+async function toggleMailChecking(on) {
+  const detail = document.getElementById('mail-checking-detail');
+  mailCheckHoldUntil = Date.now() + 3000;
+  if (detail) { detail.textContent = on ? 'starting ingest…' : 'stopping ingest…'; detail.style.color = '#8b949e'; }
+  try {
+    const r = await fetch('/api/mail/checking', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: on})
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      if (detail) { detail.textContent = 'failed: ' + (d.error || r.status); detail.style.color = '#f85149'; }
+    }
+  } catch (e) { if (detail) { detail.textContent = 'unreachable'; detail.style.color = '#f85149'; } }
+  mailCheckHoldUntil = 0;
+  loadMailChecking();  // re-sync from systemd truth
+}
+loadMailChecking();
+setInterval(loadMailChecking, 15000);
 
 async function pollHostMetrics() {
   try {
