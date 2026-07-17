@@ -193,6 +193,14 @@ _DEFAULTS: dict = {
     "framing_deadband_steps": 3.0,   # skip moves smaller than this (pan+tilt)
     "framing_speed": 0.6,            # gentle — booth crowd, no darting
     "led_search_timeout_s": 5.0,     # LED unseen this long -> scan for it
+    # Holder-proxy (Dan 2026-07-16): when the LED goes undetected but the
+    # face that was directly above it at the last sighting is STILL tracked
+    # (somebody is holding the mic), frame to a virtual LED riding that face
+    # instead of sweeping — the 7-16 live test scanned 179s while the
+    # holder's face was on camera the whole time. Default OFF (behavior-
+    # neutral deploy); flip live at the booth.
+    "framing_led_holder_proxy": False,
+    "framing_holder_ttl_s": 45.0,    # stale-LED ride time before scan resumes
     # Absolute command bounds (UI steps from center) — brain-side insurance
     # against open-loop walk-off if /faces ever goes stale-but-served (the
     # static-mock rig run integrated corrections without physical feedback).

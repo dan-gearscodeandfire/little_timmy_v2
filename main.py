@@ -2615,10 +2615,13 @@ async def main():
         with a behavior 'hold' each move (ownership ruling: brain owns,
         Pi deferred). Gentle by design: slow cadence + deadband + low speed
         — the anti-darting lessons are baked in as toggles."""
-        from presence.framing import (LedScan, clip_centroid_for_led,
-                                      faces_centroid)
+        from presence.framing import (LedHolderProxy, LedScan, bbox_xyxy,
+                                      clip_centroid_for_led, faces_centroid)
+        from presence.anchor import pick_anchored_face
         from presence.identity import translate_pose
         scan = LedScan()
+        proxy = LedHolderProxy(
+            ttl_s=float(runtime_toggles.get("framing_holder_ttl_s")))
         while True:
             try:
                 await asyncio.sleep(
@@ -2638,8 +2641,13 @@ async def main():
                 if not state or age_s is None or age_s > 4.0:
                     continue
                 size = state.get("image_size")
-                bboxes = [f.get("bbox") for f in state.get("faces", [])
-                          if f.get("bbox")]
+                # Pi /faces bboxes are xywh px — convert at the boundary.
+                # (Pre-7-16 this fed raw xywh into the xyxy centroid math:
+                # bogus targets, faces low in frame never qualified.)
+                raw_faces = [f for f in state.get("faces", [])
+                             if f.get("bbox")]
+                bboxes = [bbox_xyxy(f["bbox"]) for f in raw_faces]
+                track_ids = [f.get("track_id") for f in raw_faces]
                 centroid = faces_centroid(
                     bboxes, size,
                     float(runtime_toggles.get("framing_min_face_frac")))
@@ -2671,13 +2679,47 @@ async def main():
                 is_scan = False
                 if centroid is not None and led_fresh:
                     scan.reset()
+                    # Remember who's holding the mic (face directly above
+                    # the LED — the anchor's own pairing rule) so a dropped
+                    # LED detection can ride their face instead of sweeping.
+                    idx = pick_anchored_face(bboxes, st.led_xy, size)
+                    if idx is not None and track_ids[idx] is not None:
+                        b = bboxes[idx]
+                        proxy.remember(
+                            track_ids[idx],
+                            (st.led_xy[0] - (b[0] + b[2]) / 2.0,
+                             st.led_xy[1] - (b[1] + b[3]) / 2.0),
+                            time.time())
                     c = clip_centroid_for_led(
                         centroid, st.led_xy, size,
                         float(runtime_toggles.get("framing_led_margin")))
                     tp, tt = translate_pose(cur_pan, cur_tilt, c)
                     target = (tp, tt)
                 elif centroid is not None and not led_fresh:
-                    if (runtime_toggles.get("anchor_enabled")
+                    virtual = None
+                    if (runtime_toggles.get("framing_led_holder_proxy")
+                            and runtime_toggles.get("anchor_enabled")):
+                        proxy.ttl_s = float(
+                            runtime_toggles.get("framing_holder_ttl_s"))
+                        centers = {t: ((b[0] + b[2]) / 2.0,
+                                       (b[1] + b[3]) / 2.0)
+                                   for t, b in zip(track_ids, bboxes)
+                                   if t is not None}
+                        virtual = proxy.resolve(centers, time.time(), size)
+                    if virtual is not None:
+                        # Holder still on camera — keep the virtual LED
+                        # framed instead of sweeping after a mere detection
+                        # dropout (head-on dimness, hand occlusion).
+                        scan.reset()
+                        c = clip_centroid_for_led(
+                            centroid, virtual, size,
+                            float(runtime_toggles.get("framing_led_margin")))
+                        tp, tt = translate_pose(cur_pan, cur_tilt, c)
+                        target = (tp, tt)
+                        log.info("[FRAMING] LED stale %.0fs -> holder-proxy "
+                                 "trk%s frames virtual LED", led_stale_s,
+                                 proxy.track_id)
+                    elif (runtime_toggles.get("anchor_enabled")
                             and st is not None
                             and led_stale_s > timeout_s):
                         # Someone is at the booth but the mic LED is lost —

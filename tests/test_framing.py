@@ -63,3 +63,70 @@ def test_led_scan_expands_and_alternates():
     assert all(abs(o) <= 30.0 for o in offs)     # capped
     s.reset()
     assert s.next_offset() == 6.0                # reset restarts the pattern
+
+
+# --- xywh boundary conversion (7-16 live bug: raw Pi bboxes fed xyxy math) --
+
+def test_bbox_xyxy_converts_pi_wire_format():
+    from presence.framing import bbox_xyxy
+    # Matt's live track from the 7-16 test: x=112 y=150 w=61 h=71.
+    assert bbox_xyxy((112, 150, 61, 71)) == (112.0, 150.0, 173.0, 221.0)
+
+
+def test_centroid_of_converted_pi_faces_is_sane():
+    from presence.framing import bbox_xyxy
+    # Raw xywh through the converter: face center must land mid-bbox, and a
+    # normal booth face must QUALIFY (raw xywh made y1-y0 negative -> None).
+    b = bbox_xyxy((300, 100, 80, 120))            # height 120/480 = 0.25
+    c = faces_centroid([b], SIZE, min_height_frac=0.10)
+    assert c is not None
+    assert abs(c[0] - (340 / 640)) < 1e-6
+    assert abs(c[1] - (160 / 480)) < 1e-6
+
+
+# --- LedHolderProxy: virtual LED rides the holder's face (Dan 2026-07-16) --
+
+def _proxy():
+    from presence.framing import LedHolderProxy
+    p = LedHolderProxy(ttl_s=45.0)
+    # LED seen at (320, 300); holder face centered (316, 220) directly above
+    # -> offset (+4, +80): a mouth-hold puts the LED just below the face.
+    p.remember(7, (4.0, 80.0), now=100.0)
+    return p
+
+
+def test_holder_proxy_rides_the_moving_face():
+    p = _proxy()
+    # Holder drifted left/down; virtual LED keeps the remembered offset.
+    v = p.resolve({7: (250.0, 240.0)}, now=110.0, image_size=SIZE)
+    assert v == (254.0, 320.0)
+
+
+def test_holder_proxy_none_when_track_gone():
+    p = _proxy()
+    assert p.resolve({9: (250.0, 240.0)}, now=110.0, image_size=SIZE) is None
+    assert p.resolve({}, now=110.0, image_size=SIZE) is None
+
+
+def test_holder_proxy_expires_after_ttl():
+    p = _proxy()
+    assert p.resolve({7: (250.0, 240.0)}, now=146.0, image_size=SIZE) is None
+    # Fresh sighting re-arms it.
+    p.remember(7, (4.0, 80.0), now=150.0)
+    assert p.resolve({7: (250.0, 240.0)}, now=160.0, image_size=SIZE) \
+        is not None
+
+
+def test_holder_proxy_clamps_virtual_into_frame():
+    p = _proxy()
+    # Face near the bottom edge: center + offset would leave the frame; the
+    # virtual point clamps so the clip interval never inverts.
+    v = p.resolve({7: (630.0, 470.0)}, now=110.0, image_size=SIZE)
+    assert v == (634.0, 479.0)                    # y clamped to h-1
+
+
+def test_holder_proxy_ignores_none_track():
+    from presence.framing import LedHolderProxy
+    p = LedHolderProxy()
+    p.remember(None, (4.0, 80.0), now=100.0)     # unpaired sighting: no-op
+    assert p.resolve({None: (1.0, 1.0)}, now=101.0, image_size=SIZE) is None

@@ -18,6 +18,18 @@ controller drives.
 from __future__ import annotations
 
 
+def bbox_xyxy(bbox):
+    """Convert a Pi /faces bbox (x, y, w, h px) to (x_min, y_min, x_max, y_max).
+
+    The Pi wire format is xywh; every brain-side consumer converts at the
+    boundary (cf. main.py FacePrediction ingestion). The framing controller
+    originally fed raw xywh into ``faces_centroid``/``pick_anchored_face``
+    (both xyxy) — garbage centroids, the 2026-07-16 "mic keeps leaving frame"
+    live failure. Convert exactly once, here."""
+    x, y, w, h = (float(v) for v in bbox[:4])
+    return (x, y, x + w, y + h)
+
+
 def faces_centroid(bboxes, image_size, min_height_frac: float = 0.10):
     """Normalized (bx, by) average center of qualifying faces, or None.
 
@@ -67,6 +79,64 @@ def clip_centroid_for_led(centroid, led_xy, image_size,
             lo = hi = led_norm[i]
         out.append(min(max(centroid[i], lo), hi))
     return tuple(out)
+
+
+class LedHolderProxy:
+    """Virtual LED while the mic's HOLDER is still on camera (Dan 2026-07-16).
+
+    The CV LED detector drops out routinely (head-on the LEDs read v~50 —
+    hardware; occlusion by the holder's hand) while the person holding the
+    mic is plainly still there. Old behavior: lose the LED -> either recenter
+    on faces with NO led clamp or blind-sweep (179s of scanning at the 7-16
+    live test while the holder's face was tracked the whole time).
+
+    New contract: on every FRESH LED sighting, remember which face track sat
+    directly above it (``pick_anchored_face`` pairing — the anchor's own
+    rule) plus the face-center->LED pixel offset. While the LED is stale but
+    that track is still present, ``resolve()`` synthesizes a virtual LED at
+    the track's current center + the remembered offset, and the caller keeps
+    applying the keep-in-frame clamp to it instead of sweeping. Holder gone
+    (track vanished / TTL expired) -> None -> the scan fallback resumes.
+
+    Pure logic (hermetic-testable): callers pass ``now`` explicitly and a
+    ``{track_id: (cx, cy)}`` map of current face centers in px."""
+
+    def __init__(self, ttl_s: float = 45.0):
+        self.ttl_s = float(ttl_s)
+        self.track_id = None
+        self._offset = None
+        self._stamped = 0.0
+
+    def remember(self, track_id, offset_xy, now: float) -> None:
+        if track_id is None or offset_xy is None:
+            return
+        self.track_id = track_id
+        self._offset = (float(offset_xy[0]), float(offset_xy[1]))
+        self._stamped = float(now)
+
+    def reset(self) -> None:
+        self.track_id = None
+        self._offset = None
+        self._stamped = 0.0
+
+    def resolve(self, centers, now: float, image_size):
+        """Virtual LED (x, y) px, or None if the holder can't vouch for it.
+
+        ``centers`` maps track_id -> face center (cx, cy) px. The virtual
+        point is clamped into the frame so a low mouth-hold offset can't
+        push it past the bottom edge and invert the clip interval."""
+        if self.track_id is None or self._offset is None:
+            return None
+        if (now - self._stamped) > self.ttl_s:
+            return None
+        c = centers.get(self.track_id)
+        if c is None or not image_size:
+            return None
+        w, h = float(image_size[0]), float(image_size[1])
+        if w <= 0 or h <= 0:
+            return None
+        return (min(max(c[0] + self._offset[0], 0.0), w - 1.0),
+                min(max(c[1] + self._offset[1], 0.0), h - 1.0))
 
 
 class LedScan:
