@@ -883,10 +883,12 @@
     }
 
     function renderFaces(faces) {
-      // Any detection with a valid bbox draws a reticle. Since Phase 0/A the
-      // Pi never names faces (SFace disabled; okDemerzel is the identity
-      // authority), so unnamed detections render too — labeled UNKNOWN —
-      // rather than leaving the display blank while detection works fine.
+      // Any detection with a valid bbox draws a reticle. SFace is retired
+      // (2026-07-16): the Pi's /faces names now come from the EdgeFace
+      // BACKFEED — okDemerzel pushes its per-turn recognitions to
+      // POST /faces/backfeed and the Pi's identity stabilizer rides them on
+      // its tracks. Unnamed detections still render (labeled UNKNOWN) rather
+      // than leaving the display blank while detection works fine.
       const valid = (faces || []).filter(f =>
         Array.isArray(f.bbox) && f.bbox.length === 4);
       const known = valid.filter(f =>
