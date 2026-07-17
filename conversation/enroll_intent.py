@@ -93,6 +93,13 @@ _NON_NAMES = frozenset({
     "short", "simple", "complicated", "spelled", "spelt", "pronounced",
     "supposed", "gonna", "going", "trying", "actually", "really", "kind",
     "sort", "like", "still", "already", "only", "even",
+    # Interrogative/confusion words — a confused confirm reply is never a
+    # name ("Wha-wha-what?" -> "Did you say Wha_Wha_What?", live 7-16 19:12;
+    # booth visitors do this constantly). Apostrophes are stripped before
+    # this check, so STT "what's"/"who's" arrive as whats/whos.
+    "what", "whats", "who", "whos", "whose", "where", "wheres", "when",
+    "why", "how", "which", "huh", "eh", "pardon", "excuse", "say", "come",
+    "repeat",
 })
 
 # Filler words that ARE plausible names ("Buddy"): rejected in bare replies
@@ -178,7 +185,11 @@ def extract_spelled_name(text: str) -> Optional[str]:
     collide with "a"/"I"."""
     if not text:
         return None
-    toks = re.sub(r"[-,.]", " ", text.lower()).split()
+    # Strip trailing punctuation too — "T-U-S-H-A-R?" tokenized the last
+    # letter as 'r?' and truncated the run to 'tusha' (found 7-16 while
+    # gating '?' replies; the spelled form is the most deliberate signal,
+    # so a question-y intonation mark must not maim it).
+    toks = re.sub(r"[-,.?!;:]", " ", text.lower()).split()
     best: list = []
     run: list = []
     for t in toks:
@@ -195,6 +206,34 @@ def extract_spelled_name(text: str) -> Optional[str]:
     return None
 
 
+def _collapse_stutter(tokens: list) -> list:
+    """Collapse STT stutter renderings in a bare reply: "wha wha what" ->
+    ["what"], "th th thomas" -> ["thomas"] (RESCUES a stuttered real name
+    instead of confirming 'Th_Th_Thomas'). Two passes: adjacent duplicates
+    fold to one (remembering they repeated); then a token that PREFIXES the
+    next is dropped only when it was repeated or is <=2 chars — evidence of
+    stutter, not a real short first name ("Dan Daniels" must NOT collapse
+    to 'daniels')."""
+    folded: list = []
+    repeated: list = []
+    for t in tokens:
+        if folded and t.lower() == folded[-1].lower():
+            repeated[-1] = True
+            continue
+        folded.append(t)
+        repeated.append(False)
+    kept: list = []
+    for i, t in enumerate(folded):
+        if i + 1 < len(folded):
+            nxt = folded[i + 1].lower()
+            low = t.lower()
+            if (nxt.startswith(low) and low != nxt
+                    and (repeated[i] or len(low) <= 2)):
+                continue
+        kept.append(t)
+    return kept
+
+
 def extract_reply_name(text: str) -> Optional[str]:
     """Extract a canonical name from a reply to the ask-name latch.
 
@@ -205,6 +244,15 @@ def extract_reply_name(text: str) -> Optional[str]:
     captures a single \\w+ and would truncate "My name is Mary Jane" to
     'mary' — code review C6), rejects evasive replies (C5), and only then
     falls back to treating a short 1-3-token utterance as the name itself.
+
+    The bare fallback is filtered for STRUCTURAL junk (deterministic, no
+    LLM — Dan 7-16, live evidence "Wha-wha-what?" confirmed back as a name):
+    a '?'-terminated reply is a question, never a name-tell (an explicit
+    "My name is Bob?" still matches the pattern above); stutter tokens
+    collapse (rescuing "Th-th-Thomas"); interrogatives die in _NON_NAMES.
+    Bias rejects repetition/interrogatives/punctuation, NOT unfamiliar
+    strings — real names can be weird (Tushar). Every consumer treats None
+    as re-ask-with-coaching (never-silent), so rejection is recoverable.
     """
     if not text or _EVASIVE_RE.search(text):
         return None
@@ -214,14 +262,19 @@ def extract_reply_name(text: str) -> Optional[str]:
     cand = _extract_name(text)
     if cand:
         return cand
+    # A question is not a name-tell. Only the bare fallback is gated: the
+    # explicit frames above already proved name-position intent.
+    if text.rstrip().endswith("?"):
+        return None
     bare = re.sub(r"[^\w\s']", " ", text).strip()
     # Conversational lead-ins the patterns above don't cover ("It's Bob",
     # "It is Bob" — the latter parsed to 'it' pre-2026-07-05).
     bare = re.sub(r"^(?:it'?s|it\s+is|i'?m|i\s+am|"
                   r"(?:the|my)\s+name(?:'?s|\s+is)?)\s+",
                   "", bare, flags=re.IGNORECASE).strip()
-    if bare and len(bare.split()) <= 3:
-        return _clean_name_tokens(bare)
+    toks = _collapse_stutter(bare.split())
+    if toks and len(toks) <= 3:
+        return _clean_name_tokens(" ".join(toks))
     return None
 
 

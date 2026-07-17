@@ -564,3 +564,45 @@ def test_latch_gate_empty_speaker_rejected_by_keyed_latch():
     # An unattributed turn is never graded as anyone's answer.
     assert not latch_speaker_ok("dan", "")
     assert not latch_speaker_ok("unknown_10", "")
+
+
+def test_confused_interrogative_replies_not_names():
+    # Live 7-16 19:12: "Wha-wha-what?" -> Timmy: "Did you say Wha_Wha_What?"
+    # Booth visitors answer the confirm ask with confusion constantly; a
+    # confused reply must count as an unanswered attempt (rig f0b re-ask),
+    # never become the candidate.
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("Wha-wha-what?") is None
+    assert extract_reply_name("wha wha what") is None      # no '?' -- collapse+stoplist
+    assert extract_reply_name("What?") is None
+    assert extract_reply_name("What") is None
+    assert extract_reply_name("Who?") is None
+    assert extract_reply_name("Huh?") is None
+    assert extract_reply_name("Pardon?") is None
+    assert extract_reply_name("Say again?") is None
+    assert extract_reply_name("Say that again") is None
+    assert extract_reply_name("wait what") is None
+    assert extract_reply_name("What's that?") is None
+    assert extract_reply_name("Come again?") is None
+
+
+def test_question_mark_gates_bare_reply_only():
+    # A '?'-terminated bare reply is a question, not a name-tell; an
+    # explicit frame already proved name-position intent so a trailing
+    # STT '?' must not reject it.
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("Bob?") is None
+    assert extract_reply_name("My name is Bob?") == "bob"
+    assert extract_reply_name("T-U-S-H-A-R?") == "tushar"  # spelled run still wins
+
+
+def test_stutter_collapse_rescues_stuttered_names():
+    # The collapse must reject STRUCTURAL junk while rescuing a nervous
+    # real name -- bias against repetition, not unfamiliar strings.
+    from conversation.enroll_intent import extract_reply_name
+    assert extract_reply_name("Th-th-Thomas") == "thomas"
+    assert extract_reply_name("B-b-bob.") == "bob"
+    assert extract_reply_name("no no no") is None
+    # A short real first name that prefixes the surname must NOT collapse.
+    assert extract_reply_name("Dan Daniels") == "dan_daniels"
+    assert extract_reply_name("Tushar") == "tushar"        # weird != junk
