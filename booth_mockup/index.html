@@ -35,6 +35,10 @@
   .stage { position: fixed; inset: 0; overflow: hidden; }
 
   #feed, video.feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* Booth shows a selfie-mirrored feed (attendee-facing). Mirror ONLY the video
+     element; reticle x is reflected in JS (bboxToBox) so boxes track the mirrored
+     faces while their name-tag text stays readable. Servo tracking is unaffected. */
+  video.feed { transform: scaleX(-1); }
   #feed {
     background:
       radial-gradient(ellipse 60% 50% at 35% 38%, #1e0606 0%, #0a0000 70%),
@@ -775,7 +779,8 @@
       const offX = vi.rect.left + (vi.rect.width - rW) / 2;
       const offY = vi.rect.top  + (vi.rect.height - rH) / 2;
       const [x, y, w] = bbox;
-      return { caretX: offX + (x + w/2) * scale,
+      // Mirror x to match the CSS-mirrored video (see bboxToBox).
+      return { caretX: offX + (vi.srcW - (x + w/2)) * scale,
                caretY: offY + y * scale };
     }
 
@@ -857,7 +862,9 @@
       const offX = vi.rect.left + (vi.rect.width  - rW) / 2;
       const offY = vi.rect.top  + (vi.rect.height - rH) / 2;
       const [x, y, w, h] = bbox;
-      return { cx: offX + (x + w / 2) * scale, cy: offY + (y + h / 2) * scale,
+      // Video is CSS-mirrored (scaleX(-1)); reflect reticle x about the frame
+      // centre so boxes land on the mirrored faces. Tracking is in bbox space, unaffected.
+      return { cx: offX + (vi.srcW - (x + w / 2)) * scale, cy: offY + (y + h / 2) * scale,
                w: w * scale, h: h * scale };
     }
 
