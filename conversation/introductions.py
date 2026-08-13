@@ -14,6 +14,7 @@ the injected speaker-id module.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from persistence import runtime_toggles
@@ -160,6 +161,22 @@ class Introductions:
                     self._pending_confirm["name"] = name
                     await self._say_confirm(name)
                     return IntroOutcome(handled=True, speaker_name=speaker_name)
+                # A real question/request is NOT an unanswered confirm
+                # (2026-08-13). Live: the confirm latched on a mangled name and
+                # then ate "Can you help me with something?", answering it with
+                # a BYTE-IDENTICAL re-ask of "Did you say Think?" — the visitor
+                # got no answer at all, twice. Yield the turn to the brain so
+                # the question actually gets answered, but KEEP the latch armed
+                # and do NOT burn an attempt: this is not the visitor ignoring
+                # us, it is us having mis-heard a name in the first place. The
+                # never-silent property is preserved because the latch survives
+                # (a later "yes" is still caught) rather than being dropped.
+                if _looks_like_question(user_text):
+                    log.info("[INTRO] confirm pending but utterance is a "
+                             "question (%r) -> answering it, latch kept",
+                             user_text[:60])
+                    return IntroOutcome(handled=False, speaker_name=speaker_name)
+
                 # Never-silent confirm (rig f0b, 2026-07-15): the old silent
                 # clear here let ANY interstitial utterance (echo, aside,
                 # noise) destroy the latch — the next "yes" then fell to the
@@ -167,7 +184,8 @@ class Introductions:
                 tries = self._pending_confirm.get("attempts", 0) + 1
                 if tries <= 2:
                     self._pending_confirm["attempts"] = tries
-                    await self._say_confirm(self._pending_confirm["name"])
+                    await self._say_confirm(self._pending_confirm["name"],
+                                            attempt=tries)
                     return IntroOutcome(handled=True, speaker_name=speaker_name)
                 log.info("[INTRO] confirm unanswered after %d tries -> drop",
                          tries)
@@ -304,14 +322,53 @@ class Introductions:
         result = await self._turn.say(abort_prompt)
         log.info("[TIMMY] %s (name-ask abort)", result.text)
 
-    async def _say_confirm(self, name: str) -> None:
-        confirm_prompt = (
-            f'You just heard someone say their name is "{name.title()}". '
-            f'Repeat the name back to confirm, like "Did you say {name.title()}?" '
-            f'Keep it brief and in-character.'
-        )
+    async def _say_confirm(self, name: str, attempt: int = 0) -> None:
+        """Speak the parsed name back for confirmation.
+
+        `attempt` > 0 means this is a RE-ask. The wording must differ: the
+        first re-ask used to be byte-identical to the original, so a visitor
+        heard the exact same sentence twice in a row (live 2026-08-13) — which
+        is the same self-repetition Dan flagged in ordinary replies."""
+        if attempt >= 2:
+            confirm_prompt = (
+                f'You are still not sure whether this person\'s name is '
+                f'"{name.title()}" and you have now asked twice. Ask ONE last '
+                f'time, differently — invite them to just spell it. Brief, '
+                f'in-character, and do not repeat your earlier wording.'
+            )
+        elif attempt == 1:
+            confirm_prompt = (
+                f'You asked whether their name is "{name.title()}" and did not '
+                f'get a clear yes or no. Ask again in DIFFERENT words — you may '
+                f'admit the room is loud or that you may have misheard. One '
+                f'short sentence, in-character, do not reuse your last phrasing.'
+            )
+        else:
+            confirm_prompt = (
+                f'You just heard someone say their name is "{name.title()}". '
+                f'Repeat the name back to confirm, like "Did you say {name.title()}?" '
+                f'Keep it brief and in-character.'
+            )
         result = await self._turn.say(confirm_prompt)
         log.info("[TIMMY] %s (name confirmation)", result.text)
+
+
+_QUESTION_RE = re.compile(
+    r"^\s*(?:can|could|would|will|do|does|did|are|is|was|were|have|has|"
+    r"what|why|how|when|where|who|which|tell me|show me|help)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    """True when the utterance is a genuine question or request rather than an
+    answer to a pending name-confirm. Deliberately conservative: a bare "?" or
+    a clear interrogative/imperative opener only, so an ordinary mumbled aside
+    still counts as an unanswered confirm and keeps the never-silent re-ask."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(t.endswith("?") or _QUESTION_RE.match(t))
 
 
 def _extract_name(text: str) -> str | None:

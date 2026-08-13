@@ -234,6 +234,30 @@ def _collapse_stutter(tokens: list) -> list:
     return kept
 
 
+# Function words that never appear in a BARE name-tell. A visitor answering
+# "what's your name?" says "Bob" / "Mary Jane" / "Tushar" -- not a clause. The
+# bare fallback below accepts any <=3-token utterance, which on 2026-08-13 let
+# a mangled STT fragment "Think of Dan." (the tail of "What do you think of
+# Dan?") be confirmed back as the name "Think", latch the confirm dialog, and
+# eat the following turn. Name PARTICLES (van/de/von/...) are deliberately
+# absent so "Ann de Vries" still parses.
+_BARE_FUNCTION_WORDS = frozenset({
+    "of", "to", "for", "with", "about", "from", "at", "on", "in", "by",
+    "is", "are", "was", "were", "am", "be", "been",
+    "do", "does", "did", "can", "could", "will", "would", "should", "have",
+    "has", "had", "you", "your", "yours", "my", "mine", "his", "her", "hers",
+    "their", "them", "they", "we", "us", "our", "he", "she",
+    "what", "why", "how", "when", "where", "who", "which",
+    "not", "dont", "cant", "if", "then", "than", "there",
+})
+
+
+def _bare_has_function_word(toks: list[str]) -> bool:
+    """True when a bare reply contains a clause word, so it is a sentence
+    fragment rather than a name-tell."""
+    return any(t.lower().strip("'") in _BARE_FUNCTION_WORDS for t in toks)
+
+
 def extract_reply_name(text: str) -> Optional[str]:
     """Extract a canonical name from a reply to the ask-name latch.
 
@@ -274,6 +298,11 @@ def extract_reply_name(text: str) -> Optional[str]:
                   "", bare, flags=re.IGNORECASE).strip()
     toks = _collapse_stutter(bare.split())
     if toks and len(toks) <= 3:
+        # A clause word means this is a fragment, not a name ("Think of Dan").
+        # Only the BARE fallback is gated -- the explicit frames above already
+        # proved name-position intent, so "my name is Van" is unaffected.
+        if _bare_has_function_word(toks):
+            return None
         return _clean_name_tokens(" ".join(toks))
     return None
 

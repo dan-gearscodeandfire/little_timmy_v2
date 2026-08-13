@@ -88,3 +88,48 @@ def test_register_line_present_for_each_and_none_for_unknown():
 def test_every_register_has_a_cap():
     for r in (STRAIGHT, WARM, BANTER):
         assert SENTENCE_CAP[r] >= 1
+
+
+# ---------------------------------------------------------------------------
+# introductions latch (2026-08-13) — see conversation/introductions.py
+# ---------------------------------------------------------------------------
+
+def test_sentence_fragment_is_not_a_name():
+    """Live 2026-08-13: STT dropped "What do you" from "What do you think of
+    Dan?", leaving "Think of Dan." The bare fallback accepted any <=3-token
+    reply, so "Think" was confirmed back as a name, latched the confirm dialog,
+    and ate the following turn."""
+    from conversation.enroll_intent import extract_reply_name as name
+    assert name("Think of Dan.") is None
+    assert name("Can you help me with something?") is None
+    assert name("What do you think of Dan?") is None
+
+
+def test_real_name_tells_still_parse():
+    """The guard rejects CLAUSES, not unfamiliar strings — real names can be
+    weird, and name particles must survive."""
+    from conversation.enroll_intent import extract_reply_name as name
+    assert name("Bob") == "bob"
+    assert name("Mary Jane") == "mary_jane"
+    assert name("My name is Tushar") == "tushar"
+    assert name("It is Bob") == "bob"
+    assert name("Ann de Vries") == "ann_de_vries"
+    assert name("Th-th-Thomas") == "thomas"
+    # Explicit frame proves name-position intent, so a particle-as-name works.
+    assert name("my name is Van") == "van"
+
+
+def test_question_during_confirm_is_not_an_unanswered_confirm():
+    """A pending name-confirm must not swallow a real question. Live: the
+    visitor asked "Can you help me with something?" and got a byte-identical
+    re-ask of "Did you say Think?" instead of an answer."""
+    from conversation.introductions import _looks_like_question as isq
+    assert isq("Can you help me with something?")
+    assert isq("What is the capital of France?")
+    assert isq("Tell me a poem")
+    # Answers and mumbles must still count as unanswered, keeping the
+    # never-silent re-ask behaviour intact.
+    assert not isq("yes")
+    assert not isq("no")
+    assert not isq("Bob")
+    assert not isq("uh hang on")
