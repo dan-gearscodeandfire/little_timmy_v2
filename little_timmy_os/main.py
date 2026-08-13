@@ -483,6 +483,72 @@ async def enrolled_revive(payload: dict | None = None):
     return await _proxy_identity_post("/api/identity/revive", payload)
 
 
+# ── Puppet Mode ──────────────────────────────────────────────────────────────
+# Operator panel for scripted-line delivery. The page is same-origin here on
+# :8894 and proxies actions to the LT app (:8893), which owns the tts engine,
+# the hearing mute (takeover), the servo calls, and the booth spoof overlay.
+@app.get("/puppet", response_class=HTMLResponse)
+async def puppet_page():
+    """Serve the Puppet Mode operator panel."""
+    page = _STATIC_DIR / "puppet.html"
+    if not page.is_file():
+        return HTMLResponse("<h1>puppet.html missing</h1>", status_code=500)
+    return HTMLResponse(page.read_text(encoding="utf-8"))
+
+
+async def _proxy_puppet_post(path: str, payload: dict | None):
+    import httpx
+    try:
+        # generous timeout: /say blocks server-side until the line finishes
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(config.TIMMY_BASE_URL + path, json=payload or {})
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/puppet/enter")
+async def puppet_enter_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/enter", payload)
+
+
+@app.post("/api/puppet/exit")
+async def puppet_exit_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/exit", payload)
+
+
+@app.post("/api/puppet/say")
+async def puppet_say_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/say", payload)
+
+
+@app.post("/api/puppet/servo")
+async def puppet_servo_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/servo", payload)
+
+
+@app.post("/api/puppet/stop")
+async def puppet_stop_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/stop", payload)
+
+
+@app.post("/api/puppet/freeze")
+async def puppet_freeze_proxy(payload: dict | None = None):
+    return await _proxy_puppet_post("/api/puppet/freeze", payload)
+
+
+@app.get("/api/puppet/servo_status")
+async def puppet_servo_status_proxy():
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(config.TIMMY_BASE_URL + "/api/puppet/servo_status")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"timmy unreachable: {e}"},
+                            status_code=502)
+
+
 @app.get("/api/timmy/metrics")
 async def get_timmy_metrics():
     """Proxy metrics from Little Timmy if it is running."""
@@ -758,6 +824,34 @@ async def set_anchor_enabled(payload: dict | None = None):
         async with httpx.AsyncClient(timeout=3.0) as client:
             r = await client.post(config.TIMMY_BASE_URL + "/api/anchor_enabled",
                                   json=(payload or {}))
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.get("/api/timmy/idle_recognition_enabled")
+async def get_idle_recognition_enabled():
+    """Proxy: idle face-recognition master toggle (names faces on sight, not
+    just on the first speech turn — Open Sauce day 2, 2026-07-19)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(
+                config.TIMMY_BASE_URL + "/api/idle_recognition_enabled")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
+
+
+@app.post("/api/timmy/idle_recognition_enabled")
+async def set_idle_recognition_enabled(payload: dict | None = None):
+    """Proxy: flip idle face recognition. LT persists and reads it per tick."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(
+                config.TIMMY_BASE_URL + "/api/idle_recognition_enabled",
+                json=(payload or {}))
             return JSONResponse(r.json(), status_code=r.status_code)
     except Exception as e:
         return JSONResponse({"error": f"timmy unreachable: {e}"}, status_code=502)
@@ -2130,6 +2224,15 @@ header .uptime {
         <span id="open-booth-hint" style="font-size:11px; color:#8b949e;">opens <code style="color:#39c5cf;">https://&lt;host&gt;:8090/</code> in a new window — accept the self-signed cert the first time</span>
       </div>
       <div id="open-booth-status" style="font-size:11px; color:#8b949e; margin-top:6px; min-height:14px;"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+        <button id="open-puppet-btn" type="button"
+                title="Open Puppet Mode: type lines Timmy speaks in his own voice (NOT stored in memory). Full takeover — his hearing is muted while active. The booth display keeps looking spontaneous. Opens the operator panel (:8894 /puppet) in a new window."
+                style="font-size:12px; padding:4px 10px; background:#3a1f3a; color:#cf39c5; border:1px solid #cf39c5; border-radius:4px; cursor:pointer;">
+          🎭 Puppet Mode
+        </button>
+        <span id="open-puppet-hint" style="font-size:11px; color:#8b949e;">scripted lines in Timmy's voice — memory untouched, booth stays live</span>
+      </div>
+      <div id="open-puppet-status" style="font-size:11px; color:#8b949e; margin-top:6px; min-height:14px;"></div>
     </details>
     <details class="panel" open style="margin-top:16px; display:flex; flex-direction:column;">
       <summary><h2>Conversation</h2></summary>
@@ -3703,6 +3806,20 @@ document.getElementById("open-booth-btn").addEventListener("click", () => {
     status.style.color = "#3fb950";
   } else {
     status.innerHTML = 'popup blocked — open manually: <a href="' + url + '" target="_blank" style="color:#39c5cf;">' + url + '</a>';
+    status.style.color = "#f0883e";
+  }
+});
+
+document.getElementById("open-puppet-btn").addEventListener("click", () => {
+  const url = "/puppet";
+  const status = document.getElementById("open-puppet-status");
+  const win = window.open(url, "lt_puppet",
+    "width=1100,height=900,menubar=no,toolbar=no,location=no");
+  if (win) {
+    status.textContent = "opened Puppet Mode in a new window";
+    status.style.color = "#3fb950";
+  } else {
+    status.innerHTML = 'popup blocked — open manually: <a href="' + url + '" target="_blank" style="color:#cf39c5;">' + url + '</a>';
     status.style.color = "#f0883e";
   }
 });

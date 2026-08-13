@@ -309,6 +309,56 @@
   .seglbl .k-gen::before { content: '\25A0 '; color: var(--red-hot); }
   .seglbl .k-tts::before { content: '\25A0 '; color: var(--bone-ghost); }
 
+  /* ===== added 2026-08-11: VOX caption band ============================
+     One sentence of what Timmy is saying RIGHT NOW, typed out in the lower-
+     centre gap between the bottom-left vitals donuts and the bottom-right
+     telemetry pane, sitting just above the PAN/TILT readout.
+
+     Driven by the LT websocket (`speaking` / `speech_end`, relayed through
+     /lt/ws) — the TTS playback loop emits `speaking` at the instant that
+     sentence's PCM starts, so this is audio-synced, not timed.
+
+     z-index 72: FIXED (outside .stage), so it composites ABOVE the .scanlines
+     layer and the .fx vignette (z 55) — Dan wants the words nearer the viewer
+     than the scan lines. Width is calc'd to reserve the 320px/372px side
+     columns at any stage width while staying dead-centred. */
+  #voxBand { position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: 96px; width: calc(100% - 800px); max-width: 900px; min-width: 420px;
+    z-index: 72; pointer-events: none;
+    opacity: 0; transition: opacity 0.45s ease; }
+  #voxBand.on { opacity: 1; }
+  #voxBand .voxplate {
+    position: relative; padding: 11px 20px 14px;
+    background: linear-gradient(180deg, rgba(10,2,2,0.62) 0%, rgba(6,1,1,0.80) 100%);
+    border: 1px solid rgba(214,86,68,0.42);
+    box-shadow: 0 0 22px rgba(0,0,0,0.55), inset 0 0 26px rgba(120,20,14,0.16);
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+  /* corner ticks, same T-800 language as the stage brackets */
+  #voxBand .voxplate::before, #voxBand .voxplate::after {
+    content: ''; position: absolute; width: 12px; height: 12px;
+    border: 1px solid var(--red); opacity: 0.75; }
+  #voxBand .voxplate::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  #voxBand .voxplate::after  { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+  #voxBand .voxtag { font-family: var(--cop); font-size: 11px; letter-spacing: 0.30em;
+    text-transform: uppercase; color: var(--bone-mid); text-shadow: var(--shadow-light);
+    margin-bottom: 7px; display: flex; align-items: center; gap: 9px; }
+  #voxBand .voxtag::after { content: ''; flex: 1; height: 1px;
+    background: linear-gradient(90deg, rgba(214,86,68,0.45), transparent); }
+  #voxBand .voxtag .lamp { width: 6px; height: 6px; border-radius: 50%;
+    background: var(--red-hot); box-shadow: 0 0 7px rgba(255,45,45,0.85);
+    animation: vox-lamp 1.5s ease-in-out infinite; }
+  @keyframes vox-lamp { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+  #voxBand .voxtext { font-family: var(--mono); font-size: 22px; line-height: 1.35;
+    letter-spacing: 0.012em; color: var(--signal); text-shadow: var(--shadow-strong);
+    min-height: 30px; word-break: break-word; }
+  /* block cursor: steady while characters are still landing, blinking once the
+     sentence has fully typed out (reads as "holding", not "stalled"). */
+  #voxBand .voxcur { display: inline-block; width: 0.55em; height: 1.02em;
+    margin-left: 3px; vertical-align: -0.16em; background: var(--signal);
+    box-shadow: 0 0 9px rgba(232,184,106,0.55); }
+  #voxBand.typed .voxcur { animation: vox-blink 1.06s steps(1) infinite; }
+  @keyframes vox-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
   /* center SAMPLE face-ID bracket (replaces the old centre reticle) */
   .faceid { position: absolute; left: 50%; top: 42%; transform: translate(-50%,-50%);
     width: 17vmin; height: 21vmin; z-index: 11; pointer-events: none; }
@@ -423,6 +473,15 @@
     <div class="mlabel">cogitator mood</div>
     <div class="grid"><span class="dot" id="moodDot"></span></div>
   </div>
+  <!-- VOX caption band: the sentence Timmy is speaking right now. Deliberately
+       OUTSIDE .stage so it stacks above the scanlines and the vignette. -->
+  <div id="voxBand" aria-hidden="true">
+    <div class="voxplate">
+      <div class="voxtag"><span class="lamp"></span>vox · cogitator speaking</div>
+      <div class="voxtext"><span id="voxOut"></span><span class="voxcur"></span></div>
+    </div>
+  </div>
+
   <div class="stage">
     <div id="feed"></div>
     <div class="scanlines"></div>
@@ -1493,6 +1552,77 @@
     }
     setInterval(pollHealth, 8000);
     pollHealth();
+
+    // ----- VOX caption: what Timmy is saying, one sentence at a time -----
+    // Push, not poll. LT's TTS playback loop emits `speaking` {text} at the
+    // TRUE audible onset of each sentence's PCM and `speech_end` when the
+    // queue drains, relayed to us over /lt/ws (see server.proxy_lt_ws). The
+    // caption is therefore locked to the audio: no client-side word-rate
+    // guessing, and no drift across a multi-sentence reply — the LLM streams
+    // and Piper synthesizes two or three sentences ahead of the speaker, so
+    // anything derived from the token stream would visibly run ahead.
+    const voxBand = document.getElementById('voxBand');
+    const voxOut  = document.getElementById('voxOut');
+    let voxTypeTimer = null, voxClearTimer = null;
+
+    function voxShow(text) {
+      const line = (text || '').trim();
+      if (!line) return;
+      clearInterval(voxTypeTimer);
+      clearTimeout(voxClearTimer);
+      voxBand.classList.add('on');
+      voxBand.classList.remove('typed');   // steady cursor while typing
+      voxOut.textContent = '';
+      // Type the whole sentence in ~1.4s regardless of length, clamped so a
+      // 4-word line still feels typed and a 40-word one still finishes well
+      // inside its own spoken duration (Piper runs ~2.5-3 words/sec).
+      const step = Math.min(30, Math.max(9, Math.round(1400 / line.length)));
+      let i = 0;
+      voxTypeTimer = setInterval(() => {
+        voxOut.textContent = line.slice(0, ++i);
+        if (i >= line.length) {
+          clearInterval(voxTypeTimer);
+          voxBand.classList.add('typed');  // cursor starts blinking
+        }
+      }, step);
+    }
+
+    function voxEnd() {
+      // Hold the last sentence briefly after the speaker goes quiet — cutting
+      // it the instant playback ends reads as a glitch, and the reverb tail /
+      // 0.5s cooldown means Timmy is still audibly finishing.
+      clearTimeout(voxClearTimer);
+      voxClearTimer = setTimeout(() => {
+        voxBand.classList.remove('on');
+        // Wipe only after the fade-out has finished, so the text doesn't
+        // vanish a frame before the plate does.
+        voxClearTimer = setTimeout(() => {
+          voxOut.textContent = '';
+          voxBand.classList.remove('typed');
+        }, 500);
+      }, 1600);
+    }
+
+    function connectVox() {
+      let ws;
+      try {
+        ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')
+                           + location.host + '/lt/ws');
+      } catch (_) { setTimeout(connectVox, 4000); return; }
+      ws.onmessage = (ev) => {
+        let d; try { d = JSON.parse(ev.data); } catch (_) { return; }
+        // LT flattens events as {type, ...data} (web.app.broadcast_event), so
+        // the sentence is d.text, not d.data.text. Ignore the other traffic on
+        // this feed (turn / token / metrics / reasoning / tool_call ...).
+        if (d.type === 'speaking') voxShow(d.text);
+        else if (d.type === 'speech_end') voxEnd();
+      };
+      // LT restarts (systemctl restart little-timmy.service) drop this socket;
+      // reconnect on a slow timer so the booth heals itself unattended.
+      ws.onclose = () => setTimeout(connectVox, 4000);
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    }
+    connectVox();
 
     // ----- wake-up re-poll -----
     // Background/occluded tabs throttle setInterval hard (~1/min, frozen after

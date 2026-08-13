@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Puppet Mode — Little Timmy</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9;
+    --muted:#8b949e; --accent:#cf39c5; --green:#3fb950; --amber:#f0883e;
+    --field:#0b0f14;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; }
+  header h1 .em { color:var(--accent); }
+  .status { font-size:12px; color:var(--muted); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+    background:var(--muted); margin-right:5px; vertical-align:middle; }
+  .dot.on { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .dot.off { background:var(--amber); }
+  main { padding:16px 18px; max-width:1040px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:14px; margin-bottom:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--muted); margin:0 0 12px; }
+  .row-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { font-size:12px; padding:5px 12px; background:#21262d; color:var(--text);
+    border:1px solid var(--border); border-radius:5px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:#3a1f3a; color:var(--accent); border-color:var(--accent); }
+  button.stop { background:#3a1f1f; color:var(--amber); border-color:var(--amber); }
+  button.mini { padding:3px 8px; font-size:11px; }
+  input, textarea { background:var(--field); color:var(--text);
+    border:1px solid var(--border); border-radius:5px; font-size:13px;
+    padding:6px 8px; font-family:inherit; }
+  input:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  textarea { resize:vertical; width:100%; min-height:38px; line-height:1.35; }
+  .num { width:64px; text-align:right; }
+  label.inl { font-size:11px; color:var(--muted); display:flex; flex-direction:column; gap:3px; }
+  table { width:100%; border-collapse:collapse; }
+  th { font-size:10px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--muted); text-align:left; padding:0 6px 6px; font-weight:600; }
+  td { padding:5px 6px; vertical-align:top; border-top:1px solid var(--border); }
+  td.actions { white-space:nowrap; }
+  tr.playing td { background:rgba(207,57,197,0.10); }
+  .head-readout { font-family:ui-monospace,Menlo,monospace; font-size:13px; }
+  .head-readout b { color:var(--accent); }
+  .hint { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px; }
+  .grow { flex:1; }
+  .warn { color:var(--amber); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎭 <span class="em">Puppet</span> Mode</h1>
+  <span class="status"><span id="mode-dot" class="dot off"></span><span id="mode-text">connecting…</span></span>
+  <span class="grow"></span>
+  <span class="status warn">Timmy's hearing is muted while this window is open. Close it to restore normal mode.</span>
+</header>
+<main>
+
+  <div class="panel">
+    <h2>Head — live position &amp; aim</h2>
+    <div class="row-controls">
+      <span class="head-readout">current: <b id="hd-pan">–</b> pan · <b id="hd-tilt">–</b> tilt</span>
+      <span style="width:14px;"></span>
+      <span class="status">nudge</span>
+      <button class="mini" onclick="nudge(-nudgeStep(),0)">◄ pan</button>
+      <button class="mini" onclick="nudge(nudgeStep(),0)">pan ►</button>
+      <button class="mini" onclick="nudge(0,nudgeStep())">▲ tilt</button>
+      <button class="mini" onclick="nudge(0,-nudgeStep())">▼ tilt</button>
+      <label class="inl">step<input id="step" class="num" type="number" value="5" style="width:52px;"></label>
+      <span class="grow"></span>
+      <label class="inl" style="flex-direction:row; align-items:center; gap:6px;">
+        <input id="freeze" type="checkbox" onchange="setFreeze(this.checked)">
+        <span>Freeze tracking (manual/coords only)</span>
+      </label>
+    </div>
+    <div class="hint">Aim the head by eye with the nudge buttons, then hit <b>Capture</b> on a row to stamp these numbers into it.
+      Range: pan ±60, tilt ±30. Leave a row's pan/tilt blank to let his current tracking own the head for that line.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Script</h2>
+    <div class="toolbar">
+      <button class="primary" id="play-btn" onclick="playAll()">▶ Play all</button>
+      <button class="stop" onclick="stopAll()">■ Stop</button>
+      <span class="grow"></span>
+      <button class="mini" onclick="addRow()">+ Add line</button>
+      <button class="mini" onclick="saveScript()">Save</button>
+      <button class="mini" onclick="loadScript()">Load</button>
+      <button class="mini" onclick="clearScript()">Clear</button>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:44px;">#</th>
+        <th>Line (spoken in Timmy's voice)</th>
+        <th style="width:70px;">pause s</th>
+        <th style="width:70px;">pan</th>
+        <th style="width:70px;">tilt</th>
+        <th style="width:220px;">actions</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="hint">Per line, order is: <b>move → settle → speak → pause</b>. Pause is dead air <b>after</b> the line.
+      <b>Speak</b> fires one line now; <b>Preview</b> just moves the head to that row's coords; <b>Capture</b> copies the live head position into the row.</div>
+  </div>
+
+</main>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// Puppet Mode operator panel. Talks to same-origin LT-OS proxies (:8894),
+// which forward to the LT app (:8893). The browser walks the script; each
+// /say blocks server-side until the line finishes playing, so pauses are
+// accurate. Nothing here is stored in Timmy's memory.
+// ─────────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+let playing = false;
+let stopRequested = false;
+let curPan = null, curTilt = null;
+
+function nudgeStep() { return parseFloat($("step").value) || 5; }
+
+async function api(path, body) {
+  const opt = { method: body === undefined ? "GET" : "POST",
+                headers: { "Content-Type": "application/json" } };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  try { return await r.json(); } catch (e) { return { ok: false, error: "bad response" }; }
+}
+
+// ── lifecycle: enter on load, exit on unload ─────────────────────────────
+async function enter() {
+  const d = await api("/api/puppet/enter", {});
+  const ok = d && d.ok !== false;
+  $("mode-dot").className = "dot " + (ok ? "on" : "off");
+  $("mode-text").textContent = ok ? "PUPPET ACTIVE — hearing muted, booth spoof on"
+                                   : ("not ready: " + (d && d.error || "unknown"));
+}
+window.addEventListener("beforeunload", () => {
+  // best-effort synchronous exit so hearing is restored when the window closes
+  navigator.sendBeacon("/api/puppet/exit", new Blob(["{}"], { type: "application/json" }));
+});
+
+// ── live head readout ────────────────────────────────────────────────────
+async function pollHead() {
+  const d = await api("/api/puppet/servo_status");
+  if (d && d.ok) {
+    curPan = d.pan; curTilt = d.tilt;
+    $("hd-pan").textContent = (d.pan == null ? "–" : Math.round(d.pan));
+    $("hd-tilt").textContent = (d.tilt == null ? "–" : Math.round(d.tilt));
+  }
+}
+async function nudge(dp, dt) {
+  const p = (curPan || 0) + dp, t = (curTilt || 0) + dt;
+  await api("/api/puppet/servo", { pan: p, tilt: t });
+  curPan = p; curTilt = t;
+  $("hd-pan").textContent = Math.round(p); $("hd-tilt").textContent = Math.round(t);
+}
+async function setFreeze(on) { await api("/api/puppet/freeze", { frozen: !!on }); }
+
+// ── rows ──────────────────────────────────────────────────────────────────
+function rowEls() { return Array.from($("rows").querySelectorAll("tr")); }
+function renumber() { rowEls().forEach((tr, i) => tr.querySelector(".idx").textContent = i + 1); }
+
+function addRow(data) {
+  data = data || {};
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    '<td class="idx"></td>' +
+    '<td><textarea class="f-text" placeholder="What Timmy says…"></textarea></td>' +
+    '<td><input class="num f-pause" type="number" step="0.1" min="0" value="' + (data.pause ?? "1.0") + '"></td>' +
+    '<td><input class="num f-pan" type="number" placeholder="track"></td>' +
+    '<td><input class="num f-tilt" type="number" placeholder="track"></td>' +
+    '<td class="actions">' +
+      '<button class="mini" onclick="speakRow(this)">Speak</button> ' +
+      '<button class="mini" onclick="captureRow(this)">Capture</button> ' +
+      '<button class="mini" onclick="previewRow(this)">Preview</button> ' +
+      '<button class="mini" onclick="delRow(this)">✕</button>' +
+    '</td>';
+  $("rows").appendChild(tr);
+  tr.querySelector(".f-text").value = data.text || "";
+  if (data.pan != null && data.pan !== "") tr.querySelector(".f-pan").value = data.pan;
+  if (data.tilt != null && data.tilt !== "") tr.querySelector(".f-tilt").value = data.tilt;
+  renumber();
+  return tr;
+}
+function delRow(btn) { btn.closest("tr").remove(); renumber(); }
+
+function rowData(tr) {
+  const text = tr.querySelector(".f-text").value.trim();
+  const pauseRaw = tr.querySelector(".f-pause").value;
+  const panRaw = tr.querySelector(".f-pan").value;
+  const tiltRaw = tr.querySelector(".f-tilt").value;
+  const body = { text };
+  if (panRaw !== "" && tiltRaw !== "") { body.pan = parseFloat(panRaw); body.tilt = parseFloat(tiltRaw); }
+  return { body, pause: parseFloat(pauseRaw) || 0 };
+}
+
+// ── per-row actions ─────────────────────────────────────────────────────
+async function speakRow(btn) { await sayTr(btn.closest("tr")); }
+async function captureRow(btn) {
+  await pollHead();
+  const tr = btn.closest("tr");
+  if (curPan != null) tr.querySelector(".f-pan").value = Math.round(curPan);
+  if (curTilt != null) tr.querySelector(".f-tilt").value = Math.round(curTilt);
+}
+async function previewRow(btn) {
+  const tr = btn.closest("tr");
+  const p = tr.querySelector(".f-pan").value, t = tr.querySelector(".f-tilt").value;
+  if (p === "" || t === "") { flash(tr, "no coords on this row"); return; }
+  await api("/api/puppet/servo", { pan: parseFloat(p), tilt: parseFloat(t) });
+}
+
+async function sayTr(tr) {
+  const { body } = rowData(tr);
+  if (!body.text) return { spoken: false };
+  tr.classList.add("playing");
+  const d = await api("/api/puppet/say", body);
+  tr.classList.remove("playing");
+  return d;
+}
+function flash(tr, msg) {
+  const cell = tr.querySelector(".actions");
+  const old = cell.title; cell.title = msg;
+  tr.style.outline = "1px solid var(--amber)";
+  setTimeout(() => { tr.style.outline = ""; cell.title = old; }, 1200);
+}
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// ── play all / stop ─────────────────────────────────────────────────────
+async function playAll() {
+  if (playing) return;
+  playing = true; stopRequested = false;
+  $("play-btn").textContent = "▶ Playing…";
+  for (const tr of rowEls()) {
+    if (stopRequested) break;
+    const { pause } = rowData(tr);
+    await sayTr(tr);                       // blocks until the line finishes
+    if (stopRequested) break;
+    if (pause > 0) await sleep(pause * 1000);
+  }
+  playing = false;
+  $("play-btn").textContent = "▶ Play all";
+}
+async function stopAll() {
+  stopRequested = true;
+  await api("/api/puppet/stop", {});      // cut any in-flight TTS
+  rowEls().forEach((tr) => tr.classList.remove("playing"));
+  playing = false;
+  $("play-btn").textContent = "▶ Play all";
+}
+
+// ── save / load (localStorage) ───────────────────────────────────────────
+const LS_KEY = "puppet_script_v1";
+function serialize() {
+  return rowEls().map((tr) => ({
+    text: tr.querySelector(".f-text").value,
+    pause: tr.querySelector(".f-pause").value,
+    pan: tr.querySelector(".f-pan").value,
+    tilt: tr.querySelector(".f-tilt").value,
+  }));
+}
+function saveScript() { localStorage.setItem(LS_KEY, JSON.stringify(serialize())); }
+function loadScript() {
+  const raw = localStorage.getItem(LS_KEY);
+  if (!raw) return;
+  $("rows").innerHTML = "";
+  try { JSON.parse(raw).forEach(addRow); } catch (e) {}
+  if (!rowEls().length) addRow();
+}
+function clearScript() { $("rows").innerHTML = ""; addRow(); }
+
+// ── boot ─────────────────────────────────────────────────────────────────
+(async function () {
+  await enter();
+  const raw = localStorage.getItem(LS_KEY);
+  if (raw) { loadScript(); } else { addRow(); addRow(); }
+  await pollHead();
+  setInterval(pollHead, 1400);
+})();
+</script>
+</body>
+</html>

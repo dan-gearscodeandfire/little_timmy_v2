@@ -58,6 +58,25 @@ _DEFAULTS: dict = {
     # Frames grabbed per turn when face_authority == "okdemerzel" (best match per
     # identity across them; an off-center subject dodges a single frame).
     "face_authority_frames": 3,
+    # IDLE face recognition (2026-07-19, Open Sauce day 2). Since SFace retirement
+    # (7-16) the Pi no longer recognizes anyone itself — /faces names come SOLELY
+    # from okDemerzel's EdgeFace backfeed, and that recognition only ran in the
+    # speech-turn doorway. Consequence: a known face in frame reads "UNKNOWN" on
+    # the booth reticle until the person SPEAKS (first turn triggers recognition ->
+    # backfeed -> Pi latches the name). When True, a standing background loop grabs
+    # a frame whenever the Pi reports an UNNAMED detection, runs EdgeFace, and fires
+    # the same push_identities backfeed — so faces get named on SIGHT, not on
+    # speech. Does ZERO work with an empty booth or once every visible face is named
+    # (the Pi latches names onto tracks). CPU-only (onnxruntime, off the event
+    # loop); never the VLM. Read live per tick; default False (opt-in — flip on the
+    # LT-OS panel). Kill it if a crowd of UNENROLLED faces keeps it recognizing.
+    "idle_recognition_enabled": False,
+    # Seconds between idle-recognition ticks. ~1.2s names a face ~1s after it enters
+    # frame without hammering okDemerzel's CPU. Read live per tick.
+    "idle_recognition_interval_s": 1.2,
+    # Frames grabbed per idle tick. 1 is enough for naming-on-sight (unlike the
+    # turn path's multi-frame robustness); keeps the idle CPU cost minimal.
+    "idle_recognition_frames": 1,
     # Live face-recognition accept cutoff (cosine distance). A probe within this
     # of an enrolled prototype is recognized; bands scale with it (high=0.8x,
     # medium=this). Default is the calibrated KNOWN_FACE_THRESHOLD. Tunable on the

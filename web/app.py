@@ -254,6 +254,14 @@ async def get_last_payload_route():
     """
     from llm.prompt_builder import get_last_payload
     p = get_last_payload()
+    # Puppet spoof: keep the real prompt-composition (system/history token viz)
+    # but swap the ephemeral_block to the puppet context so the booth recall /
+    # who-is-present panels reflect the current scripted line, not a stale turn.
+    if _puppet["active"] and _puppet.get("ephemeral_block"):
+        base = dict(p) if p else {}
+        base.update({"available": True,
+                     "ephemeral_block": _puppet["ephemeral_block"]})
+        return base
     if not p:
         return {"available": False}
     return {"available": True, **p}
@@ -326,8 +334,12 @@ async def announce(payload: dict | None = None):
     let_timmy_hear = bool(body.get("let_timmy_hear") or body.get("hear"))
     # force=True: the supervisor channel bypasses the mouth-mute (tts_muted) so
     # Claude can still talk to Dan while Timmy's conversational voice is muted.
+    # caption=False: this channel is Claude talking to Dan, not Timmy talking to
+    # the room. Its text must never land on the attendee-facing booth VOX band —
+    # that applies to the "timmy" voice option too, which is still supervisor
+    # copy, just spoken in Timmy's voice.
     await _orchestrator.tts.speak(spoken_text, force=True, voice_model=voice_model,
-                                  suppress_mic=not let_timmy_hear)
+                                  suppress_mic=not let_timmy_hear, caption=False)
     if inject:
         import asyncio as _asyncio
         # Inject the bare text (no self-ID prefix) so Timmy sees the therapist's
@@ -336,6 +348,276 @@ async def announce(payload: dict | None = None):
     return {"spoken": True, "text": spoken_text,
             "voice": "timmy" if use_timmy else "couples_therapist",
             "heard_by_timmy": let_timmy_hear, "injected": inject}
+
+
+# ── Puppet Mode ──────────────────────────────────────────────────────────────
+# Scripted-line delivery (LT-OS "Puppet Mode"): the operator types lines, Timmy
+# speaks them in his OWN voice, and NOTHING is written to memory (this path
+# never calls respond()/save()). It's a FULL TAKEOVER — on enter, hearing is
+# muted (in-memory only; the durable hearing_enabled toggle is left untouched)
+# so no real STT turn can fire and collide with the puppet lines.
+#
+# To preserve the ILLUSION of spontaneity, a spoof overlay keeps the booth
+# looking alive while active: /api/presence asserts "Dan, voice-identified,
+# attending"; /api/metrics carries realistic per-line tokens/latency; and the
+# /api/last_payload recall panel is driven by REAL, read-only memory retrieval
+# on the typed line. All spoof state is in-memory and reverts instantly on exit.
+_puppet: dict = {
+    "active": False,
+    "prev_hearing_muted": None,   # restored on exit
+    "last_say_ts": 0.0,           # drives the presence voice-age ("just spoke")
+    "last_pose": None,            # {"pan","tilt"} from the most recent move
+    "ephemeral_block": None,      # spoofed /api/last_payload context string
+    "prev_framing": None,         # saved centroid_framing state while frozen
+    # Bumped by Stop/exit. A multi-sentence say() enqueues its remaining
+    # sentences one at a time, so it re-checks this between them and bails —
+    # without it, Stop would cut the CURRENT sentence and the next one would
+    # start right up behind it.
+    "say_seq": 0,
+}
+
+
+def _puppet_split_sentences(text: str) -> list[str]:
+    """Chunk a typed puppet line the way the LIVE reply engine chunks a stream.
+
+    Character-walk flushing on .?!;: — deliberately the identical rule (and the
+    identical punctuation set) as conversation.turn._stream_and_speak, not a
+    smarter regex. The point is that a scripted line reaches TTS in exactly the
+    units a generated one does, so the booth VOX band, the mic gate and the
+    inter-sentence pacing are indistinguishable from a real turn. Matching its
+    quirks matters more than being better than it: a regex that (correctly)
+    refused to split "Mr." would make puppet lines behave UNLIKE live ones.
+    """
+    out: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        stripped = buf.rstrip()
+        if stripped and stripped[-1] in ".?!;:":
+            out.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        out.append(buf.strip())
+    return [s for s in out if s] or [text.strip()]
+
+
+def _puppet_fake_metrics(text: str) -> None:
+    """Write a realistic per-line metric set into _metrics so the booth HUD
+    (recall·think·speak tokens/latency) reads as a normal spontaneous turn.
+    Values are jittered around Timmy's real operating ranges; completion tokens
+    are derived from the line so throughput looks right."""
+    import random
+    tokens = max(3, len(text) // 4)
+    first_token = random.randint(380, 820)
+    speak = int(tokens * random.uniform(45, 60))
+    stt = random.randint(180, 360)
+    spk = random.randint(40, 110)
+    endpoint = random.randint(300, 520)
+    queue = random.randint(5, 40)
+    classifier = random.randint(60, 140)
+    retrieval = random.randint(280, 720)
+    build = random.randint(90, 240)
+    total_llm = int(tokens / random.uniform(18.0, 26.0) * 1000)
+    reply_lag = (endpoint + queue + spk + stt + classifier + retrieval
+                 + build + first_token + speak + random.randint(20, 120))
+    update_metrics(
+        turns=_metrics.get("turns", 0) + 1,
+        last_stt_ms=stt, last_spk_ms=spk, last_endpoint_ms=endpoint,
+        last_queue_ms=queue, last_classifier_ms=classifier,
+        last_retrieval_ms=retrieval, last_build_ms=build,
+        last_llm_first_token_ms=first_token,
+        last_tts_ms=first_token + speak,
+        last_llm_total_ms=total_llm,
+        last_est_completion_tokens=tokens,
+        last_reply_lag_ms=reply_lag,
+        last_e2e_ms=reply_lag,
+    )
+
+
+async def _puppet_build_context(text: str) -> None:
+    """Populate the booth recall panel from REAL, read-only memory retrieval on
+    the typed line (never stored). Builds the ephemeral_block string the booth
+    parses ([WHO IS PRESENT] -> Dan, 'Relevant memories:' -> retrieved rows)."""
+    lines = ["[WHO IS PRESENT]", "- Dan (household)"]
+    try:
+        from memory.retrieval import retrieve
+        from llm.prompt_builder import _format_relative_time
+        mems = await retrieve(text, top_k=5)
+        if mems:
+            lines.append("Relevant memories:")
+            for m in mems:
+                t = _format_relative_time(m.created_at)
+                c = m.content if len(m.content) <= 200 else m.content[:200] + "..."
+                lines.append(f"- ({t}) {c}")
+    except Exception as e:
+        log.warning("[PUPPET] retrieval failed: %s", e)
+    _puppet["ephemeral_block"] = "\n".join(lines)
+
+
+async def _puppet_servo_move(pan: float, tilt: float, hold_ms: int) -> None:
+    """Hold the Pi tracker (so centroid framing doesn't fight us) then command
+    an absolute pan/tilt — the same two-call pattern the framing loop uses."""
+    import httpx
+    async with httpx.AsyncClient(verify=False, timeout=3.0) as c:
+        try:
+            await c.post(config.STREAMERPI_BEHAVIOR_MODE_URL,
+                         json={"mode": "hold", "priority": "critical",
+                               "timeout_ms": int(hold_ms)})
+        except Exception:
+            pass  # hold is best-effort
+        await c.post(config.STREAMERPI_SERVO_MOVE_URL,
+                     json={"pan": float(pan), "tilt": float(tilt),
+                           "speed": float(config.LOOK_AT_SPEED)})
+    _puppet["last_pose"] = {"pan": float(pan), "tilt": float(tilt)}
+
+
+@app.post("/api/puppet/enter")
+async def puppet_enter():
+    """Enter Puppet Mode: mute hearing (in-memory) and turn the booth spoof ON."""
+    if _orchestrator is None:
+        return {"ok": False, "error": "orchestrator not ready"}
+    cap = getattr(_orchestrator, "capture", None)
+    if cap is not None and not _puppet["active"]:
+        _puppet["prev_hearing_muted"] = bool(cap.hearing_muted)
+        cap.hearing_muted = True  # NOT set_hearing(): don't persist the toggle
+    _puppet["active"] = True
+    _puppet["ephemeral_block"] = None
+    _puppet["last_pose"] = None
+    _puppet["last_say_ts"] = time.time()
+    _puppet_fake_metrics("hello there")  # seed so the HUD isn't frozen on enter
+    log.info("[PUPPET] entered — hearing muted, booth spoof ON")
+    return {"ok": True, "active": True}
+
+
+@app.post("/api/puppet/exit")
+async def puppet_exit():
+    """Exit Puppet Mode: restore hearing, cut any TTS, spoof reverts instantly."""
+    cap = getattr(_orchestrator, "capture", None) if _orchestrator else None
+    if cap is not None and _puppet["prev_hearing_muted"] is not None:
+        cap.hearing_muted = bool(_puppet["prev_hearing_muted"])
+    # Same guard as Stop: leaving the mode must not let the tail of a
+    # multi-sentence line keep enqueuing after the queue is drained.
+    _puppet["say_seq"] += 1
+    if _orchestrator and getattr(_orchestrator, "tts", None):
+        try:
+            _orchestrator.tts.stop_playback()
+        except Exception:
+            pass
+    # Restore tracking if it was frozen for this session.
+    if _puppet.get("prev_framing") is not None:
+        try:
+            from persistence import runtime_toggles
+            runtime_toggles.set("centroid_framing_enabled",
+                                bool(_puppet["prev_framing"]))
+        except Exception as e:
+            log.warning("[PUPPET] framing restore failed: %s", e)
+    _puppet["active"] = False
+    _puppet["prev_hearing_muted"] = None
+    _puppet["ephemeral_block"] = None
+    _puppet["prev_framing"] = None
+    log.info("[PUPPET] exited — hearing restored, booth spoof OFF")
+    return {"ok": True, "active": False}
+
+
+@app.post("/api/puppet/freeze")
+async def puppet_freeze(payload: dict | None = None):
+    """Optional global switch: freeze head tracking (manual/coords-only) by
+    disabling centroid framing, or unfreeze to inherit LT-OS tracking again.
+    Saves the prior state so exit restores it."""
+    from persistence import runtime_toggles
+    frozen = bool((payload or {}).get("frozen"))
+    if frozen and _puppet.get("prev_framing") is None:
+        _puppet["prev_framing"] = bool(runtime_toggles.get("centroid_framing_enabled"))
+        runtime_toggles.set("centroid_framing_enabled", False)
+        log.info("[PUPPET] tracking FROZEN (centroid framing off)")
+    elif not frozen and _puppet.get("prev_framing") is not None:
+        runtime_toggles.set("centroid_framing_enabled", bool(_puppet["prev_framing"]))
+        _puppet["prev_framing"] = None
+        log.info("[PUPPET] tracking UNFROZEN (centroid framing restored)")
+    return {"ok": True, "frozen": frozen}
+
+
+@app.post("/api/puppet/say")
+async def puppet_say(payload: dict | None = None):
+    """Speak one scripted line in Timmy's voice, blocking until playback ends.
+    Order: [move->settle if coords] -> speak(block). Refreshes the booth spoof
+    (metrics now, real recall in background) BEFORE speaking so the booth
+    'recalls then speaks' like a real turn. Never touches memory/history.
+
+    The line is split into sentences and spoken as separate clips (2026-08-11),
+    matching how the live engine feeds TTS. That keeps the booth VOX band
+    advancing one sentence at a time on a scripted line, same as a real reply —
+    a whole typed paragraph used to land on the overlay in a single block."""
+    if _orchestrator is None or getattr(_orchestrator, "tts", None) is None:
+        return {"spoken": False, "error": "tts_unavailable"}
+    body = payload or {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return {"spoken": False, "error": "empty_text"}
+    pan, tilt = body.get("pan"), body.get("tilt")
+    _puppet["last_say_ts"] = time.time()
+    _puppet_fake_metrics(text)
+    asyncio.create_task(_puppet_build_context(text))
+    has_coord = (pan is not None and tilt is not None
+                 and str(pan).strip() != "" and str(tilt).strip() != "")
+    if has_coord:
+        try:
+            est_ms = int(max(1.5, len(text) / 12.0) * 1000) + 1500
+            await _puppet_servo_move(float(pan), float(tilt), est_ms)
+            await asyncio.sleep(0.3)  # settle before he speaks
+        except Exception as e:
+            log.warning("[PUPPET] servo move failed: %s", e)
+    sentences = _puppet_split_sentences(text)
+    seq = _puppet["say_seq"]
+    dur = await _orchestrator.tts.speak_sequence_blocking(
+        sentences, voice_model=None, suppress_mic=True,
+        abort=lambda: _puppet["say_seq"] != seq)
+    return {"spoken": True, "duration_s": round(dur, 2),
+            "sentences": len(sentences)}
+
+
+@app.post("/api/puppet/servo")
+async def puppet_servo(payload: dict | None = None):
+    """Move the head to an absolute pan/tilt now (Preview / nudge / capture)."""
+    body = payload or {}
+    try:
+        pan, tilt = float(body.get("pan")), float(body.get("tilt"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "pan/tilt required"}
+    try:
+        await _puppet_servo_move(pan, tilt, int(body.get("hold_ms", 4000)))
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "pan": pan, "tilt": tilt}
+
+
+@app.get("/api/puppet/servo_status")
+async def puppet_servo_status():
+    """Current head pose from streamerpi, for the live readout / capture."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=2.0) as c:
+            r = await c.get(config.STREAMERPI_SERVO_STATUS_URL)
+            d = r.json()
+        cur = d.get("current_position", d)
+        return {"ok": True, "pan": cur.get("horizontal"), "tilt": cur.get("vertical")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/puppet/stop")
+async def puppet_stop():
+    """Cut current TTS (Stop button) without leaving Puppet Mode."""
+    # Bump FIRST: an in-flight multi-sentence say() polls this between
+    # sentences, so raising it before draining the queue guarantees no further
+    # sentence is enqueued behind the one stop_playback is about to cut.
+    _puppet["say_seq"] += 1
+    if _orchestrator and getattr(_orchestrator, "tts", None):
+        try:
+            _orchestrator.tts.stop_playback()
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @app.get("/api/tts_mute")
@@ -1035,6 +1317,23 @@ async def vision_state():
 @app.get("/api/presence")
 async def presence_state():
     """Room ledger: who is present (visible or recently heard)."""
+    # Puppet spoof: assert "Dan, voice-identified, attending" so the booth reads
+    # as if he's spontaneously conversing. Voice-age refreshes each line (he
+    # "just spoke"); Dan is physically present so his real face aligns with this.
+    if _puppet["active"]:
+        now = time.time()
+        voice_age = max(1.0, now - _puppet.get("last_say_ts", now))
+        entry = {
+            "name": "dan", "display_name": "Dan",
+            "on_camera_now": True,
+            "last_seen_face_age_s": round(min(voice_age, 3.0), 1),
+            "last_seen_voice_age_s": round(voice_age, 1),
+            "source": "face+voice", "is_creator": False,
+        }
+        if _puppet.get("last_pose"):
+            entry["last_pose"] = _puppet["last_pose"]
+        return {"now": now, "enabled": True, "present": [entry],
+                "unknown_voices_recent": 0}
     if not _orchestrator or not hasattr(_orchestrator, "room_ledger") or _orchestrator.room_ledger is None:
         return {"now": None, "present": [], "unknown_voices_recent": 0, "enabled": False}
     state = _orchestrator.room_ledger.current_state()
@@ -1527,6 +1826,36 @@ async def set_anchor_enabled(payload: dict | None = None):
         "ok": True,
         "enabled": bool(runtime_toggles.get("anchor_enabled")),
         "active": anchor.anchor_active(),
+    }
+
+
+@app.get("/api/idle_recognition_enabled")
+async def get_idle_recognition_enabled():
+    """Read the idle face-recognition master toggle (Open Sauce day 2, 2026-07-19).
+    When on, a standing loop names faces on SIGHT rather than only on the first
+    speech turn (SFace-retirement gap). `interval_s`/`frames` ride along so the
+    booth panel shows the live cadence in one read."""
+    from persistence import runtime_toggles
+    return {
+        "enabled": bool(runtime_toggles.get("idle_recognition_enabled")),
+        "interval_s": float(runtime_toggles.get("idle_recognition_interval_s")),
+        "frames": int(runtime_toggles.get("idle_recognition_frames")),
+    }
+
+
+@app.post("/api/idle_recognition_enabled")
+async def set_idle_recognition_enabled(payload: dict | None = None):
+    """Flip idle face recognition live ({"enabled": bool} — standard toggle-POST
+    contract). Flipping it meant a shell on okdemerzel otherwise, and Dan has no
+    Claude Code at the show. The idle_recognition_monitor loop reads it per tick,
+    no restart. Turn it OFF if a crowd of unenrolled faces keeps the recognizer
+    busy and you want okDemerzel's CPU back."""
+    from persistence import runtime_toggles
+    on = bool((payload or {}).get("enabled", False))
+    runtime_toggles.set("idle_recognition_enabled", on)
+    return {
+        "ok": True,
+        "enabled": bool(runtime_toggles.get("idle_recognition_enabled")),
     }
 
 

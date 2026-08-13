@@ -2607,6 +2607,71 @@ async def main():
 
     anchor_poll_task = asyncio.create_task(anchor_poll_monitor())
 
+    # Idle face recognition (2026-07-19, Open Sauce day 2). SFace retirement
+    # (7-16) left okDemerzel's per-turn EdgeFace backfeed as the ONLY thing that
+    # names the Pi's /faces tracks, so a known face read "UNKNOWN" on the reticle
+    # until the person spoke (first turn -> recognize -> backfeed -> Pi latches
+    # the name). This standing loop closes that gap: whenever the Pi reports an
+    # UNNAMED detection it grabs a frame and runs the same okDemerzel recognition
+    # path (which fires push_identities), so faces get named on SIGHT. Skips
+    # entirely when the booth is empty or every visible face is already named —
+    # the Pi latches names onto tracks, so steady-state cost is zero. CPU-only
+    # (EdgeFace via to_thread), never the VLM (two-35B GPU-contention lesson).
+    # Toggles read per tick so booth flips apply with no restart; default OFF.
+    async def idle_recognition_monitor():
+        from presence.face_recognize import fetch_face_observation_okdemerzel
+        while True:
+            try:
+                await asyncio.sleep(
+                    float(runtime_toggles.get("idle_recognition_interval_s")))
+                if not runtime_toggles.get("idle_recognition_enabled"):
+                    continue
+                if not orch._presence_enabled:
+                    continue
+                # Only recognize when the Pi is actually reporting an UNNAMED
+                # face. Empty booth -> nothing to do; all tracks already named
+                # (the Pi latched a prior backfeed) -> nothing to do. This is
+                # what keeps steady-state cost at zero.
+                remote = getattr(orch.vision, "_face_remote", None) \
+                    if getattr(orch, "vision", None) else None
+                if remote is None:
+                    continue
+                state = await remote.fetch_full()
+                age_s = state.get("age_s") if state else None
+                if not state or age_s is None or age_s > 4.0:
+                    continue
+                faces = [f for f in state.get("faces", []) if f.get("bbox")]
+                if not faces:
+                    continue
+
+                def _named(f):
+                    nm = (f.get("name") or "").strip().lower()
+                    return nm and not nm.startswith("unknown")
+                if all(_named(f) for f in faces):
+                    continue
+                # An unnamed face is in frame — run the okDemerzel recognizer.
+                # fetch_face_observation_okdemerzel fires push_identities
+                # (backfeed) internally on any hit; the return value is unused
+                # here — the naming side effect on the Pi is the whole point.
+                frames = int(runtime_toggles.get("idle_recognition_frames") or 1)
+                await asyncio.wait_for(
+                    fetch_face_observation_okdemerzel(
+                        orch._face_http,
+                        config.STREAMERPI_CAPTURE_URL,
+                        config.STREAMERPI_BEHAVIOR_URL,
+                        frames=frames,
+                        timeout_sec=1.5,
+                    ),
+                    timeout=2.5,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.debug("[IDLE-RECOG] tick error", exc_info=True)
+                await asyncio.sleep(2.0)
+
+    idle_recognition_task = asyncio.create_task(idle_recognition_monitor())
+
     async def framing_monitor():
         """Booth framing controller (Dan 2026-07-15, spec 2): brain-owned
         head movement under EXPO. Centers on the average centroid of
@@ -2831,6 +2896,7 @@ async def main():
         anchor_poll_task.cancel()
         framing_task.cancel()
         face_enroll_task.cancel()
+        idle_recognition_task.cancel()
         await orch.supervisor.stop()
         await orch.vision.stop()
         await orch.capture.stop()
