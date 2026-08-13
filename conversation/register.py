@@ -44,6 +44,43 @@ _FACTUAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A question asked as a STATEMENT + TAG -- "..., right?", "..., didn't you?".
+# _FACTUAL_RE is ^-anchored on fronted wh-/aux- forms, so none of these matched
+# and every one fell through to BANTER, which grants the 2-sentence jab budget.
+# Measured 2026-08-13: a question battery is all fronted wh-questions, so this
+# was invisible until the test was styled as ordinary conversation. The live
+# cost was a fabrication in the bought second sentence -- retrieval had already
+# missed on "somebody walked off with one of your microphones at that party,
+# right?" and the spare sentence became "Dan probably lost them again."
+_TAG_QUESTION_RE = re.compile(
+    # The main clause must NOT itself be a fronted question -- without this
+    # guard "how are you?" parses as <clause>+<are you?> and gets the
+    # one-sentence budget, which is the opposite of the intent. Caught by
+    # tests/test_conversation_turn.py, which drives exactly that utterance.
+    r"^(?!\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
+    r"(?:what|who|whom|whose|when|where|which|why|how|is|are|was|were|do|does|"
+    r"did|can|could|will|would|should|shall|have|has|had|am|may|might)\b)"
+    r"\S.*?,?\s*(?:"
+    r"right|correct|yeah|no|eh|"
+    r"(?:is|isn'?t|are|aren'?t|was|wasn'?t|were|weren'?t|do|don'?t|does|doesn'?t|"
+    r"did|didn'?t|has|hasn'?t|have|haven'?t|had|hadn'?t|can|can'?t|could|couldn'?t|"
+    r"will|won'?t|would|wouldn'?t|should|shouldn'?t|am|ain'?t)\s+"
+    r"(?:it|he|she|they|you|we|i|there|that|this)"
+    r")\s*\?\s*$",
+    re.IGNORECASE,
+)
+
+# Imperative recall -- asks memory for a fact without ever forming a question.
+# "Tell me about the party." / "Remind me what Sierra ordered." Deliberately
+# NOT folded into _FACTUAL_RE: the opinion guard below must still be able to
+# veto "tell me a joke", which is the same frame asking for the opposite thing.
+_RECALL_ASK_RE = re.compile(
+    r"^\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
+    r"(?:tell me about|remind me|refresh my memory|"
+    r"walk me through|fill me in on|catch me up on)\b",
+    re.IGNORECASE,
+)
+
 # Explicitly invites opinion / performance / play. A right answer does not
 # exist, so wit is the point rather than an evasion of the point.
 _OPINION_RE = re.compile(
@@ -94,8 +131,10 @@ def classify(user_text: str,
     Precedence is deliberate, most-protective first:
       WARM     a child is in frame, or a stranger's first exchange -- the two
                cases where a put-down lands worst and Dan intervened by hand.
-      STRAIGHT a factual question that is not an opinion prompt, or the user
-               correcting Timmy.
+      STRAIGHT a turn that asks for a real answer and is not an opinion prompt
+               -- a fronted question ("who directed X"), a statement+tag
+               ("..., right?"), or an imperative recall ("remind me ...") --
+               or the user correcting Timmy.
       BANTER   everything else, which is where the wit belongs.
     """
     text = user_text or ""
@@ -109,7 +148,12 @@ def classify(user_text: str,
 
     if _CORRECTION_RE.search(text):
         return STRAIGHT
-    if _FACTUAL_RE.search(text) and not _OPINION_RE.search(text):
+    # All three "asks for a real answer" shapes share ONE opinion veto, so
+    # "tell me a joke" and "what's your favorite album?" still land in BANTER.
+    asks_for_an_answer = (_FACTUAL_RE.search(text)
+                          or _TAG_QUESTION_RE.search(text)
+                          or _RECALL_ASK_RE.search(text))
+    if asks_for_an_answer and not _OPINION_RE.search(text):
         return STRAIGHT
 
     return BANTER

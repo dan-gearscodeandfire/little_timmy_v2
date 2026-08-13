@@ -4,6 +4,7 @@ Pure functions -- no DB, no LLM, no audio. The register exists to remove the
 [answer][jab] shape that the fixed 2-sentence cap imposed on every reply; these
 pin the classification boundaries and, critically, the sentence budget.
 """
+import pytest
 import sys
 from pathlib import Path
 
@@ -133,3 +134,77 @@ def test_question_during_confirm_is_not_an_unanswered_confirm():
     assert not isq("no")
     assert not isq("Bob")
     assert not isq("uh hang on")
+
+
+# ---------------------------------------------------------------------------
+# Widened STRAIGHT (2026-08-13, Dan: "jabs are not necessary in every response")
+# ---------------------------------------------------------------------------
+# _FACTUAL_RE is ^-anchored on fronted wh-/aux- forms. Ordinary speech asks
+# factual questions in shapes that anchor never sees, and BANTER is the
+# fallthrough -- so those turns got the 2-sentence jab budget. Found by styling
+# the acoustic test as a conversation instead of a question battery.
+
+@pytest.mark.parametrize("text", [
+    "Somebody walked off with one of your microphones at that party, right?",
+    "You lost one of your microphones at that party, didn't you?",
+    "That was Sierra who asked about the screws, wasn't it?",
+    "So the Knicks won game four, right?",
+    "Dan built you in the shop, correct?",
+    "You have not forgotten the Dinobots argument, have you?",
+    "It was a bucket of screws, yeah?",
+])
+def test_tag_questions_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    "Tell me about the party.",
+    "Remind me what Sierra ordered at Taco Bell.",
+    "Catch me up on the Dinobots argument.",
+    "Walk me through what happened at Open Sauce.",
+    "Refresh my memory on the microphone.",
+])
+def test_imperative_recall_asks_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # The opinion veto must still beat all three answer-shapes -- same frame,
+    # opposite request. "tell me a joke" is the collision that matters.
+    "Tell me a joke.",
+    "Tell me about your favorite album.",
+    "Rate my outfit, would you?",
+    "Would you rather be a toaster or a lamp?",
+])
+def test_opinion_veto_still_wins_over_the_widened_shapes(text):
+    assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # Ordinary conversation keeps its second sentence -- this is the half of
+    # the persona the widening must NOT eat.
+    "Hey Timmy. Been a while.",
+    "It is freezing in this shop.",
+    "Anyway, I brought coffee but I drank the whole thing on the way over.",
+    "You are less annoying than the last time I was in here.",
+    "Alright, I am out. Tell Dan I stopped by.",
+    "Honestly I think Transformers peaked with the 1986 movie.",
+])
+def test_social_turns_stay_banter(text):
+    assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # A FRONTED question must not be parsed as <clause> + <tag>. "how are you?"
+    # ends in "are you?" and was swallowed by the first draft of the tag rule,
+    # collapsing a social greeting to a one-sentence answer. Caught by
+    # tests/test_conversation_turn.py before it shipped.
+    "how are you?",
+    "How are you?",
+    "Are you serious?",
+    "Can you hear me?",
+    "Is that so?",
+    "Was it you?",
+])
+def test_fronted_questions_are_not_tag_questions(text):
+    assert classify(text) == BANTER
