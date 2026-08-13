@@ -253,22 +253,77 @@ READBACK_PROPER_NOUNS = True
 # (Brent .27, Renz .52, Thorn .37). Raise toward 0.65 to catch more; 0 disables.
 STT_QUERY_CONFIDENCE_THRESHOLD = 0.55
 
+# --- Propositions (2026-08-13) ---
+# Atomic single-claim rows split out of each episode summary, embedded
+# individually. Fixes the dilution at the root: one episode = one 768-d vector
+# covering ~16 minutes and a dozen topics, so similarity to any specific
+# question is meaningless (measured: no scalar threshold separates relevant
+# from banter on episode vectors -- see memory/propositions.py header).
+# WRITE path is on by default: it is purely additive (new table, episodes
+# untouched) and a missing proposition set degrades to episode-tier retrieval.
+# READ path is the live switch -- flip TIMMY_PROPOSITION_RETRIEVAL after the
+# corpus is backfilled (ops/backfill_propositions.py) and measured.
+PROPOSITION_WRITE_ENABLED = os.getenv("TIMMY_PROPOSITION_WRITE", "1") == "1"
+PROPOSITION_RETRIEVAL_ENABLED = os.getenv("TIMMY_PROPOSITION_RETRIEVAL", "1") == "1"
+PROPOSITION_MAX_PER_EPISODE = int(os.getenv("TIMMY_PROPOSITION_MAX", "8"))
+PROPOSITION_TOP_K = int(os.getenv("TIMMY_PROPOSITION_TOP_K", "5"))
+# Length sanity band for a single claim. Below the floor it is a fragment
+# ("Dan agreed."); above the ceiling the model ignored "one claim per line"
+# and emitted a paragraph -- which is the dilution being fixed.
+PROPOSITION_MIN_CHARS = int(os.getenv("TIMMY_PROPOSITION_MIN_CHARS", "20"))
+PROPOSITION_MAX_CHARS = int(os.getenv("TIMMY_PROPOSITION_MAX_CHARS", "300"))
+# TIER-SPECIFIC fusion weights. Short documents want DIFFERENT weights than long
+# ones, measured 2026-08-13: a 61-char claim has no surrounding content to dilute
+# a spurious match, so the lexical channels over-fire on function words -- "what's
+# your favorite Radiohead album?" returned "Timmy's favorite movie" and "favorite
+# color" above the actual Radiohead claim. Trigram is the worst offender on short
+# text, hence 0.5 here vs 1.5 on the episode tier.
+# Sweep result (n=22, vs 0.837 at the episode-tier weights): MRR 0.909.
+# NOTE the intuitive fix -- raise w_semantic because the claims are short -- was
+# tested and is WRONG: 2.0/3.0/4.0 all scored worse. Don't retry it.
+PROPOSITION_RRF_W_SEMANTIC = float(os.getenv("TIMMY_PROP_RRF_W_SEMANTIC", "1.0"))
+PROPOSITION_RRF_W_FTS = float(os.getenv("TIMMY_PROP_RRF_W_FTS", "1.0"))
+PROPOSITION_RRF_W_TRIGRAM = float(os.getenv("TIMMY_PROP_RRF_W_TRIGRAM", "0.5"))
+# One claim per parent episode in the returned set. Without it a single chatty
+# episode can spend all 5 slots on its own claims; measured +0.019 MRR and it
+# widens the range of episodes the prompt sees.
+PROPOSITION_DEDUPE_BY_EPISODE = os.getenv("TIMMY_PROPOSITION_DEDUPE_EPISODE", "1") == "1"
+
 # --- Retrieval ---
 RETRIEVAL_TOP_K = 5
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
 
-# Weighted RRF fusion (2026-06-02). The three search channels no longer vote
-# equally: the semantic (embedding) channel is the highest-signal source for
-# paraphrase/meaning recall, FTS is solid keyword evidence, and trigram is the
-# noisy char-level channel kept only for STT-mangled proper nouns. Each
-# channel's contribution stays the scale-free RRF term weight * 1/(k+rank+1),
-# so robustness is preserved -- we only rebalance how loudly each votes.
+# Weighted RRF fusion (2026-06-02, REBALANCED 2026-08-13). Each channel's
+# contribution stays the scale-free RRF term weight * 1/(k+rank+1), so
+# robustness is preserved -- the weights only rebalance how loudly each votes.
+#
+# The 2026-06-02 weights (semantic 2.0 / fts 1.0 / trigram 0.5) were tuned
+# while BOTH lexical channels were structurally broken: plainto_tsquery ANDed
+# every term (zero rows on 5 of 10 real questions) and whole-document `%`
+# could never clear its 0.3 threshold (zero rows, always). So semantic was
+# weighted up to compensate for channels that were contributing nothing -- a
+# fix aimed at the symptom. With the channels repaired (memory/episodic_search
+# _fts/_trigram) that compensation actively hurts: an exact lexical match could
+# not outrank a mediocre semantic hit, because semantic at rank 9 (2.0/70)
+# still beat FTS at rank 1 (1.0/61).
+#
+# Re-tuned against a hand-labelled 11-query Open Sauce eval set (see
+# Areas/lt-retrieval-channel-repair-2026-08-13):
+#   before (broken channels, old weights): recall@5 0.73, MRR 0.561
+#   after  (repaired channels, these):     recall@5 1.00, MRR 0.932
+# Weight tuning is on a small set -- all four are env-overridable, and
+# reverting the four env vars restores the previous behaviour exactly.
 # A/B CONTROL: set all three weights to 1.0 and RRF_COSINE_BONUS to 0.0 to
 # reproduce the original equal-weight, rank-only behavior exactly.
-RRF_K = int(os.getenv("TIMMY_RRF_K", "60"))
-RRF_W_SEMANTIC = float(os.getenv("TIMMY_RRF_W_SEMANTIC", "2.0"))
-RRF_W_FTS = float(os.getenv("TIMMY_RRF_W_FTS", "1.0"))
-RRF_W_TRIGRAM = float(os.getenv("TIMMY_RRF_W_TRIGRAM", "0.5"))
+RRF_K = int(os.getenv("TIMMY_RRF_K", "30"))
+RRF_W_SEMANTIC = float(os.getenv("TIMMY_RRF_W_SEMANTIC", "1.0"))
+RRF_W_FTS = float(os.getenv("TIMMY_RRF_W_FTS", "1.5"))
+RRF_W_TRIGRAM = float(os.getenv("TIMMY_RRF_W_TRIGRAM", "1.5"))
+# Minimum word_similarity for the trigram channel to accept a row. Replaces the
+# pg_trgm `%` operator's whole-document 0.3 threshold, which no real query could
+# ever reach. 0.35 measured best on the Open Sauce eval set; lower widens the
+# channel (more STT-mangled proper nouns caught, more noise).
+TRIGRAM_WORD_SIM_FLOOR = float(os.getenv("TIMMY_TRIGRAM_WORD_SIM_FLOOR", "0.35"))
 # Additive semantic-distance fold-in. The cosine distance (already used as the
 # <SEMANTIC_DISTANCE_MAX floor in memory/retrieval) is normalized to a (0,1]
 # bonus within the kept band so a 0.25-distance hit outranks a 0.49 one

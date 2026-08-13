@@ -44,10 +44,26 @@ async def _semantic(pool, query_embedding, limit):
 
 
 async def _fts(pool, query, limit):
+    """OR-of-lexemes, ranked by ts_rank (2026-08-13).
+
+    Was plainto_tsquery, which ANDs every content term -- so any question with
+    three content words matched nothing. Measured on the Open Sauce corpus:
+    5 of 10 real questions returned ZERO rows, including "what's your favorite
+    Radiohead album?" while the word 'radiohead' sat in two episodes. The AND
+    made this channel dead exactly when it was most needed (a proper noun the
+    embedder doesn't know is the case FTS exists to rescue).
+
+    Now: lex the query with to_tsvector, OR the lexemes, and let ts_rank order
+    by how many/how rare the matched terms are. quote_literal keeps a lexeme
+    with punctuation from breaking tsquery parsing. A query that lexes to
+    nothing (pure stopwords) yields NULL -> no rows, same as before."""
     rows = await pool.fetch(
-        """SELECT id FROM episodes
-           WHERE content_tsv @@ plainto_tsquery('english', $1)
-           ORDER BY ts_rank(content_tsv, plainto_tsquery('english', $1)) DESC
+        """WITH tq AS (
+             SELECT string_agg(quote_literal(w), ' | ')::tsquery AS q
+             FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS w)
+           SELECT e.id FROM episodes e, tq
+           WHERE tq.q IS NOT NULL AND e.content_tsv @@ tq.q
+           ORDER BY ts_rank(e.content_tsv, tq.q) DESC, e.id
            LIMIT $2""",
         query, limit,
     )
@@ -55,12 +71,33 @@ async def _fts(pool, query, limit):
 
 
 async def _trigram(pool, query, limit):
+    """word_similarity against the best-matching extent of the episode.
+
+    Was `text % $1` (whole-document similarity, 0.3 default threshold), which
+    has NEVER returned a row: the best similarity any real question achieves
+    against any episode is 0.157, because a ~30-char query cannot be 30%
+    trigram-similar to a ~490-char summary. The channel was geometrically
+    incapable of firing, so its RRF weight described a contribution that never
+    existed.
+
+    word_similarity(query, text) scores the query against the best-matching
+    WINDOW of the document instead of the whole thing, which is the right
+    comparison for short-query/long-document. Floor is configurable; 0.35
+    measured best on the Open Sauce eval set.
+
+    SCALING NOTE: this is a seq scan (a function call in the predicate is not
+    indexable) -- 9.8ms over 201 episodes, and it grows linearly. The
+    index-friendly form is the `<%` operator, which CAN use idx_episodes_text_trgm
+    but takes its threshold from the pg_trgm.word_similarity_threshold session
+    GUC -- fragile to set correctly through a connection pool. At today's corpus
+    the planner picks a seq scan for `<%` anyway (measured: 8.8ms, same), so
+    there is nothing to buy yet. Revisit past ~2k episodes."""
     rows = await pool.fetch(
         """SELECT id FROM episodes
-           WHERE text % $1
-           ORDER BY similarity(text, $1) DESC
+           WHERE word_similarity($1, text) >= $3
+           ORDER BY word_similarity($1, text) DESC, id
            LIMIT $2""",
-        query, limit,
+        query, limit, config.TRIGRAM_WORD_SIM_FLOOR,
     )
     return [(r["id"], i) for i, r in enumerate(rows)]
 

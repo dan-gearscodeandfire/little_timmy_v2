@@ -136,3 +136,49 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts (subject);
 CREATE INDEX IF NOT EXISTS idx_facts_subject_trgm ON facts USING GIN (subject gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_facts_predicate ON facts (predicate);
+
+-- ---------------------------------------------------------------------------
+-- Propositions (2026-08-13): atomic single-claim rows derived from episodes.
+--
+-- WHY: an episode is a ~16-minute, ~490-char, multi-speaker, multi-topic
+-- summary collapsed into ONE 768-d vector. Averaging eight topics produces a
+-- point that is mildly near everything and close to nothing, which is why
+-- specific questions returned tiny candidate pools ("what's your favorite
+-- Radiohead album?" -> 3 candidates corpus-wide) and why whatever DID win was
+-- a grab-bag paragraph whose relevant clause was ~5% of the injected text.
+-- Measured consequence: no scalar relevance threshold can separate signal from
+-- banter on those vectors (see the audit).
+--
+-- Each proposition is one standalone claim, so its embedding means one thing.
+-- Episodes remain the human-readable narrative tier and the parent for context.
+--
+-- span_end is DENORMALIZED from the parent episode so decay ranking needs no
+-- join (memory.decay takes span_end + access_count).
+--
+-- Dedup is per-episode, NOT global: two episodes legitimately restating the
+-- same claim ("Dan's cats are named Dexter and Preston" appears in ep 174 and
+-- 287) must stay separate rows, because each carries its own span_end and the
+-- FRESHER restatement should win on recency decay. A global unique hash would
+-- pin the claim to its oldest mention -- the exact staleness bug being fixed.
+CREATE TABLE IF NOT EXISTS propositions (
+    id SERIAL PRIMARY KEY,
+    episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    embedding vector(768),
+    span_end TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    access_count INTEGER DEFAULT 0,
+    accessed_at TIMESTAMPTZ,
+    content_hash TEXT,
+    content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_propositions_episode_hash
+    ON propositions (episode_id, content_hash) WHERE content_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_propositions_episode ON propositions (episode_id);
+CREATE INDEX IF NOT EXISTS idx_propositions_span_end ON propositions (span_end);
+CREATE INDEX IF NOT EXISTS idx_propositions_embedding
+    ON propositions USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_propositions_tsv ON propositions USING GIN (content_tsv);
+CREATE INDEX IF NOT EXISTS idx_propositions_text_trgm ON propositions USING GIN (text gin_trgm_ops);

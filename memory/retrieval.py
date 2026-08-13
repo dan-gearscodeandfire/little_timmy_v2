@@ -100,10 +100,18 @@ async def _semantic_search(pool, query_embedding, limit: int) -> list[tuple[int,
 
 
 async def _fts_search(pool, query: str, limit: int) -> list[tuple[int, int]]:
+    """OR-of-lexemes, ranked by ts_rank. See memory.episodic_search._fts for
+    the full rationale -- plainto_tsquery ANDs every content term, which made
+    this channel return nothing on half of real conversational questions. Kept
+    byte-identical in shape to the episodic twin so the two tiers can't drift
+    (the same divergence that orphaned the coref resolver in 2026-07)."""
     rows = await pool.fetch(
-        """SELECT id FROM memories
-           WHERE content_tsv @@ plainto_tsquery('english', $1)
-           ORDER BY ts_rank(content_tsv, plainto_tsquery('english', $1)) DESC
+        """WITH tq AS (
+             SELECT string_agg(quote_literal(w), ' | ')::tsquery AS q
+             FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS w)
+           SELECT m.id FROM memories m, tq
+           WHERE tq.q IS NOT NULL AND m.content_tsv @@ tq.q
+           ORDER BY ts_rank(m.content_tsv, tq.q) DESC, m.id
            LIMIT $2""",
         query,
         limit,
@@ -112,13 +120,17 @@ async def _fts_search(pool, query: str, limit: int) -> list[tuple[int, int]]:
 
 
 async def _trigram_search(pool, query: str, limit: int) -> list[tuple[int, int]]:
+    """word_similarity against the best-matching extent. See
+    memory.episodic_search._trigram -- whole-document `%` could never clear its
+    0.3 threshold for a short query against a long document."""
     rows = await pool.fetch(
         """SELECT id FROM memories
-           WHERE content % $1
-           ORDER BY similarity(content, $1) DESC
+           WHERE word_similarity($1, content) >= $3
+           ORDER BY word_similarity($1, content) DESC, id
            LIMIT $2""",
         query,
         limit,
+        config.TRIGRAM_WORD_SIM_FLOOR,
     )
     return [(r["id"], i) for i, r in enumerate(rows)]
 

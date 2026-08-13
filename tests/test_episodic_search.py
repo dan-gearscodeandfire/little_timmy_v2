@@ -179,11 +179,22 @@ def test_search_ranks_fresh_over_stale_same_topic(monkeypatch):
             fresh = await manager.store_episode(now_s - 1 * 86400, now_s - 1 * 86400 + 60,
                                                 f"{MARK} apple pruning was the topic (fresh)")
             ids += [stale, fresh]
-            results = await es.search_episodes("apple", now, top_k=5)
+            # top_k must be wide enough to hold BOTH fixtures alongside the live
+            # corpus. This ran at top_k=5 until 2026-08-13, when repairing the
+            # FTS/trigram channels (which had been returning zero rows) widened
+            # the candidate field enough that real episodes legitimately filled
+            # the top 5 and the 120-day-stale fixture fell out. The assertion
+            # under test is the ORDERING, not the crowding -- so ask for a window
+            # that can hold both and assert on their relative rank.
+            results = await es.search_episodes("apple", now, top_k=40)
             ours = [r for r in results if MARK in r["text"]]
             assert len(ours) == 2, "both apple episodes match the topic"
             assert ours[0]["id"] == fresh, "recency decay must rank the fresh one first"
             assert ours[0]["score"] > ours[1]["score"]
+            # Decay must dominate raw similarity, not merely break ties: the
+            # stale fixture out-scores the fresh one BEFORE decay is applied.
+            assert ours[1]["base_score"] >= ours[0]["base_score"], (
+                "fixture precondition: stale should win on base similarity")
         finally:
             await _cleanup(ids)
 

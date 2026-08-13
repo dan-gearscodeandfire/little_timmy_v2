@@ -606,6 +606,7 @@ async def _retrieve_episodes_as_memories(user_text, top_k, context_turns,
     TODO: surface the resolver's per-turn cost (stage:resolution /
     last_resolution_ms — already published by resolve_for_retrieval) as a pip
     in the GUI latency bar."""
+    import config
     from datetime import datetime, timezone
     from memory.episodic_search import search_episodes
     from memory.retrieval import RetrievedMemory, choose_semantic_query
@@ -613,9 +614,30 @@ async def _retrieve_episodes_as_memories(user_text, top_k, context_turns,
     # source, so the two tiers can't drift as they did pre-2026-07-09).
     embed_query = await choose_semantic_query(
         user_text, context_turns, resolved_query, query_pre_resolved)
+    now = datetime.now(timezone.utc)
+
+    # Proposition tier (2026-08-13, config.PROPOSITION_RETRIEVAL_ENABLED): search
+    # atomic single-claim rows instead of 16-minute multi-topic episode summaries,
+    # so each embedding means one thing and what lands in the prompt is the
+    # sentence that answers the question rather than the paragraph containing it.
+    # Falls back to the episode tier when the flag is off OR when the query finds
+    # no propositions at all (e.g. an episode minted before the backfill), so a
+    # partially-split corpus degrades instead of going blind.
+    if config.PROPOSITION_RETRIEVAL_ENABLED:
+        from memory.propositions import search_propositions
+        props = await search_propositions(
+            user_text, now, top_k=top_k, embed_query=embed_query)
+        if props:
+            return [
+                RetrievedMemory(id=p["id"], type="proposition", content=p["text"],
+                                score=p["score"], created_at=p["span_end"])
+                for p in props
+            ]
+        log.debug("proposition tier empty for %r -> falling back to episodes",
+                  user_text[:60])
+
     eps = await search_episodes(
-        user_text, datetime.now(timezone.utc),
-        top_k=top_k, embed_query=embed_query,
+        user_text, now, top_k=top_k, embed_query=embed_query,
     )
     return [
         RetrievedMemory(id=e["id"], type="episode", content=e["text"],

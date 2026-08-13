@@ -11,6 +11,13 @@ decline/miss.
 
 Hermetic (no :8093, no DB): search_episodes and the resolver are monkeypatched.
 
+2026-08-13: the proposition tier now runs AHEAD of search_episodes on this path,
+so `fake_search` also forces PROPOSITION_RETRIEVAL_ENABLED off -- otherwise the
+episode spy never fires and the real DB pool gets touched from the test loop.
+The resolver contract must hold on BOTH tiers, so `fake_prop_search` mirrors the
+spy for the proposition path and test_proposition_tier_gets_same_embed_query
+pins it there too.
+
 Run:
     .venv/bin/pytest tests/test_episodic_coref_resolution.py -v
 """
@@ -24,8 +31,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
+import config
 import memory.retrieval as retrieval
 import memory.episodic_search as episodic_search
+import memory.propositions as propositions
 from conversation.turn import _retrieve_episodes_as_memories
 
 
@@ -54,6 +63,24 @@ def fake_search(monkeypatch):
         return []
 
     monkeypatch.setattr(episodic_search, "search_episodes", fake_search_episodes)
+    # Exercise the EPISODE path: the proposition tier would otherwise short-
+    # circuit ahead of it (and hit the real pool from this loop).
+    monkeypatch.setattr(config, "PROPOSITION_RETRIEVAL_ENABLED", False)
+    return seen
+
+
+@pytest.fixture
+def fake_prop_search(monkeypatch):
+    """Same spy, for the proposition tier, with the tier forced ON."""
+    seen = {"embed_query": None, "query": None}
+
+    async def fake_search_propositions(query, now, top_k=5, embed_query=None):
+        seen["query"] = query
+        seen["embed_query"] = embed_query
+        return []
+
+    monkeypatch.setattr(propositions, "search_propositions", fake_search_propositions)
+    monkeypatch.setattr(config, "PROPOSITION_RETRIEVAL_ENABLED", True)
     return seen
 
 
@@ -117,3 +144,24 @@ def test_nominal_ellipsis_ones_passes_gate():
     "them" -- must pass _needs_resolution. Bare "one" stays excluded (noisy)."""
     assert retrieval._needs_resolution("what about the tall ones?") is True
     assert retrieval._needs_resolution("what about one of my friends?") is False
+
+
+def test_proposition_tier_gets_same_embed_query(fake_prop_search, fake_resolver):
+    """The resolver contract is tier-agnostic: whichever tier serves the turn
+    must embed the coref-RESOLVED query, not the bare deictic utterance. Pins
+    the 2026-08-13 proposition branch against re-orphaning the resolver the way
+    the 2026-06 episodic migration did."""
+    _run(_retrieve_episodes_as_memories("what is its name?", 5, _CTX))
+    assert fake_resolver["n"] == 1, "proposition path must still call the resolver"
+    assert fake_prop_search["embed_query"] == _REWRITE
+    assert fake_prop_search["query"] == "what is its name?", "lexical channels keep the bare utterance"
+
+
+def test_proposition_tier_falls_back_to_episodes_when_empty(monkeypatch, fake_search):
+    """A partially-split corpus must degrade to episodes, not go blind."""
+    async def empty_props(query, now, top_k=5, embed_query=None):
+        return []
+    monkeypatch.setattr(propositions, "search_propositions", empty_props)
+    monkeypatch.setattr(config, "PROPOSITION_RETRIEVAL_ENABLED", True)
+    _run(_retrieve_episodes_as_memories("anything at all", 5, None))
+    assert fake_search["query"] == "anything at all", "episode tier must be consulted"

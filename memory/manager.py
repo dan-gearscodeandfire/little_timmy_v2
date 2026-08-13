@@ -11,6 +11,12 @@ import config
 
 log = logging.getLogger(__name__)
 
+# Strong refs for fire-and-forget proposition-split tasks spawned by
+# store_episode. asyncio only holds a WEAK reference to a running task, so
+# without this the split can be garbage-collected mid-flight and vanish
+# silently. Entries remove themselves via add_done_callback.
+_PROP_TASKS: set = set()
+
 
 def _episode_content_hash(text: str) -> str:
     """SHA-256 of normalized episode text (lowercased, whitespace-collapsed) —
@@ -134,6 +140,23 @@ async def store_episode(
         row["id"], span_start, span_end, len(text),
         ", embedded" if embedding is not None else "",
     )
+
+    # Proposition tier (2026-08-13): split this episode into atomic claims so
+    # each embedding carries one meaning. Fire-and-forget -- it costs an LLM
+    # call, and rollup must not block on it. Only for genuinely NEW rows: both
+    # dedup paths above return early, so a re-summary never re-splits.
+    # Failure is contained inside split_and_store (returns 0, logs) because a
+    # missing proposition set simply degrades retrieval to the episode tier.
+    if config.PROPOSITION_WRITE_ENABLED:
+        import asyncio as _asyncio
+        from datetime import datetime as _dt, timezone as _tz
+        from memory.propositions import split_and_store
+        _span_end_dt = _dt.fromtimestamp(span_end, tz=_tz.utc)
+        _t = _asyncio.create_task(split_and_store(row["id"], _span_end_dt, text))
+        # Keep a reference so the task isn't garbage-collected mid-flight.
+        _PROP_TASKS.add(_t)
+        _t.add_done_callback(_PROP_TASKS.discard)
+
     return row["id"]
 
 

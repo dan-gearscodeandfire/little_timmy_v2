@@ -230,9 +230,26 @@ def build_ephemeral_block(
         verified = [f for f in facts if getattr(f, "confidence", 1.0) >= thr]
         unconfirmed = [f for f in facts if getattr(f, "confidence", 1.0) < thr]
         if verified:
+            # Framing (2026-08-13): these rows are the 5 most RECENTLY LEARNED
+            # facts about the speaker -- get_facts_about_speaker orders by
+            # learned_at DESC with no query term, so they are almost never about
+            # what was just asked. The old wording ("must NEVER be contradicted /
+            # use ONLY the information below") gave that arbitrary slice the
+            # loudest voice in the prompt and licensed steering any topic toward
+            # whatever was learned last. Audit evidence: a conversation about
+            # Christopher Nolan carried "dan occupation documentary filmmaker /
+            # dan typical_clothing_color black" under that banner.
+            # Authority is preserved (they ARE verified, and contradicting them
+            # is still wrong) but scoped to relevance, so the model stops
+            # reaching for them. Proper fix is relevance-ranked facts; this is
+            # the framing half. See Areas/lt-retrieval-channel-repair-2026-08-13.
             gt_lines = [
-                "GROUND TRUTH — these facts are verified and must NEVER be contradicted. "
-                "If asked about any of these topics, use ONLY the information below:"
+                "GROUND TRUTH — verified facts about the person you're talking to. "
+                "They are correct: never contradict or second-guess them. But they "
+                "are NOT necessarily about what was just said — use one only when "
+                "it actually answers or bears on the current turn, and otherwise "
+                "ignore it completely. Do not steer the conversation toward them "
+                "and do not recite them unprompted:"
             ]
             for f in verified:
                 gt_lines.append(f"- {f.subject} {f.predicate} {f.value}")
@@ -248,7 +265,23 @@ def build_ephemeral_block(
             parts.append("\n".join(unc_lines))
 
     if memories:
-        mem_lines = ["Relevant memories:"]
+        # These ARE selected for relevance (hybrid retrieval over episodes,
+        # recency-decayed) -- unlike the fact block above, which is a recency
+        # slice. Until 2026-08-13 this shipped as a bare "Relevant memories:"
+        # list with no usage instruction at all, while the arbitrary facts
+        # carried "must NEVER be contradicted". The prompt told the model which
+        # source to trust and it was the wrong one. Give the retrieved set an
+        # explicit licence to be used, and an explicit licence to be IGNORED --
+        # retrieval always returns its top-K, so a weak match must be
+        # discardable rather than something the model feels obliged to work in.
+        mem_lines = [
+            "RECALLED FROM PAST CONVERSATIONS — retrieved because they looked "
+            "related to what was just said. Timestamps are when it happened, so "
+            "don't describe an old one as recent. If one genuinely answers or "
+            "enriches the current turn, use it and speak as though you remember "
+            "it. If none of them fit, say nothing about them — they are "
+            "suggestions from your own memory, not facts you must mention:"
+        ]
         for m in memories:
             time_str = _format_relative_time(m.created_at)
             content = m.content if len(m.content) <= 200 else m.content[:200] + "..."
