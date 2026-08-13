@@ -123,6 +123,15 @@ RECALL_SEMANTIC_ENABLED = True   # 2026-06-30 (Dan): ENABLED. `recall_semantic` 
 # old still retrievable (90d -> 0.125 weight). Tunable once there's data.
 EPISODE_DECAY_HALFLIFE_S = float(os.getenv("TIMMY_EPISODE_DECAY_HALFLIFE_S", str(30 * 24 * 3600)))
 EPISODE_ACCESS_BOOST = float(os.getenv("TIMMY_EPISODE_ACCESS_BOOST", "0.05"))  # mild saturating log-boost from the free access_count signal
+# 2026-08-13 (Dan): BOUND both decay terms so neither out-swings relevance.
+# Measured on the live 1,239-prop corpus: unfloored recency spanned 4.2x against
+# a 3x relevance range, so decay was the primary sort key and evicted a
+# top-5-by-relevance claim on 12 of 14 replayed utterances. The floor compresses
+# the decay curve into [floor, 1.0] without changing its shape. 0.0 == the old
+# unbounded behaviour (A/B control). The access cap stops the self-reinforcing
+# "whatever won last turn wins again" loop. Both are env-overridable.
+RECENCY_WEIGHT_FLOOR = float(os.getenv("TIMMY_RECENCY_WEIGHT_FLOOR", "0.85"))
+EPISODE_ACCESS_BOOST_MAX = float(os.getenv("TIMMY_EPISODE_ACCESS_BOOST_MAX", "1.10"))
 EPISODE_SEMANTIC_TOP_K = int(os.getenv("TIMMY_EPISODE_SEMANTIC_TOP_K", "5"))
 # 2026-06-28 (Dan, approved): make the ALWAYS-ON per-turn retrieval channel
 # (the prompt's "Relevant memories:" block — also mirrored on the booth
