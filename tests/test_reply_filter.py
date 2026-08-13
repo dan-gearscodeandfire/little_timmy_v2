@@ -268,3 +268,37 @@ async def test_no_user_text_is_pure_passthrough():
     tokens = ["Sure. ", "Got it."]
     out = await _collect(filtered_assistant_stream(_agen(tokens)))
     assert "".join(out) == "Sure. Got it."
+
+
+# ---------------------------------------------------------------------------
+# sentence-boundary detection (2026-08-13)
+# ---------------------------------------------------------------------------
+
+def test_ellipsis_is_not_a_sentence_boundary():
+    """Live acoustic 2026-08-13: the model wrote "Well, thank you. That's...
+    unexpected." and every "." counted, so a 2-sentence cap chopped it to
+    "Well, thank you. That's." and Timmy SPOKE that. The register made it bite
+    harder -- a STRAIGHT turn caps at 1, so any early ellipsis truncates the
+    whole answer."""
+    from conversation.reply_filter import _trim_at_nth_terminator as trim
+    assert trim("Well, thank you. That's... unexpected. And rare.", 2) == \
+        "Well, thank you. That's... unexpected."
+    assert trim("Well... Paris is the capital. Obviously.", 1) == \
+        "Well... Paris is the capital."
+
+
+def test_decimal_point_is_not_a_sentence_boundary():
+    from conversation.reply_filter import _trim_at_nth_terminator as trim
+    assert trim("It cost 5.50 today. Then more.", 1) == "It cost 5.50 today."
+
+
+def test_title_abbreviation_is_not_a_sentence_boundary():
+    from conversation.reply_filter import _trim_at_nth_terminator as trim
+    assert trim("Ask Dr. Smith about it. He knows.", 1) == "Ask Dr. Smith about it."
+
+
+def test_single_letter_sentence_still_terminates():
+    """The abbreviation guard must not swallow a legitimate one-character
+    sentence -- "p.m" is protected because a LETTER follows the period."""
+    from conversation.reply_filter import _trim_at_nth_terminator as trim
+    assert trim("A. B. C.", 2) == "A. B."

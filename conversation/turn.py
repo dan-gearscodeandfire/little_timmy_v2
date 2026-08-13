@@ -40,6 +40,7 @@ from conversation.reply_filter import (
     filtered_assistant_stream,
     user_invites_longer_reply,
     repeated_opener,
+    _is_real_terminator,
     _REPLY_LONGER_SENTENCES,
 )
 
@@ -464,7 +465,11 @@ class ConversationTurn:
             for ch in text:
                 buf += ch
                 stripped = buf.rstrip()
-                if stripped and stripped[-1] in ".?!;:":
+                # `_is_real_terminator` keeps an ellipsis (or "p.m.") from
+                # splitting one thought into two TTS clips; ";" and ":" stay
+                # boundaries because they are genuine speakable pauses.
+                if stripped and (stripped[-1] in ";:"
+                                 or _is_real_terminator(stripped, len(stripped) - 1)):
                     sentence = buf.strip()
                     buf = ""
                     if sentence:
@@ -528,7 +533,11 @@ class ConversationTurn:
             sentence_buffer += token
             await self._emit("token", {"content": token})
             stripped = sentence_buffer.rstrip()
-            if stripped and stripped[-1] in ".?!;:":
+            # `_is_real_terminator` keeps an ellipsis (or "p.m.") from
+            # splitting one thought into two TTS clips; ";" and ":" stay
+            # boundaries because they are genuine speakable pauses.
+            if stripped and (stripped[-1] in ";:"
+                             or _is_real_terminator(stripped, len(stripped) - 1)):
                 sentence = sentence_buffer.strip()
                 sentence_buffer = ""
                 if sentence:

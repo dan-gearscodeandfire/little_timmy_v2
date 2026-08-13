@@ -2254,16 +2254,18 @@ class Orchestrator:
         # (memory formation / extract_and_store already ran as the turn's
         # final real step inside ConversationTurn — see CONTEXT.md decision 4)
 
-        # --- Async Mood Update (fire-and-forget) ---
-        # Updates the deterministic 2-axis mood state (engagement, warmth)
-        # off the hot path. Runs VADER on user_text + Ollama embedding for
-        # topic-progression signal. The next turn's ephemeral block reads
-        # the new state; latency cost on this turn is zero.
-        try:
-            from persona.updater import schedule as _schedule_mood_update
-            _schedule_mood_update(user_text, full_response)
-        except Exception as _e:
-            log.warning("mood updater schedule failed: %s", _e)
+        # --- Mood update REMOVED 2026-08-13 ---
+        # The 2-axis mood grid is retired (Dan: "retire the mood dial, fold
+        # nice and interested into system[0]"). Its (1,1) semantics now live in
+        # config.PERSONA; per-turn tone is conversation/register.py.
+        #
+        # This call ran a VADER pass plus an Ollama embedding on EVERY turn to
+        # compute a signal that was then thrown away -- the grid was pinned by
+        # manual override for all 1,273 Open Sauce turns, so persona.state.update
+        # recorded the signal to mood_debug.jsonl and returned without moving.
+        # persona/{state,updater,render}.py are left in the tree (the /api/mood
+        # endpoints and mood_debug history still read them) but nothing on the
+        # turn path calls them any more.
 
     _COMPLIMENT_PATTERNS = {
         "good one", "nice one", "good job", "well done", "impressive",

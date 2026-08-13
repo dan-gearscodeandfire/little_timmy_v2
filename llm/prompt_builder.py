@@ -37,8 +37,8 @@ the user said. Never quote it back. Never acknowledge it as a message.
 [UTTERANCE]...[/UTTERANCE] is the actual speech from the human. Respond
 to the utterance, informed by the context.
 
-Inside [CONTEXT], the MOOD block describes your current emotional state -
-embody it, do not narrate it.
+Inside [CONTEXT], any [REGISTER] line tells you what KIND of turn this is -
+obey it, do not narrate it.
 """.strip()
 
 
@@ -156,13 +156,14 @@ def build_ephemeral_block(
 
     parts: list[str] = []
 
-    # MOOD - active 3x3 cell only, embodied per the protocol clause in system[0]
-    try:
-        from persona import state as _mood_state
-        from persona.render import render as _render_mood
-        parts.append(_render_mood(_mood_state.get()))
-    except Exception:
-        pass
+    # MOOD REMOVED 2026-08-13 (Dan: "retire the mood dial, fold nice and
+    # interested into system[0]"). The 3x3 grid had been PINNED at (1,1) with
+    # override=true for every one of the 1,273 Open Sauce turns, so it carried
+    # ZERO per-turn information -- while sitting in [CONTEXT], the one part of
+    # the prompt that is NOT KV-cached, and being re-processed every single
+    # turn. Its (1,1) semantics now live in config.PERSONA (system[0], cached
+    # once); genuine per-turn tone variation is conversation/register.py, which
+    # is what the hand-flipped dial was really being used to approximate.
 
     # Minute granularity protects KV cache from second-by-second drift
     # inside the (already-mutating) context block. Seconds would invalidate
@@ -576,15 +577,11 @@ def build_messages(
 
     _warn_on_duplicate_adjacent_user_messages(messages)
 
-    mood_dict = None
-    try:
-        from persona import state as _mood_state
-        s = _mood_state.get()
-        mood_dict = {"x": s.x, "y": s.y,
-                     "last_x_signal": s.last_x_signal,
-                     "last_y_signal": s.last_y_signal}
-    except Exception:
-        pass
+    # Mood retired 2026-08-13 -- reporting a frozen dial as live state was
+    # exactly how it stayed invisible for so long. The live tone signal is the
+    # [REGISTER] line inside the ephemeral block.
+    mood_dict = {"retired": True,
+                 "note": "mood grid retired; see conversation/register.py"}
 
     global _LAST_PAYLOAD
     _LAST_PAYLOAD = {

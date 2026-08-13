@@ -914,6 +914,10 @@ async def get_mood():
     X: -1 BORED, 0 NEUTRAL, +1 SLIGHTLY_INTERESTED.
     Y: -1 MEAN, 0 NEUTRAL, +1 BEGRUDGINGLY_NICE.
     """
+    # RETIRED 2026-08-13: the grid no longer reaches the prompt and is no
+    # longer updated per turn. Kept read-only so the LT-OS card and any
+    # historical tooling keep working instead of 500-ing; `retired` tells a
+    # caller not to trust it as a live tone signal (that is [REGISTER] now).
     from persona.state import get as _mood_get
     from persona.render import render as _render_mood
     s = _mood_get()
@@ -926,6 +930,9 @@ async def get_mood():
         "x_signals": list(s.x_signals),
         "y_signals": list(s.y_signals),
         "rendered": _render_mood(s),
+        "retired": True,
+        "note": ("mood grid retired 2026-08-13; folded into config.PERSONA. "
+                 "Live per-turn tone is conversation/register.py"),
     }
 
 

@@ -81,8 +81,49 @@ def _looks_like_narration(buf: str) -> bool:
     return any(head.startswith(p) for p in _NARRATION_PREFIXES)
 
 
+def _is_real_terminator(s: str, i: int) -> bool:
+    """True when s[i] genuinely ends a sentence.
+
+    An ELLIPSIS is not a sentence end. Until 2026-08-13 every "." counted, so
+    "Well, thank you... unexpected." contained THREE terminators and a 2-sentence
+    cap chopped it to "Well, thank you." plus a bare "That's." -- observed live:
+    the spoken reply was "Well, thank you. That's." The register made this bite
+    harder, because a STRAIGHT turn has a cap of 1 and any early ellipsis then
+    truncates the whole answer.
+
+    Also skips a decimal point ("5.50 p.m.") for the same reason: the digit on
+    both sides means it is not a boundary."""
+    ch = s[i]
+    if ch not in ".!?":
+        return False
+    if ch == ".":
+        # Part of "..." (or a unicode ellipsis) -> not a boundary.
+        if s[i:i + 3] == "..." or s[i:i + 2] == "..":
+            return False
+        if i > 0 and s[i - 1] == ".":
+            return False
+        # Decimal / numeric point: digit either side.
+        if 0 < i < len(s) - 1 and s[i - 1].isdigit() and s[i + 1].isdigit():
+            return False
+        # Mid-initialism dot ("p.m", "a.m", "U.S"): a lone letter whose period
+        # is followed by ANOTHER letter is still inside the abbreviation.
+        # Requiring the following letter matters -- without it a legitimate
+        # one-character sentence ("A.") is misread as an initialism.
+        if (i > 0 and s[i - 1].isalpha() and (i == 1 or not s[i - 2].isalnum())
+                and i + 1 < len(s) and s[i + 1].isalpha()):
+            return False
+        # Short titles/abbreviations that legitimately end in a period.
+        low = s[:i].lower()
+        for abbr in ("mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st",
+                     "vs", "etc", "i.e", "e.g", "approx", "no"):
+            if low.endswith(abbr) and (len(low) == len(abbr)
+                                       or not low[-len(abbr) - 1].isalnum()):
+                return False
+    return True
+
+
 def _trim_at_nth_terminator(s: str, n: int) -> str:
-    """Return prefix of `s` up to and including the nth `.!?` occurrence.
+    """Return prefix of `s` up to and including the nth REAL sentence end.
     Returns the full string unchanged if there are fewer than n terminators,
     or empty string if n<=0. Used by filtered_assistant_stream to truncate
     cleanly at the cap-th sentence boundary instead of yielding the entire
@@ -90,8 +131,8 @@ def _trim_at_nth_terminator(s: str, n: int) -> str:
     if n <= 0:
         return ""
     seen = 0
-    for i, ch in enumerate(s):
-        if ch in ".!?":
+    for i in range(len(s)):
+        if _is_real_terminator(s, i):
             seen += 1
             if seen == n:
                 return s[: i + 1]
