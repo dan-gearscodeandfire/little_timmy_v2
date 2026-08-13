@@ -28,7 +28,7 @@ Exit 0 = clean / verified. Exit 2 = drift (a pre-baseline row changed) — inves
 import argparse, json, subprocess, sys
 
 DSN = "postgresql://gearscodeandfire@localhost/little_timmy"
-TABLES = ["facts", "episodes", "memories", "speakers"]
+TABLES = ["facts", "episodes", "memories", "speakers", "propositions"]
 
 # Content columns only — EXCLUDES volatile read-side stats (access_count,
 # accessed_at) and heavy/derived columns (embedding, content_tsv). This lets a
@@ -41,6 +41,12 @@ STABLE_COLS = {
     "episodes": "id,span_start,span_end,created_at,text,token_count,content_hash,source",
     "memories": "id,type,content,speaker_id,created_at,metadata",
     "speakers": "id,name,voice_id,created_at",
+    # 2026-08-13: episodes now auto-split into atomic `propositions` at write
+    # (memory.propositions, fire-and-forget off store_episode). WITHOUT this
+    # entry an acoustic test would leave synthetic propositions behind
+    # permanently -- they are the tier retrieval actually READS, so the
+    # pollution would be worse than the episode rows the guard was built for.
+    "propositions": "id,episode_id,text,span_end,created_at,content_hash",
 }
 
 

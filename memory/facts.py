@@ -1,11 +1,13 @@
 """Fact store: structured entity-attribute-value with provenance."""
 
 import logging
+import re
 from dataclasses import dataclass
 
 import asyncpg
 
 from db.connection import get_pool
+import config
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +59,29 @@ async def store_fact(
     pool = await get_pool()
     subject = subject.strip().lower()
     predicate = predicate.strip().lower()
+
+    # --- Write-side hygiene (2026-08-13) -------------------------------------
+    # The Open Sauce audit found 30 facts written across three days with ZERO
+    # superseded, including a clock reading kept as a durable fact
+    # ("dan time -> 5.50 p.m.", confidence 0.25) and a 0.10-confidence
+    # mishearing ("flynn high_school -> science work"). Under the old
+    # recency-slice retrieval most junk was unreachable; relevance ranking
+    # makes it reachable in exactly the wrong moment -- an ephemeral "time"
+    # fact now surfaces precisely when someone asks the time, and is asserted
+    # as GROUND TRUTH. Both gates apply to the EXTRACTOR only: an explicit
+    # user-directed correction (source="tool") is the user's word and is never
+    # second-guessed.
+    if source == "extraction":
+        if _EPHEMERAL_PRED_RE.search(predicate):
+            log.info("[FACTS] rejected ephemeral predicate %s.%s (=%r) -- true "
+                     "only at the moment it was said", subject, predicate, value[:40])
+            return -1
+        if confidence < config.FACT_MIN_WRITE_CONFIDENCE:
+            log.info("[FACTS] rejected low-confidence extraction %s.%s (=%r, "
+                     "conf %.2f < %.2f)", subject, predicate, value[:40],
+                     confidence, config.FACT_MIN_WRITE_CONFIDENCE)
+            return -1
+
     # Embedded at write time so the turn can rank facts by relevance to what was
     # actually asked (see get_relevant_facts_about_speaker). Failure is
     # non-fatal: a NULL embedding just makes the row invisible to the vector
@@ -320,6 +345,17 @@ async def get_all_facts_for_prompt(subjects: list[str], limit: int = 10,
 # (which rerouted Dan's self-disclosures from subject='dan' to subject='user')
 # doesn't keep ground-truths frozen at March data.
 _SELF_REFERENCE_ALIASES = ("user", "i", "me")
+
+
+# Predicates whose value is true only at the instant it was spoken. Storing one
+# as a durable fact is a category error -- "dan time -> 5.50 p.m." was still
+# being injected a month later. Matched on the normalized predicate.
+_EPHEMERAL_PRED_RE = re.compile(
+    r"^(?:current_|currently_)|"
+    r"^(?:time|date|weather|today|now|right_now|current|mood|"
+    r"current_location|current_activity|current_time|current_date)$",
+    re.IGNORECASE,
+)
 
 
 async def get_speaker_id_by_name(name: str) -> int | None:

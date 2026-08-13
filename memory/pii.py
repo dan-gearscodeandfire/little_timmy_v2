@@ -51,7 +51,18 @@ _FINANCIAL_RE = re.compile(
 _HEALTH_CRED_RE = re.compile(
     r"\b(medication|medicine|medical|diagnos\w*|illness|disease|prescription|"
     r"health condition|allerg\w*|password|passcode|passphrase|pin|ssn|"
-    r"social security|api[_ ]?key|secret|credential|token|login)\b")
+    r"social security|api[_ ]?key|secret|credential|token|login|"
+    # Conditions / neurotypes / disability / injury (added 2026-08-13). The v1
+    # set required an explicit medical WORD, so a stranger's self-disclosure
+    # "user autism_status -> autistic" stored at the booth on 7-17 scored
+    # sensitive=FALSE and would have been injected in front of guests. A
+    # condition named directly is the commonest shape of a health disclosure
+    # and was the one shape not covered.
+    r"autis\w*|aspergers?|adhd|add\b|neurodiver\w*|dyslex\w*|"
+    r"diabet\w*|cancer|epilep\w*|asthma|arthrit\w*|migraine|"
+    r"depress\w*|anxiety|bipolar|ptsd|ocd\b|adhd|therapy_for|"
+    r"disab\w*|wheelchair|prosthe\w*|amput\w*|"
+    r"injur\w*|surgery|surgical|hospital\w*|rehab\w*|recovery)\b")
 
 
 def classify_sensitivity(subject: str, predicate: str, value: str):

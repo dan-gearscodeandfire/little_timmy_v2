@@ -39,6 +39,7 @@ from llm.prompt_builder import (
 from conversation.reply_filter import (
     filtered_assistant_stream,
     user_invites_longer_reply,
+    repeated_opener,
     _REPLY_LONGER_SENTENCES,
 )
 
@@ -335,6 +336,20 @@ class ConversationTurn:
         # ever showed up in the booth's ghosted WAIT remainder (the LLM
         # first-token timer's t_start is stamped AFTER this, in _stream_and_speak).
         t_build = time.time()
+        # Self-imitation guard: read the model's OWN recent replies out of hot
+        # history and, if it has fallen into an opener rut, name the exact
+        # phrase in the tail. See reply_filter.repeated_opener.
+        # Defensive: the injected history seam is a Protocol, and test fakes
+        # implement only build_history_messages/add_*. A missing .state must
+        # degrade to "no rut detected", never break the turn.
+        _hot = getattr(getattr(self._history, "state", None), "hot_turns", None) or []
+        _recent_replies = [
+            t.content for t in _hot if getattr(t, "role", None) == "assistant"
+        ]
+        _avoid = repeated_opener(_recent_replies)
+        if _avoid:
+            log.info("[AVOID] opener rut detected: %r", _avoid)
+
         ephemeral = build_ephemeral_block(
             memories=retrieved.memories,
             facts=retrieved.facts,
@@ -349,6 +364,7 @@ class ConversationTurn:
             situation_regime=ctx.situation_regime,
             recall_block=ctx.recall_block,
             uncertain_query_term=uncertain_term,
+            avoid_opener=_avoid,
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)

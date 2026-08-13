@@ -390,12 +390,58 @@ def _build_semantic_block(episodes: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_proposition_block(props) -> str:
+    """[WHAT WE TALKED ABOUT] from atomic claims rather than whole summaries.
+
+    Same block name and contract as _build_semantic_block; the difference is
+    density. A 16-minute episode summary answers "do you remember the bucket of
+    screws?" with 490 characters in which the screws are one clause -- live
+    acoustic test 2026-08-13 produced the vague "I remember the joke. It was
+    funny then, it's still funny." The claim-level rows put the actual content
+    in front of the model instead of burying it."""
+    lines = [
+        "[WHAT WE TALKED ABOUT] Specific things you recorded from past "
+        "conversations, most relevant first. Answer using ONLY these; if they "
+        "don't actually cover it, say so rather than guessing:"
+    ]
+    for p in props:
+        when = p["span_end"].strftime("%b %d") if p.get("span_end") else "earlier"
+        lines.append(f"- ({when}) {p['text']}")
+    return "\n".join(lines)
+
+
 async def _resolve_semantic_block(user_text: str) -> str | None:
-    """Run recall_semantic: similarity search over episodes (recency-decayed) ->
-    [WHAT WE TALKED ABOUT] block. Returns None (fall through) on error OR when
-    nothing matches — see _build_semantic_block for why empty falls through."""
-    from memory.episodic_search import search_episodes
+    """Run recall_semantic: similarity search (recency-decayed) -> [WHAT WE
+    TALKED ABOUT] block. Returns None (fall through) on error OR when nothing
+    matches — see _build_semantic_block for why empty falls through.
+
+    Prefers the PROPOSITION tier when enabled (2026-08-13). This path had been
+    left on episodes when the always-on path moved to propositions, which split
+    memory into two tiers with different densities -- and left the WORSE one on
+    the highest-value question, the explicit "do you remember X". Found by live
+    acoustic test, not by the unit suite."""
+    import config as _cfg
     now = datetime.now().astimezone()
+    if getattr(_cfg, "PROPOSITION_RETRIEVAL_ENABLED", False):
+        try:
+            from memory.propositions import search_propositions
+            props = await search_propositions(user_text, now)
+        except Exception:
+            log.exception("[TOOL recall_semantic] proposition search failed; "
+                          "falling back to episodes")
+            props = None
+        if props:
+            log.info("[TOOL recall_semantic] %r -> %d proposition(s)",
+                     user_text[:50], len(props))
+            for rank, p in enumerate(props, 1):
+                log.info("[recall_semantic-obs] q=%r r%d prop%s ep%s "
+                         "base=%.4f decayed=%.4f | %s",
+                         user_text[:60], rank, p["id"], p["episode_id"],
+                         p.get("base_score", -1.0), p.get("score", -1.0),
+                         p["text"][:70])
+            return _build_proposition_block(props)
+        # No propositions (unsplit corpus / all below floor) -> episode tier.
+    from memory.episodic_search import search_episodes
     try:
         episodes = await search_episodes(user_text, now)
     except Exception:

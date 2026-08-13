@@ -265,3 +265,90 @@ async def _filtered_core(token_iter, max_sentences: int | None = None):
                          cap, len(buffered) - len(trimmed))
                 buffered = trimmed
             yield buffered
+
+
+# --------------------------------------------------------------------------
+# Self-imitation guard (2026-08-13)
+# --------------------------------------------------------------------------
+# Open Sauce 7-19: "I am Timmy." became the opener of nearly every reply, and
+# Dan's explicit correction ("stop beginning every sentence with I am Timmy")
+# was answered with "I am Timmy. Fine, I will stop." The persona rule banning
+# the "I am not little" bit had been in system[0] since 6-11 -- five weeks --
+# and was violated all weekend.
+#
+# The mechanism: ~26 turns of raw conversation history are a far stronger
+# stylistic prior than one line of instruction. Once a tic enters the hot
+# window the model imitates ITSELF, and a static prohibition arrives as one
+# sentence against a page of counter-evidence.
+#
+# So: detect the tic from the model's OWN recent output and name the exact
+# string in the per-turn [CONTEXT] tail, which sits in the recency-privileged
+# position rather than competing from system[0]. This is deliberately NOT a
+# stream-time strip -- suppressing the opener would mean buffering the first
+# sentence before emitting it, adding latency to EVERY turn to fix a problem
+# that occurs on a few.
+_OPENER_MIN_WORDS = 3       # shorter shared prefixes are ordinary English
+_OPENER_MAX_WORDS = 8
+
+
+def _opener_words(text: str) -> list[str]:
+    """Normalized leading words of a reply, stopping at the first sentence end.
+    Casefolded and stripped of punctuation so "I am Timmy." and "I am Timmy,"
+    normalize identically."""
+    t = (text or "").strip()
+    if not t:
+        return []
+    cut = len(t)
+    for term in ".?!":
+        i = t.find(term)
+        if i != -1:
+            cut = min(cut, i)
+    words = t[:cut].split()[:_OPENER_MAX_WORDS]
+    out = []
+    for w in words:
+        w = "".join(c for c in w if c.isalnum() or c == "'").casefold()
+        if w:
+            out.append(w)
+    return out
+
+
+def _common_prefix(a: list[str], b: list[str]) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def repeated_opener(recent_replies, min_hits: int = 2, window: int = 4) -> str | None:
+    """The opening phrase the assistant has over-used, or None.
+
+    Clusters by LONGEST COMMON WORD PREFIX rather than a fixed-width key: a
+    fixed key cannot catch both "I am Timmy. Did you say mountain?" /
+    "I am Timmy. Fine, I will stop." (shared prefix 3) and "I am not little,
+    Dan." / "I am not little and I never was." (shared prefix 4) -- any single N
+    matches one pair and misses the other. Both are real tics from 7-19.
+
+    `recent_replies` is newest-last. Returns the shared prefix in its ORIGINAL
+    casing so the prompt can quote it back verbatim; naming the exact words is
+    much harder to ignore than a general plea for variety."""
+    tail = [r for r in (recent_replies or []) if (r or "").strip()][-window:]
+    if len(tail) < min_hits:
+        return None
+    toks = [_opener_words(r) for r in tail]
+    best_len, best_idx = 0, None
+    for i in range(len(toks)):
+        if len(toks[i]) < _OPENER_MIN_WORDS:
+            continue
+        for n in range(len(toks[i]), _OPENER_MIN_WORDS - 1, -1):
+            pref = toks[i][:n]
+            hits = sum(1 for t in toks if _common_prefix(t, pref) == n)
+            if hits >= min_hits and n > best_len:
+                best_len, best_idx = n, i
+                break
+    if best_idx is None:
+        return None
+    # Re-slice the ORIGINAL text to best_len words, preserving casing.
+    original = tail[best_idx].strip()
+    return " ".join(original.split()[:best_len]).rstrip(".,!?;:")

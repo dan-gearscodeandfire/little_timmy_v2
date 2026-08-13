@@ -619,3 +619,8 @@ FACT_SEMANTIC_DISTANCE_MAX = float(os.getenv("TIMMY_FACT_DISTANCE_MAX", "0.45"))
 # recall to 5/8; 0.55 buys no recall and injects 70% more.
 # Read-path switch. Flip off to restore the recency slice exactly.
 FACT_RELEVANCE_RANKING_ENABLED = os.getenv("TIMMY_FACT_RELEVANCE", "1") == "1"
+# Minimum confidence for the EXTRACTOR to persist a fact (2026-08-13). Explicit
+# user corrections (source="tool") bypass it -- that is the user's own word.
+# Open Sauce wrote "flynn high_school -> science work" at 0.10 and "dan time ->
+# 5.50 p.m." at 0.25; both were still live a month later.
+FACT_MIN_WRITE_CONFIDENCE = float(os.getenv("TIMMY_FACT_MIN_WRITE_CONF", "0.35"))

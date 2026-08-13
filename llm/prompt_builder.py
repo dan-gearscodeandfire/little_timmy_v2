@@ -139,6 +139,7 @@ def build_ephemeral_block(
     situation_regime: str | None = None,
     recall_block: str | None = None,
     uncertain_query_term: str | None = None,
+    avoid_opener: str | None = None,
 ) -> str:
     """Build the per-turn dynamic context block.
 
@@ -295,6 +296,19 @@ def build_ephemeral_block(
     # before the vision/speaker tail. Empty string / None emits nothing.
     if recall_block:
         parts.append(recall_block)
+
+    # [AVOID] — self-imitation guard (2026-08-13). Named here, in the per-turn
+    # tail, NOT in system[0]: the persona has banned the "I am not little" bit
+    # since 6-11 and it ran all through Open Sauce anyway, because ~26 turns of
+    # the model's own output outweigh one static rule. Quoting the exact phrase
+    # back, in the recency-privileged position, is the version that has a chance.
+    if avoid_opener:
+        parts.append(
+            f'[AVOID] You have opened several of your last replies with '
+            f'"{avoid_opener}". You are repeating yourself and it is landing '
+            f'badly. Do NOT begin this reply that way — start somewhere else '
+            f'entirely, and do not comment on having been told.'
+        )
 
     if visual_question and vision_subject_absent:
         # Averted-gaze guard (C6): the user asked about themselves but the
