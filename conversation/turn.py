@@ -350,6 +350,24 @@ class ConversationTurn:
         if _avoid:
             log.info("[AVOID] opener rut detected: %r", _avoid)
 
+        # Per-turn register. Drives the [REGISTER] prompt line AND the sentence
+        # cap below -- the cap is what actually removes the reflexive jab, since
+        # [answer][jab] is a shape the 2-sentence budget imposes.
+        import config as _rcfg
+        _register = None
+        if getattr(_rcfg, "REGISTER_ENABLED", False):
+            from conversation.register import classify as _classify_register
+            _register = _classify_register(
+                words,
+                vision_description=ctx.vision_description,
+                speaker_is_unknown=who.name.startswith("unknown_"),
+                turns_with_speaker=sum(
+                    1 for t in _hot
+                    if getattr(t, "role", None) == "user"
+                    and getattr(t, "speaker", None) == who.name),
+            )
+            log.info("[REGISTER] %s", _register)
+
         ephemeral = build_ephemeral_block(
             memories=retrieved.memories,
             facts=retrieved.facts,
@@ -365,12 +383,21 @@ class ConversationTurn:
             recall_block=ctx.recall_block,
             uncertain_query_term=uncertain_term,
             avoid_opener=_avoid,
+            register=_register,
         )
         messages = build_messages(self._history.build_history_messages(),
                                   ephemeral, words)
         build_ms = int((time.time() - t_build) * 1000)
 
-        cap = _REPLY_LONGER_SENTENCES if user_invites_longer_reply(words) else None
+        # Sentence budget: an explicit invitation to say more always wins;
+        # otherwise the register sets it (STRAIGHT -> 1, which is the point).
+        if user_invites_longer_reply(words):
+            cap = _REPLY_LONGER_SENTENCES
+        elif _register:
+            from conversation.register import SENTENCE_CAP
+            cap = SENTENCE_CAP.get(_register)
+        else:
+            cap = None
         result = await self._stream_and_speak(
             messages, max_sentences=cap,
             on_first_token=ctx.on_first_token,

@@ -140,6 +140,7 @@ def build_ephemeral_block(
     recall_block: str | None = None,
     uncertain_query_term: str | None = None,
     avoid_opener: str | None = None,
+    register: str | None = None,
 ) -> str:
     """Build the per-turn dynamic context block.
 
@@ -178,6 +179,20 @@ def build_ephemeral_block(
         regime_text = _SITUATION_TEXT.get(situation_regime.strip().upper())
         if regime_text:
             parts.append("[SITUATION] " + regime_text)
+
+    # [REGISTER] — per-turn conversational register (2026-08-13). Placed with
+    # [SITUATION] near the head so it frames the whole block. This is the knob
+    # the pinned mood grid could not be: mood was a GLOBAL mode Dan hand-flipped
+    # 14 times over two Open Sauce days and reverted every time, because what he
+    # actually needed was "be straight for THIS one answer". See
+    # conversation/register.py for the derivation and the sentence-cap pairing —
+    # the cap is the load-bearing half, since a one-sentence budget removes the
+    # beat the reflexive jab was living in.
+    if register:
+        from conversation.register import register_line as _reg_line
+        _rl = _reg_line(register)
+        if _rl:
+            parts.append(_rl)
 
     if presence_state and presence_state.get("present"):
         present_lines = []

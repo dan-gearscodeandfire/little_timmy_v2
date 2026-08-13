@@ -624,3 +624,9 @@ FACT_RELEVANCE_RANKING_ENABLED = os.getenv("TIMMY_FACT_RELEVANCE", "1") == "1"
 # Open Sauce wrote "flynn high_school -> science work" at 0.10 and "dan time ->
 # 5.50 p.m." at 0.25; both were still live a month later.
 FACT_MIN_WRITE_CONFIDENCE = float(os.getenv("TIMMY_FACT_MIN_WRITE_CONF", "0.35"))
+
+# Per-turn conversational register (2026-08-13). Drives the [REGISTER] prompt
+# line and the sentence cap. See conversation/register.py: the 2-sentence cap
+# plus "wrap it in attitude" is what manufactured a jab in every single reply,
+# so a STRAIGHT turn gets a 1-sentence budget and the beat disappears.
+REGISTER_ENABLED = os.getenv("TIMMY_REGISTER", "1") == "1"
