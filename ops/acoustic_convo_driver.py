@@ -21,6 +21,10 @@ NOT 'dan' -> real facts (esp. dan.name) are not the clobber target. No real PII.
 USAGE
   .venv/bin/python ops/acoustic_convo_driver.py --calibrate "remember my robot is named Sparky"
   .venv/bin/python ops/acoustic_convo_driver.py --scenario /tmp/scenario.json [--voice en_US-ryan-high]
+
+Scenario entries: {"say": str, "expect": str, "cut_in_after": float|null}
+  cut_in_after=N -> do not wait for Timmy to finish speaking; the NEXT utterance
+  is played N seconds after his reply text arrives, i.e. a real acoustic barge-in.
 """
 import argparse, asyncio, glob, hashlib, json, os, subprocess, sys, time, wave
 import numpy as np
@@ -88,7 +92,7 @@ def fmt_msg(m: dict) -> str:
     return json.dumps(short, ensure_ascii=False) if short else json.dumps(m, ensure_ascii=False)[:200]
 
 
-async def run_turn(idx, text, expect, voice, length_scale, msgs, reply_window):
+async def run_turn(idx, text, expect, voice, length_scale, msgs, reply_window, cut_in_after=None):
     t0 = time.time()
     wav, dur = get_wav(voice, text, length_scale)
     print(f"\n--- TURN {idx}: said={text!r}  (voice={voice}, {dur:.1f}s)")
@@ -107,7 +111,13 @@ async def run_turn(idx, text, expect, voice, length_scale, msgs, reply_window):
         if reply is not None:
             break
     # let skeletor TTS finish playing before the next utterance (avoid mic collision)
-    if reply:
+    # ...UNLESS this turn is deliberately barged in on: cut_in_after=N returns
+    # after N seconds so the NEXT utterance lands while Timmy is still speaking.
+    # That is the only way to exercise the interruption path acoustically.
+    if cut_in_after is not None:
+        print(f"    [cut-in] returning after {cut_in_after}s — next turn will interrupt")
+        await asyncio.sleep(cut_in_after)
+    elif reply:
         words = len(reply.split())
         await asyncio.sleep(min(12.0, max(2.5, words * 0.42)))
     else:
@@ -153,7 +163,8 @@ async def amain():
     results = []
     for i, t in enumerate(turns, 1):
         r = await run_turn(i, t["say"], t.get("expect", ""), args.voice,
-                           args.length_scale, msgs, args.reply_window)
+                           args.length_scale, msgs, args.reply_window,
+                           cut_in_after=t.get("cut_in_after"))
         results.append(r)
 
     await asyncio.sleep(1.0)
