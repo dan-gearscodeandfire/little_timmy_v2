@@ -59,6 +59,37 @@ def q(sql):
     return [line.split("\t") for line in out.stdout.splitlines() if line != ""]
 
 
+def q_set(table, rid, values):
+    """Restore one row. psql has no bind parameters for -c, but its :'var'
+    interpolation emits a properly escaped single-quoted literal, so a value
+    containing a quote cannot break out of the string. NULLs are emitted as the
+    bare keyword (an empty :'var' would write '' instead of NULL).
+
+    `embedding` is deliberately set to NULL rather than restored: the overwrite
+    also replaced it, the snapshot does not carry a 768-dim vector, and a stale
+    embedding on a restored value would silently mis-rank the facts channel.
+    Re-run `python -m ops.backfill_fact_embeddings` after a restore."""
+    setters, argv = [], ["psql", DSN, "-At", "-v", "ON_ERROR_STOP=1"]
+    for col, v in values.items():
+        if col == "id":
+            continue
+        if v is None or v == "":
+            setters.append(f"{col} = NULL")
+        else:
+            key = f"p_{col}"
+            argv += ["-v", f"{key}={v}"]
+            setters.append(f"{col} = :'{key}'")
+    if table == "facts":
+        setters.append("embedding = NULL")
+    sql = f"UPDATE {table} SET {', '.join(setters)} WHERE id = {int(rid)};"
+    # NOTE: psql only interpolates :'var' for input read from stdin or -f.
+    # With -c the variables are left literal and the statement is a syntax
+    # error, so the SQL goes in on stdin.
+    out = subprocess.run(argv, input=sql, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip())
+
+
 def table_state(table, max_id):
     """(count_all, max_id_all, hash_of_rows_with_id<=max_id). The hash is the
     integrity anchor: if any pre-existing row's content changes, the hash moves."""
@@ -71,12 +102,33 @@ def table_state(table, max_id):
     return int(count_all), int(max_all), h
 
 
+# Tables whose write path can UPDATE A BASELINE ROW IN PLACE rather than insert
+# a new one. `facts.store_fact` upserts:
+#     ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL DO UPDATE
+# so a synthetic utterance can overwrite a REAL fact and keep its original id.
+# id-based cleanup cannot see that, and the hash only says "something changed"
+# without being able to put it back. Found live 2026-08-13: a synthetic test
+# line about a thermostat rewrote `dan.occupation` in place and the prior value
+# was UNRECOVERABLE (no WAL archiving, no dump, source_memory_id null).
+# For these tables we snapshot the full stable-column rows so cleanup can RESTORE.
+ROW_SNAPSHOT_TABLES = ["facts"]
+
+
+def snapshot_rows(table, max_id):
+    """Full stable-column rows for baseline ids, keyed by id, for exact restore."""
+    cols = [c.strip() for c in STABLE_COLS[table].split(",")]
+    rows = q(f"SELECT {','.join(cols)} FROM {table} WHERE id <= {int(max_id)} ORDER BY id;")
+    return {r[0]: dict(zip(cols, r)) for r in rows}
+
+
 def cmd_snapshot(path):
     snap = {}
     for t in TABLES:
         count_all, max_all = q(f"SELECT count(*), coalesce(max(id),0) FROM {t};")[0]
         _, _, h = table_state(t, int(max_all))
         snap[t] = {"count": int(count_all), "max_id": int(max_all), "hash": h}
+        if t in ROW_SNAPSHOT_TABLES:
+            snap[t]["rows"] = snapshot_rows(t, int(max_all))
     json.dump(snap, open(path, "w"), indent=2)
     print(f"[snapshot] -> {path}")
     for t in TABLES:
@@ -99,6 +151,43 @@ def cmd_cleanup(path, dry_run):
         else:
             q(f"DELETE FROM {t} WHERE id > {base_max};")
             print(f"  {t:10s} deleted {n_new} synthetic row(s)")
+
+    # Restore any BASELINE row the test overwrote in place. Deleting id>max can
+    # never catch this: store_fact's upsert keeps the original id, so a
+    # synthetic utterance silently rewrites a real fact. Without this the guard
+    # reports DRIFT and the prior value is simply gone.
+    for t in ROW_SNAPSHOT_TABLES:
+        base = snap.get(t, {}).get("rows")
+        if not base:
+            print(f"  {t:10s} (no row snapshot — take a fresh snapshot to enable restore)")
+            continue
+        cols = [c.strip() for c in STABLE_COLS[t].split(",")]
+        now = snapshot_rows(t, int(snap[t]["max_id"]))
+        mutated = []
+        for rid, want in base.items():
+            got = now.get(str(rid)) or now.get(rid)
+            if got is None:
+                mutated.append((rid, "DELETED", want))
+            elif any(str(got.get(c)) != str(want.get(c)) for c in cols):
+                mutated.append((rid, "CHANGED", want))
+        if not mutated:
+            print(f"  {t:10s} no baseline row mutated")
+            continue
+        for rid, kind, want in mutated:
+            changed = [c for c in cols
+                       if c != "id" and str((now.get(str(rid)) or now.get(rid) or {}).get(c)) != str(want.get(c))]
+            print(f"  {t:10s} {kind} baseline row id={rid} "
+                  f"({', '.join(changed) if kind == 'CHANGED' else 'row missing'})")
+            if dry_run:
+                continue
+            if kind == "DELETED":
+                print(f"  {t:10s} !! id={rid} was DELETED — cannot restore from a "
+                      f"stable-column snapshot alone; review manually")
+                continue
+            q_set(t, rid, want)
+            print(f"  {t:10s} RESTORED id={rid} from snapshot "
+                  f"(embedding nulled — re-run ops.backfill_fact_embeddings)")
+
     print("[cleanup] done" if not dry_run else "[cleanup] dry-run, no deletes")
     return cmd_verify(path)
 
