@@ -296,7 +296,18 @@ def build_ephemeral_block(
             "don't describe an old one as recent. If one genuinely answers or "
             "enriches the current turn, use it and speak as though you remember "
             "it. If none of them fit, say nothing about them — they are "
-            "suggestions from your own memory, not facts you must mention:"
+            "suggestions from your own memory, not facts you must mention. "
+            # Added after a live acoustic failure 2026-08-13: asked "who is
+            # William Osman?", a proposition naming BOTH William Osman and Alan
+            # Pan was retrieved, and the reply asserted "That is Alan Pan's
+            # name, not William Osman's" -- a confident falsehood built on a
+            # memory that merely MENTIONED the entity. Retrieval returns its
+            # top-K by similarity, so a near-miss always arrives; the model has
+            # to be told that proximity is not an answer.
+            "Matching a name or topic is NOT the same as answering the "
+            "question: if a line merely mentions what was asked about without "
+            "actually stating the answer, do NOT infer or reconstruct one from "
+            "it — say plainly that you don't know or don't remember:"
         ]
         for m in memories:
             time_str = _format_relative_time(m.created_at)

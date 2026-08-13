@@ -60,7 +60,14 @@ _CORRECTION_RE = re.compile(
     r"\b(?:no,? (?:that's|thats|it's|its|you)|that's (?:not|wrong|incorrect)|"
     r"thats (?:not|wrong)|you(?:'re| are) wrong|you got (?:it|that) wrong|"
     r"wrong|incorrect|not (?:my|his|her|their) name|stop (?:doing|saying|being)|"
-    r"quit it|knock it off|don't (?:do|say) that)\b",
+    r"quit it|knock it off|don't (?:do|say) that|"
+    # Repetition complaints (added after live acoustic test 2026-08-13):
+    # "You said that already." classified BANTER, so Timmy got a second
+    # sentence and spent it on "I have said nothing. You are misinterpreting
+    # my silence." -- wrong AND a jab, on a turn where the user was correcting
+    # him. Being told you are repeating yourself is a correction.
+    r"you (?:said|already said)|said that already|already told|"
+    r"repeating yourself|same thing again|you keep saying)\b",
     re.IGNORECASE,
 )
 

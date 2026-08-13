@@ -36,6 +36,17 @@ def test_opinion_prompt_stays_banter_even_though_it_is_a_question():
         assert classify(q) == BANTER, q
 
 
+def test_repetition_complaint_is_a_correction():
+    """Live acoustic 2026-08-13: "You said that already." classified BANTER, so
+    the reply got a second sentence and spent it on "I have said nothing. You
+    are misinterpreting my silence." -- wrong AND a jab, aimed at someone who
+    was correcting him."""
+    for q in ["You said that already.",
+              "you keep saying that",
+              "you're repeating yourself"]:
+        assert classify(q) == STRAIGHT, q
+
+
 def test_correction_is_straight():
     """A jab on top of a correction produced the two worst-received replies in
     the whole Open Sauce audit."""
