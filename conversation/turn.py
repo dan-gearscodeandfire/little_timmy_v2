@@ -659,6 +659,7 @@ class LiveMemory:
         import asyncio
         from memory.retrieval import retrieve
         from memory.facts import (get_all_facts_for_prompt, get_facts_about_speaker,
+                                  get_relevant_facts_about_speaker,
                                   get_speaker_id_by_name)
 
         async def _empty():
@@ -705,10 +706,27 @@ class LiveMemory:
                                  context_turns=context_turns,
                                  resolved_query=resolved_query,
                                  query_pre_resolved=query_pre_resolved)
+        # Facts: relevance-ranked against THIS utterance, not a recency slice.
+        # get_facts_about_speaker is ORDER BY learned_at DESC with no query term,
+        # so the same 5 newest of 167 facts were injected on every turn under a
+        # never-contradict directive (a Christopher Nolan conversation carried
+        # "dan typical_clothing_color black" as inviolable truth). The identity
+        # core is still always present; everything else earns its slot.
+        # Subject-scoped ("my X") lookups now carry the speaker so a guest asking
+        # about "my wife" can no longer trigram its way into Dan's row.
+        _speaker_facts = (
+            get_relevant_facts_about_speaker(
+                speaker_for_facts, speaker_db_id, user_text, limit=5)
+            if _cfg.FACT_RELEVANCE_RANKING_ENABLED
+            else get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5)
+        )
         gathered = await asyncio.gather(
             _mem_coro,
-            get_all_facts_for_prompt(subjects, limit=5) if subjects else _empty(),
-            get_facts_about_speaker(speaker_for_facts, speaker_db_id, limit=5),
+            get_all_facts_for_prompt(subjects, limit=5,
+                                     speaker_id=speaker_db_id,
+                                     speaker_name=speaker_for_facts)
+            if subjects else _empty(),
+            _speaker_facts,
         )
         memories, non_speaker_facts, speaker_facts = gathered
         # Privacy gate: when active, drop sensitive facts from prompt injection so

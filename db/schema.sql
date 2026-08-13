@@ -182,3 +182,15 @@ CREATE INDEX IF NOT EXISTS idx_propositions_embedding
     WITH (m = 16, ef_construction = 64) WHERE embedding IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_propositions_tsv ON propositions USING GIN (content_tsv);
 CREATE INDEX IF NOT EXISTS idx_propositions_text_trgm ON propositions USING GIN (text gin_trgm_ops);
+
+-- Fact embeddings (2026-08-13): relevance-ranked fact retrieval.
+-- get_facts_about_speaker was ORDER BY learned_at DESC LIMIT 5 with NO query
+-- term at all -- the 5 most recently learned facts out of 167, on every turn,
+-- under the strongest directive in the prompt. Embedding "subject predicate
+-- value" lets the turn retrieve facts that actually bear on what was asked.
+-- Nullable + partial index so unembedded legacy rows are simply invisible to
+-- the vector path and still reachable by the recency path.
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS embedding vector(768);
+CREATE INDEX IF NOT EXISTS idx_facts_embedding
+    ON facts USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64) WHERE embedding IS NOT NULL;

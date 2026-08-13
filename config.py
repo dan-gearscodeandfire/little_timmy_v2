@@ -600,3 +600,22 @@ LOOK_AT_COOLDOWN_SEC = float(os.getenv("TIMMY_LOOK_AT_COOLDOWN_SEC", "30.0"))
 LOOK_AT_MAX_POSE_AGE_SEC = float(os.getenv("TIMMY_LOOK_AT_MAX_POSE_AGE_SEC", "120.0"))
 LOOK_AT_FRESH_FACE_AGE_SEC = float(os.getenv("TIMMY_LOOK_AT_FRESH_FACE_AGE_SEC", "30.0"))
 LOOK_AT_SPEED = float(os.getenv("TIMMY_LOOK_AT_SPEED", "1.0"))
+
+# --- Fact relevance ranking (2026-08-13) ---
+# get_facts_about_speaker was ORDER BY learned_at DESC LIMIT 5 with no query
+# term: the 5 newest of 167 facts injected on every turn under a
+# never-contradict directive, almost never about what was asked.
+# Predicates that are relevant to ANY turn because they are who the person is,
+# not what they last mentioned. Always injected, ahead of the ranked set.
+FACT_IDENTITY_CORE_PREDICATES = tuple(
+    p.strip() for p in os.getenv(
+        "TIMMY_FACT_CORE_PREDICATES", "name").split(",") if p.strip())
+# Cosine floor for the ranked set. Beyond this a fact is dropped ENTIRELY --
+# an empty GROUND TRUTH block is a valid outcome and beats asserting three
+# irrelevant facts as inviolable.
+FACT_SEMANTIC_DISTANCE_MAX = float(os.getenv("TIMMY_FACT_DISTANCE_MAX", "0.45"))
+# 0.45 measured: holds needed-fact-present at 7/8 while cutting injected facts
+# 5.0 -> 2.9 on-topic and 4.8 -> 3.0 on off-topic turns. 0.40 and below drops
+# recall to 5/8; 0.55 buys no recall and injects 70% more.
+# Read-path switch. Flip off to restore the recency slice exactly.
+FACT_RELEVANCE_RANKING_ENABLED = os.getenv("TIMMY_FACT_RELEVANCE", "1") == "1"

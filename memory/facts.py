@@ -57,6 +57,16 @@ async def store_fact(
     pool = await get_pool()
     subject = subject.strip().lower()
     predicate = predicate.strip().lower()
+    # Embedded at write time so the turn can rank facts by relevance to what was
+    # actually asked (see get_relevant_facts_about_speaker). Failure is
+    # non-fatal: a NULL embedding just makes the row invisible to the vector
+    # path, still reachable by the recency path.
+    _fact_embedding = None
+    try:
+        from memory.manager import embed as _embed
+        _fact_embedding = await _embed(f"{subject} {predicate} {value}")
+    except Exception:
+        log.warning("[FACTS] embed failed for %s.%s; storing without", subject, predicate)
 
     # Redaction: never persist a fact containing a blocked term (e.g. Dan's last
     # name) -- it does not belong in any stored memory. Terms are loaded from a
@@ -170,8 +180,8 @@ async def store_fact(
 
     async def _upsert():
         return await pool.fetchrow(
-            """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category, source)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """INSERT INTO facts (subject, predicate, value, source_memory_id, speaker_id, confidence, sensitive, pii_category, source, embedding)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                ON CONFLICT (subject, predicate) WHERE superseded_by IS NULL
                DO UPDATE SET value = EXCLUDED.value,
                              learned_at = now(),
@@ -180,10 +190,11 @@ async def store_fact(
                              speaker_id = EXCLUDED.speaker_id,
                              sensitive = EXCLUDED.sensitive,
                              pii_category = EXCLUDED.pii_category,
-                             source = EXCLUDED.source
+                             source = EXCLUDED.source,
+                             embedding = EXCLUDED.embedding
                RETURNING id, (xmax = 0) AS inserted""",
             subject, predicate, value, source_memory_id, speaker_id, confidence,
-            sensitive, pii_category, source,
+            sensitive, pii_category, source, _fact_embedding,
         )
 
     try:
@@ -237,28 +248,63 @@ async def resolve_entity(name: str) -> str | None:
     return row["value"] if row else None
 
 
-async def get_facts_about(subject: str, limit: int = 10) -> list[Fact]:
-    """Get all active facts about a subject."""
+async def get_facts_about(subject: str, limit: int = 10,
+                          speaker_id: int | None = None,
+                          speaker_name: str | None = None) -> list[Fact]:
+    """Get all active facts about a subject.
+
+    speaker_id / speaker_name SCOPE a possessive lookup to the person who
+    actually said it (2026-08-13). This path is reached from "my X" phrases via
+    _extract_my_subjects, and it matched subjects by trigram similarity with NO
+    speaker filter whatsoever -- so ANY guest asking about "my wife" retrieved
+    `dan's wife -> Erin` (similarity 0.357, the only row in the corpus that
+    matches). Flynn discussed his wife at the booth on 7-19; nothing would have
+    stopped that leak. When a speaker is supplied we keep only rows that are
+    either theirs by speaker_id or whose subject actually names them; passing
+    neither preserves the old unscoped behaviour for callers that want it."""
     pool = await get_pool()
+    subject = subject.strip().lower()
     rows = await pool.fetch(
-        """SELECT id, subject, predicate, value, learned_at, confidence, sensitive
+        """SELECT id, subject, predicate, value, learned_at, confidence, sensitive,
+                  speaker_id
            FROM facts
            WHERE (subject = $1 OR subject % $1)
            AND superseded_by IS NULL
            ORDER BY similarity(subject, $1) DESC, confidence DESC
            LIMIT $2""",
-        subject.strip().lower(),
-        limit,
+        subject,
+        limit * 4 if (speaker_id or speaker_name) else limit,
     )
-    return [Fact(**dict(r)) for r in rows]
+    out = []
+    name = (speaker_name or "").strip().lower()
+    for r in rows:
+        d = dict(r)
+        rid = d.pop("speaker_id", None)
+        if speaker_id is not None or name:
+            owned = (rid is not None and rid == speaker_id)
+            # "dan's wife" names dan; "my wife" written under a bare possessive
+            # with a matching speaker_id is covered by `owned` above.
+            named = bool(name) and name in d["subject"]
+            if not (owned or named):
+                continue
+        out.append(Fact(**d))
+        if len(out) >= limit:
+            break
+    return out
 
 
-async def get_all_facts_for_prompt(subjects: list[str], limit: int = 10) -> list[Fact]:
-    """Get facts about multiple subjects for prompt injection."""
+async def get_all_facts_for_prompt(subjects: list[str], limit: int = 10,
+                                   speaker_id: int | None = None,
+                                   speaker_name: str | None = None) -> list[Fact]:
+    """Get facts about multiple subjects for prompt injection.
+
+    speaker_id/speaker_name scope possessive subjects to the speaker -- see
+    get_facts_about for the cross-speaker leak this closes."""
     all_facts = []
     seen = set()
     for subj in subjects:
-        facts = await get_facts_about(subj, limit=5)
+        facts = await get_facts_about(subj, limit=5, speaker_id=speaker_id,
+                                      speaker_name=speaker_name)
         for f in facts:
             if f.id not in seen:
                 seen.add(f.id)
@@ -331,6 +377,91 @@ async def get_facts_about_speaker(
         limit,
     )
     return [Fact(**dict(r)) for r in rows]
+
+
+async def embed_fact_text(subject: str, predicate: str, value: str) -> str:
+    """The string a fact is embedded as. One place so the write path and any
+    backfill cannot drift into embedding different text for the same row."""
+    return f"{subject} {predicate} {value}"
+
+
+async def get_relevant_facts_about_speaker(
+    speaker_name: str,
+    speaker_id: int | None,
+    query: str,
+    limit: int = 5,
+) -> list[Fact]:
+    """Facts about `speaker_name` ranked by relevance to `query`.
+
+    Replaces the recency slice for prompt injection. get_facts_about_speaker is
+    ORDER BY learned_at DESC with no query term, so out of 167 live facts the
+    turn always received the same 5 newest ones -- during a conversation about
+    Christopher Nolan those were "dan occupation documentary filmmaker / dan
+    name Dan / dan typical_clothing_color black", carried under a
+    never-contradict directive.
+
+    An IDENTITY CORE is always included regardless of the query: a handful of
+    predicates that are relevant to any turn because they are who the person
+    is, not what they last mentioned. Everything else must earn its slot by
+    similarity, and rows below the distance floor are dropped entirely -- an
+    empty fact block is a valid, and often correct, outcome.
+
+    Falls back to the recency ordering when nothing is embedded yet, so the
+    behaviour degrades rather than going blank on an unbackfilled corpus."""
+    import config
+    from memory.manager import embed
+
+    pool = await get_pool()
+    name = speaker_name.strip().lower()
+    aliases = (name, *_SELF_REFERENCE_ALIASES)
+
+    core = await pool.fetch(
+        """SELECT id, subject, predicate, value, learned_at, confidence, sensitive
+           FROM facts
+           WHERE subject = ANY($1::text[]) AND superseded_by IS NULL
+             AND predicate = ANY($2::text[])
+             AND (speaker_id = $3 OR (speaker_id IS NULL AND subject = $4))
+           ORDER BY confidence DESC, learned_at DESC""",
+        list(aliases), list(config.FACT_IDENTITY_CORE_PREDICATES), speaker_id, name,
+    )
+
+    q_emb = None
+    try:
+        q_emb = await embed(query)
+    except Exception:
+        log.warning("[FACTS] query embed failed; falling back to recency", exc_info=True)
+
+    ranked = []
+    if q_emb is not None:
+        ranked = await pool.fetch(
+            """SELECT id, subject, predicate, value, learned_at, confidence, sensitive,
+                      embedding <=> $5 AS distance
+               FROM facts
+               WHERE subject = ANY($1::text[]) AND superseded_by IS NULL
+                 AND (speaker_id = $2 OR (speaker_id IS NULL AND subject = $3))
+                 AND embedding IS NOT NULL
+                 AND embedding <=> $5 < $6
+               ORDER BY embedding <=> $5
+               LIMIT $4""",
+            list(aliases), speaker_id, name, limit, q_emb,
+            config.FACT_SEMANTIC_DISTANCE_MAX,
+        )
+
+    out, seen = [], set()
+    for r in (*core, *ranked):
+        d = dict(r)
+        d.pop("distance", None)
+        if d["id"] in seen:
+            continue
+        seen.add(d["id"])
+        out.append(Fact(**d))
+        if len(out) >= limit:
+            break
+
+    if not out and not ranked:
+        # Nothing embedded yet (or all beyond the floor) -> old behaviour.
+        return await get_facts_about_speaker(speaker_name, speaker_id, limit=limit)
+    return out
 
 
 # Sortable columns for the read-only Memory Inspector. Whitelisted to keep the

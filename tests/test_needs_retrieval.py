@@ -118,10 +118,16 @@ def _install_fakes(monkeypatch, *, gate: bool, use_episodes: bool):
         calls["episodes"] += 1
         return [_Mem()]
 
-    async def fake_all_facts(subjects, limit=5):
+    async def fake_all_facts(subjects, limit=5, speaker_id=None, speaker_name=None):
         return []
 
     async def fake_speaker_facts(name, db_id, limit=5):
+        return []
+
+    # 2026-08-13: facts are relevance-ranked against the utterance, so gather()
+    # calls get_relevant_facts_about_speaker. Fake it too -- otherwise the real
+    # one runs and touches the pool from this test's loop.
+    async def fake_relevant_facts(name, db_id, query, limit=5):
         return []
 
     monkeypatch.setattr(config_mod, "EPISODIC_ALWAYS_ON_RETRIEVAL", use_episodes)
@@ -129,6 +135,7 @@ def _install_fakes(monkeypatch, *, gate: bool, use_episodes: bool):
     monkeypatch.setattr(turn, "_retrieve_episodes_as_memories", fake_episodes)
     monkeypatch.setattr(facts_mod, "get_all_facts_for_prompt", fake_all_facts)
     monkeypatch.setattr(facts_mod, "get_facts_about_speaker", fake_speaker_facts)
+    monkeypatch.setattr(facts_mod, "get_relevant_facts_about_speaker", fake_relevant_facts)
     monkeypatch.setattr(runtime_toggles, "get",
                         lambda key: gate if key == "needs_retrieval_gate" else None)
     return calls
