@@ -1147,6 +1147,7 @@ async def audio_diagnostics():
         "last_peak": round(cap.diag_last_peak, 4),
         "last_vad_prob": round(cap.diag_last_vad_prob, 4),
         "energy_floor": round(getattr(cap, "energy_floor", 0.0), 4),
+        "vad_threshold": round(getattr(cap, "vad_threshold", config.VAD_THRESHOLD), 4),
         "overflows": cap.diag_overflows,
         "suppressed": cap.suppressed,
         "device": cap.diag_device_name,
@@ -1171,6 +1172,24 @@ async def set_energy_floor(payload: dict | None = None):
     cap = _orchestrator.capture
     cap.set_energy_floor((payload or {}).get("value", 0.0))
     return {"ok": True, "energy_floor": round(cap.energy_floor, 4)}
+
+@app.get("/api/capture/vad_threshold")
+async def get_vad_threshold():
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"vad_threshold": config.VAD_THRESHOLD, "error": "not initialized"}
+    return {"vad_threshold": round(getattr(_orchestrator.capture, "vad_threshold", config.VAD_THRESHOLD), 4)}
+
+
+@app.post("/api/capture/vad_threshold")
+async def set_vad_threshold(payload: dict | None = None):
+    """Set the Silero speech-probability floor. Takes effect on the next chunk
+    and persists across restarts. Body: {"value": 0.30}."""
+    if not _orchestrator or not getattr(_orchestrator, "capture", None):
+        return {"ok": False, "error": "orchestrator not ready"}
+    cap = _orchestrator.capture
+    cap.set_vad_threshold((payload or {}).get("value", config.VAD_THRESHOLD))
+    return {"ok": True, "vad_threshold": round(cap.vad_threshold, 4)}
+
 
 @app.get("/api/health")
 async def health_check():

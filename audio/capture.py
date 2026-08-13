@@ -68,6 +68,15 @@ class AudioCapture:
         # the wearer. 0.0 == disabled (default) -> exact pre-existing behaviour.
         # Cached here (not re-read per chunk) and updated live via set_energy_floor().
         self.energy_floor = float(_toggles.get("capture_energy_floor"))
+        # Silero speech-probability floor. Same live-cached pattern as
+        # energy_floor above. Until 2026-08-13 the capture_vad_threshold toggle
+        # existed but NOTHING read it -- the loop used config.VAD_THRESHOLD
+        # directly, so the documented knob silently did nothing. Seeded from the
+        # toggle (falling back to config) and updated live via set_vad_threshold().
+        try:
+            self.vad_threshold = float(_toggles.get("capture_vad_threshold"))
+        except (TypeError, ValueError):
+            self.vad_threshold = float(config.VAD_THRESHOLD)
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -276,7 +285,7 @@ class AudioCapture:
                     p = self._check_vad(audio[i : i + window_size])
                     vad_prob = max(vad_prob, p)
 
-                is_speech = vad_prob >= config.VAD_THRESHOLD
+                is_speech = vad_prob >= self.vad_threshold
 
                 # Update diagnostics
                 self.diag_chunks_processed += 1
@@ -517,6 +526,26 @@ class AudioCapture:
     @property
     def is_hearing_enabled(self) -> bool:
         return not self.hearing_muted
+
+    def set_vad_threshold(self, value: float):
+        """Set the Silero speech-probability floor (0.0..1.0). Takes effect on
+        the next chunk and persists across restarts. Lower = hears quieter and
+        more distant speech; with the near-field energy floor effectively off on
+        this mic, this is the only remaining gate on off-mic voices."""
+        try:
+            v = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            log.warning("set_vad_threshold: bad value %r, ignoring", value)
+            return
+        if v == self.vad_threshold:
+            return
+        self.vad_threshold = v
+        log.info("VAD threshold set to %.4f", v)
+        try:
+            from persistence import runtime_toggles as _toggles
+            _toggles.set("capture_vad_threshold", v)
+        except Exception as e:
+            log.warning("vad_threshold persist failed: %s", e)
 
     def set_energy_floor(self, value: float):
         """Set the near-field onset energy floor (peak amplitude, 0.0..1.0).

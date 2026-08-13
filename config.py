@@ -70,7 +70,14 @@ TTS_PRONUNCIATIONS = {
 # --- Audio ---
 SAMPLE_RATE = 16000
 CHUNK_FRAMES = 4096  # ~256ms at 16kHz
-VAD_THRESHOLD = 0.4
+# Silero speech-probability floor. 0.4 -> 0.30 on 2026-08-13 (Dan): measured
+# idle room noise tops out at VAD 0.020 (p95, n=1034) while close speech reads
+# ~1.0, so 0.4 was far more conservative than the noise required. This is a
+# SEED -- the live value is FrameCapture.vad_threshold, settable at runtime
+# (POST :8893/api/capture/vad_threshold) and persisted in the
+# capture_vad_threshold runtime toggle, which until 2026-08-13 was declared but
+# never read by anything.
+VAD_THRESHOLD = float(os.getenv("TIMMY_VAD_THRESHOLD", "0.30"))
 PRE_SPEECH_CHUNKS = 3  # ~768ms of audio kept before speech onset
 
 # --- Hybrid Endpointing ---

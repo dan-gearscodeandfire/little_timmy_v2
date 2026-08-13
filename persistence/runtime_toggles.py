@@ -106,7 +106,7 @@ _DEFAULTS: dict = {
     # Always-on, mode-independent (Dan 2026-06-10: no "party/presenter mode" —
     # the knob's value IS the switch). Consumed live by audio/capture.py;
     # exposed via the LT-OS VU meter + sliders.
-    "capture_vad_threshold": 0.4,        # Silero onset prob floor (seeds config.VAD_THRESHOLD)
+    "capture_vad_threshold": 0.30,       # Silero speech-prob floor. LIVE since 2026-08-13 (FrameCapture.vad_threshold reads it per chunk; POST :8893/api/capture/vad_threshold). Before that it was declared here and read by NOTHING.
     "capture_energy_floor": 0.0,         # peak-amplitude floor for onset; 0.0 == disabled
     # --- P4 face-ID flap debounce knobs (2026-06-11) ------------------------
     # B3: a person must appear in >= ceil(this * lookback-5) recent scene
