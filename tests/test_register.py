@@ -314,3 +314,33 @@ def test_question_in_the_last_sentence_is_straight(text):
 ])
 def test_de_anchoring_leaves_ordinary_talk_in_banter(text):
     assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # Greetings are questions in shape only -- they want hello, not a status
+    # report, and there is no right answer, so wit is the point. _FACTUAL_RE
+    # matched the bare "what's" and graded them STRAIGHT, which caps at one
+    # sentence and bans the closing remark. Live cost 2026-08-14 19:49, the
+    # first turn of the evening: "Hey Timmy, what's shaking?" -> "Nothing."
+    "Hey Timmy, what's shaking?",
+    "What's up?",
+    "What's new?",
+    "What's happening?",
+    "What's going on, Timmy?",
+    "Yo Timmy, what's good?",
+    "How's it going?",
+    "You doing ok?",
+])
+def test_phatic_greetings_stay_banter(text):
+    assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # The phatic veto must not swallow real "what's ..." questions.
+    "What time is it?",
+    "What's the temperature in the shop?",
+    "What did you just say?",
+    "What's my wife's name?",
+])
+def test_phatic_veto_does_not_eat_real_questions(text):
+    assert classify(text) == STRAIGHT

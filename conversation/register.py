@@ -144,6 +144,29 @@ _EXASPERATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Phatic greetings. These are questions in shape only -- "what's shaking?" wants
+# hello, not a status report. _FACTUAL_RE matches on the bare "what's", so every
+# one of them graded STRAIGHT, which caps the reply at one sentence and forbids
+# the closing remark. Live cost 2026-08-14 19:49, the FIRST turn of the evening:
+#
+#   Dan: "Hey Timmy, what's shaking?"  ->  STRAIGHT  ->  "Nothing."
+#
+# Dan had asked, one message earlier, for exactly the opposite: "it's supposed
+# to sound like talking to a person with awesome delivery." A greeting is where
+# delivery matters most and where a right answer does not exist -- so it belongs
+# in BANTER with the rest of the wit. Note "how are you?" / "how's it going?"
+# escaped only by accident: _FACTUAL_RE's wh-list has no bare "how", so they
+# were never at risk. This closes the same hole for the "what's ..." family.
+_PHATIC_RE = re.compile(
+    r"^\s*(?:hey\s+|hi\s+|yo\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?"
+    r"(?:timmy[,\s]+){0,2}"
+    r"(?:what(?:'s| is)\s+(?:shaking|up|new|good|happening|going on|cooking|"
+    r"the word|crackin['g]?|poppin['g]?)|"
+    r"how(?:'s| is| goes)\s+(?:it going|it|things|life|tricks)|"
+    r"you (?:doing )?(?:ok|okay|alright|good)|how you doing)\b",
+    re.IGNORECASE,
+)
+
 # The user is correcting Timmy. A jab on top of a correction is what produced
 # "I have your name exactly right, Dan" (7-18) and "I am Timmy. Fine, I will
 # stop." (7-19) -- the two worst-received replies in the whole audit.
@@ -279,7 +302,9 @@ def classify(user_text: str,
     )
     if (asks_for_an_answer
             and not _OPINION_RE.search(text)
-            and not _RHETORICAL_RE.search(text)):
+            and not _RHETORICAL_RE.search(text)
+            and not _PHATIC_RE.search(text)
+            and not _PHATIC_RE.search(_tail)):
         return STRAIGHT
 
     return BANTER
