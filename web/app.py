@@ -1148,6 +1148,8 @@ async def audio_diagnostics():
         "last_vad_prob": round(cap.diag_last_vad_prob, 4),
         "energy_floor": round(getattr(cap, "energy_floor", 0.0), 4),
         "vad_threshold": round(getattr(cap, "vad_threshold", config.VAD_THRESHOLD), 4),
+        "suppressed_spans": getattr(cap, "diag_suppressed_spans", 0),
+        "suppressed_last": getattr(cap, "diag_suppressed_last", None),
         "overflows": cap.diag_overflows,
         "suppressed": cap.suppressed,
         "device": cap.diag_device_name,

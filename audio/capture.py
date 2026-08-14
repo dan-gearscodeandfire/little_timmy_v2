@@ -77,6 +77,19 @@ class AudioCapture:
             self.vad_threshold = float(_toggles.get("capture_vad_threshold"))
         except (TypeError, ValueError):
             self.vad_threshold = float(config.VAD_THRESHOLD)
+        # Speech thrown away by the TTS mic gate (2026-08-13). The gate itself is
+        # correct -- it stops Timmy transcribing himself -- but the discard was
+        # completely UNOBSERVABLE: a full sentence at VAD 0.997 vanished with no
+        # STT, no turn, no log line, and nothing downstream knew the user had
+        # tried to speak. These make it visible without pretending to detect
+        # barge-in, which this signal chain cannot do: measured, Timmy's own
+        # voice comes back at VAD up to 1.000 and peaks to 0.041 against a human
+        # barge-in at 0.055, so the distributions overlap and no threshold
+        # separates them. Real barge-in needs acoustic echo cancellation.
+        self._supp_chunks = 0            # voiced chunks in the current gated span
+        self._supp_peak = 0.0            # loudest of them
+        self.diag_suppressed_spans = 0   # completed gated spans that ate speech
+        self.diag_suppressed_last = None # (chunks, peak) of the most recent one
         self._running = False
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -303,6 +316,10 @@ class AudioCapture:
                 # user has muted hearing from LT-OS. Mic + VAD keep running
                 # (diagnostics stay fresh) but no segment is enqueued to STT.
                 if self.suppressed or self.hearing_muted:
+                    # Record what the gate is eating before dropping it.
+                    if vad_prob >= self.vad_threshold:
+                        self._supp_chunks += 1
+                        self._supp_peak = max(self._supp_peak, self.diag_last_peak)
                     is_speech = False
                     if recording:
                         reason = "TTS suppression" if self.suppressed else "hearing muted"
@@ -313,6 +330,22 @@ class AudioCapture:
                         last_transcription = ''
                     self.user_speaking = False
                     continue
+
+                # Gate just lifted — report the span it swallowed, one line per
+                # span rather than per chunk. Some of this is always Timmy's own
+                # voice; the peak is the part worth looking at, because a
+                # close-talking human sits above his echo.
+                if self._supp_chunks:
+                    self.diag_suppressed_spans += 1
+                    self.diag_suppressed_last = (self._supp_chunks, round(self._supp_peak, 4))
+                    log.info("[MIC-GATE] dropped %d voiced chunk(s) (~%.1fs, peak %.4f) "
+                             "while output was playing — includes own-voice echo; "
+                             "a barge-in here is unrecoverable",
+                             self._supp_chunks,
+                             self._supp_chunks * config.CHUNK_FRAMES / config.SAMPLE_RATE,
+                             self._supp_peak)
+                    self._supp_chunks = 0
+                    self._supp_peak = 0.0
 
                 # Turn-taking signal for the proactive-speech gate. Updated only
                 # on genuine (non-suppressed, non-muted) voiced chunks.
