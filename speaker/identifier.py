@@ -525,6 +525,28 @@ class SpeakerIdentifier:
         # margin = how decisively the winner beats the runner-up; small margin =
         # ambiguous (multiple known identities about equally close), which is when
         # continuity must NOT latch. Logged for tuning the gate on real audio.
+        # --- off-mic SHADOW instrumentation (2026-08-13, log-only) -----------
+        # 2026-08-13 22:02-23:00: 73 correct `dan` IDs, 1 false accept
+        # (`nathan`), and 10 phantom `unknown_N` -- all from Dan's own voice,
+        # alone in the room. Six of the ten had `best != dan` entirely
+        # (eric_timmy, norrin, david x2, dan_2): off-mic audio does not land
+        # FAR from its own print, it lands NEAR a stranger's. No threshold
+        # tuning fixes that; the utterance has to be recognised as off-mic and
+        # declined. The `[DIAG]` peak that hinted at this samples BETWEEN
+        # utterances, so it could never be more than suggestive.
+        #
+        # This measures the utterance itself. Deliberately log-only for now --
+        # same shadow-then-enforce shape as [FRONTAL-SHADOW]: collect real
+        # on-mic vs off-mic levels first, set the floor from data, and only
+        # then decline to identify. Guessing a floor here risks dropping real
+        # speech, which is worse than the misID it prevents.
+        _peak = float(np.abs(audio_16k).max()) if audio_16k.size else 0.0
+        _rms = float(np.sqrt(np.mean(np.square(audio_16k.astype(np.float64))))) if audio_16k.size else 0.0
+        log.info("[LEVEL-SHADOW] peak=%.4f rms=%.4f len=%d best=%s dist=%.4f margin=%.4f",
+                 _peak, _rms, len(audio_16k),
+                 best_known.name if best_known else "none", best_known_dist,
+                 second_best_known_dist - best_known_dist)
+
         log.info("Speaker distances: best=%s dist=%.4f 2nd=%.4f margin=%.4f threshold=%.2f audio_len=%d (%dms)",
                  best_known.name if best_known else "none", best_known_dist,
                  second_best_known_dist, second_best_known_dist - best_known_dist,
