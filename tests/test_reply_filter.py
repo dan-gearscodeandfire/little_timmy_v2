@@ -302,3 +302,63 @@ def test_single_letter_sentence_still_terminates():
     sentence -- "p.m" is protected because a LETTER follows the period."""
     from conversation.reply_filter import _trim_at_nth_terminator as trim
     assert trim("A. B. C.", 2) == "A. B."
+
+
+# ---------------------------------------------------------------------------
+# Gate/trim predicate parity (2026-08-13)
+# ---------------------------------------------------------------------------
+# The cap GATE counted raw "." / "!" / "?" characters while the TRIM counted
+# only _is_real_terminator. On any disagreement the gate fired, the trim
+# returned the buffer unchanged, and `drained` discarded the rest of the reply,
+# so the SPOKEN output ended mid-word at the 30-char narration window. The
+# journal tell was "dropped 0 chars". Found by listening, not by this suite.
+
+async def _stream(text, chunk=7):
+    for i in range(0, len(text), chunk):
+        yield text[i:i + chunk]
+
+
+async def _run(text, cap, chunk=7):
+    out = ""
+    async for tok in filtered_assistant_stream(_stream(text, chunk), max_sentences=cap):
+        out += tok
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,cap,want", [
+    # "No." is the word no, not No.=number -- the commonest opener of a
+    # STRAIGHT answer. The cap must FIRE on it, cleanly.
+    ("No. He is currently bragging to anyone who will listen about it.", 1, "No."),
+    ("No. And I would not tell you if he had, obviously.", 1, "No."),
+    ("Yes. He is currently bragging to anyone who will listen.", 1, "Yes."),
+    # An ellipsis is not a sentence end, so this is TWO sentences, not four.
+    ("Well, thank you. That's... genuinely unexpected coming from you.", 2,
+     "Well, thank you. That's... genuinely unexpected coming from you."),
+    # A decimal point is not a sentence end.
+    ("It costs 5.50 dollars, which is robbery for a bag of screws.", 1,
+     "It costs 5.50 dollars, which is robbery for a bag of screws."),
+    # Real multi-sentence replies still get capped.
+    ("First one. Second one. Third one.", 2, "First one. Second one."),
+    ("First one. Second one. Third one.", 1, "First one."),
+])
+async def test_cap_never_truncates_mid_word(text, cap, want):
+    assert await _run(text, cap) == want
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk", [1, 3, 7, 13, 400])
+async def test_cap_is_independent_of_token_boundaries(chunk):
+    # A terminator's meaning depends on its neighbours, so a token examined in
+    # isolation cannot classify its own last character -- "..." and "5.50" can
+    # straddle a chunk boundary. The result must not depend on how the stream
+    # happens to be split.
+    text = "Well, thank you. That's... genuinely unexpected. And 5.50 is robbery."
+    assert await _run(text, 2, chunk=chunk) == "Well, thank you. That's... genuinely unexpected."
+
+
+@pytest.mark.asyncio
+async def test_no_as_number_still_reads_as_an_abbreviation():
+    # The reason "no" was in the abbreviation list in the first place.
+    assert await _run("Bay No. 4 is where he keeps it. Second sentence here.", 1) == \
+        "Bay No. 4 is where he keeps it."

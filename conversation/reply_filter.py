@@ -118,8 +118,32 @@ def _is_real_terminator(s: str, i: int) -> bool:
                      "vs", "etc", "i.e", "e.g", "approx", "no"):
             if low.endswith(abbr) and (len(low) == len(abbr)
                                        or not low[-len(abbr) - 1].isalnum()):
+                # "no." is in this list for No. = NUMBER, but in this persona a
+                # reply opening "No." is overwhelmingly the WORD no -- the
+                # commonest way to open a STRAIGHT answer to a yes/no question.
+                # Treating it as an abbreviation meant the cap never fired on a
+                # negative answer (2026-08-13: "No. He is currently bragging to"
+                # was SPOKEN, cut mid-word). Require the number sense: a digit
+                # after the period.
+                if abbr == "no":
+                    rest = s[i + 1:].lstrip()
+                    if not (rest[:1].isdigit()):
+                        return True
                 return False
     return True
+
+
+def _count_real_terminators(s: str) -> int:
+    """How many REAL sentence ends `s` contains.
+
+    The gate that decides "cap reached" and the trim that acts on it MUST use
+    the same predicate. Until 2026-08-13 the gate counted raw "." / "!" / "?"
+    characters while the trim used _is_real_terminator, so on any disagreement
+    -- an ellipsis, a decimal, an abbreviation, "No." -- the gate fired, the
+    trim returned the buffer unchanged, and `drained` threw away the rest of the
+    reply. The tell in the journal was "dropped 0 chars", and the audible result
+    was a reply cut mid-word at the 30-char narration window."""
+    return sum(1 for i in range(len(s)) if _is_real_terminator(s, i))
 
 
 def _trim_at_nth_terminator(s: str, n: int) -> str:
@@ -225,9 +249,8 @@ async def _filtered_core(token_iter, max_sentences: int | None = None):
     persona.
     """
     cap = max_sentences if max_sentences and max_sentences > 0 else _REPLY_MAX_SENTENCES
-    accum = ""
-    buffered = ""
-    sentence_count = 0
+    accum = ""          # every token received so far
+    emitted = 0         # how much of `accum` has already gone downstream
     narration_checked = False
     drained = False
     async for token in token_iter:
@@ -240,7 +263,6 @@ async def _filtered_core(token_iter, max_sentences: int | None = None):
             # Hold every token until accum reaches the prefix-check window.
             # Without this hold, the first ~29 chars would already be on
             # TTS / WS / hot_turns before the veto fires, defeating it.
-            buffered += token
             if len(accum) < _NARRATION_PREFIX_CHECK_AT:
                 continue
             narration_checked = True
@@ -250,62 +272,42 @@ async def _filtered_core(token_iter, max_sentences: int | None = None):
                 drained = True
                 yield _REPLY_VETO_FALLBACK
                 continue
-            # Safe prefix — flush the buffer in one chunk and resume
-            # streaming. Sentence counting catches up on the buffered text.
-            # 2026-05-15: if the buffer already crosses the cap, trim it at
-            # the cap-th terminator so we don't leak the start of sentence
-            # N+1 into TTS / hot_turns. Previously the entire buffered
-            # prefix was yielded and the leaked partial got picked up by
-            # the end-of-stream flush in _stream_to_tts, producing audible
-            # mid-sentence cutoffs (e.g. "Fine. Dexter and Preston. I'll").
-            buf_terminators = sum(1 for ch in buffered if ch in ".!?")
-            if sentence_count + buf_terminators >= cap:
-                trimmed = _trim_at_nth_terminator(buffered, cap - sentence_count)
-                yield trimmed
-                log.info("[POST-FILTER] capped reply at %d sentences (trimmed in narration-flush; dropped %d chars)",
-                         cap, len(buffered) - len(trimmed))
-                sentence_count = cap
-                buffered = ""
-                drained = True
-                continue
-            sentence_count += buf_terminators
-            yield buffered
-            buffered = ""
-            continue
-        # Token branch: same trim-at-cap discipline as the narration flush.
-        tok_terminators = sum(1 for ch in token if ch in ".!?")
-        if sentence_count + tok_terminators >= cap:
-            trimmed = _trim_at_nth_terminator(token, cap - sentence_count)
-            yield trimmed
-            log.info("[POST-FILTER] capped reply at %d sentences (trimmed mid-token; dropped %d chars)",
-                     cap, len(token) - len(trimmed))
-            sentence_count = cap
+        # Cap decision is made against the WHOLE reply so far, not against the
+        # newest token. Two reasons, both bugs that existed while this counted
+        # per-token: (1) the gate and the trim must share _is_real_terminator or
+        # a disagreement silently truncates the reply, and (2) a terminator's
+        # meaning depends on its neighbours -- "..." or "5.50" can straddle a
+        # token boundary, so a token examined in isolation cannot classify its
+        # own last character. Counting `accum` makes both problems disappear.
+        if _count_real_terminators(accum) >= cap:
+            keep = _trim_at_nth_terminator(accum, cap)
+            if len(keep) > emitted:
+                yield keep[emitted:]
+            log.info("[POST-FILTER] capped reply at %d sentences (dropped %d chars)",
+                     cap, len(accum) - len(keep))
+            emitted = max(emitted, len(keep))
             drained = True
             continue
-        sentence_count += tok_terminators
-        yield token
-    # End-of-stream flush: a reply shorter than the prefix-check window
-    # never triggered the narration check. Every entry in _NARRATION_PREFIXES
-    # is <30 chars, so a reply that is exactly "the room is" (15 chars) and
-    # then stops would otherwise slip through. Run the check defensively.
-    # Also apply the sentence cap here — short replies that fit entirely
-    # inside the buffer bypass the per-token cap check otherwise.
-    if buffered and not drained:
-        if _looks_like_narration(accum):
-            log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
-            yield _REPLY_VETO_FALLBACK
-        else:
-            # Trim to the cap-th terminator if the buffer has ≥cap terminators
-            # AND any trailing content after the cap-th. Catches both
-            # "A. B. C." (3 terminators, cap=2) and "A. B. C" (2 terminators
-            # + partial third sentence) — both previously fell through as
-            # incomplete-trailing-sentence cutoffs.
-            trimmed = _trim_at_nth_terminator(buffered, cap)
-            if 0 < len(trimmed) < len(buffered):
-                log.info("[POST-FILTER] capped short reply at %d sentences (dropped %d chars)",
-                         cap, len(buffered) - len(trimmed))
-                buffered = trimmed
-            yield buffered
+        if len(accum) > emitted:
+            yield accum[emitted:]
+            emitted = len(accum)
+    # End-of-stream flush. A reply shorter than the prefix-check window never
+    # triggered the narration check, so run it defensively -- every entry in
+    # _NARRATION_PREFIXES is <30 chars, so "the room is" (15) would slip through.
+    if drained:
+        return
+    if not narration_checked and _looks_like_narration(accum):
+        log.warning("[POST-FILTER] vetoed short narration reply: %r", accum[:60])
+        yield _REPLY_VETO_FALLBACK
+        return
+    keep = accum
+    if _count_real_terminators(accum) >= cap:
+        keep = _trim_at_nth_terminator(accum, cap)
+        if len(keep) < len(accum):
+            log.info("[POST-FILTER] capped short reply at %d sentences (dropped %d chars)",
+                     cap, len(accum) - len(keep))
+    if len(keep) > emitted:
+        yield keep[emitted:]
 
 
 # --------------------------------------------------------------------------
