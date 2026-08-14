@@ -350,6 +350,14 @@ class ConversationTurn:
         _avoid = repeated_opener(_recent_replies)
         if _avoid:
             log.info("[AVOID] opener rut detected: %r", _avoid)
+        # Retired-bit guard: fires on a SINGLE use, matches anywhere in the
+        # reply. "I am not little" survived a config.PERSONA ban since 6-11
+        # because the ban quoted the phrase (priming it every turn) and sat in
+        # system[0], the position already proven too weak for this exact bit.
+        from conversation.reply_filter import banned_phrase_used
+        _avoid_phrase = banned_phrase_used(_recent_replies)
+        if _avoid_phrase:
+            log.info("[AVOID] retired bit used: %r", _avoid_phrase)
 
         # Per-turn register. Drives the [REGISTER] prompt line AND the sentence
         # cap below -- the cap is what actually removes the reflexive jab, since
@@ -384,6 +392,7 @@ class ConversationTurn:
             recall_block=ctx.recall_block,
             uncertain_query_term=uncertain_term,
             avoid_opener=_avoid,
+            avoid_phrase=_avoid_phrase,
             register=_register,
         )
         messages = build_messages(self._history.build_history_messages(),

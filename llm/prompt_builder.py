@@ -139,6 +139,7 @@ def build_ephemeral_block(
     situation_regime: str | None = None,
     recall_block: str | None = None,
     uncertain_query_term: str | None = None,
+    avoid_phrase: str | None = None,
     avoid_opener: str | None = None,
     register: str | None = None,
 ) -> str:
@@ -335,6 +336,19 @@ def build_ephemeral_block(
             f'"{avoid_opener}". You are repeating yourself and it is landing '
             f'badly. Do NOT begin this reply that way — start somewhere else '
             f'entirely, and do not comment on having been told.'
+        )
+
+    # A phrase that is banned outright, quoted back from the model's OWN last
+    # replies. Separate from avoid_opener because it fires on ONE use and
+    # matches anywhere in the reply -- the bit it was built for is a closing
+    # tag ("...and for the record, I am not little"), which the opener guard
+    # cuts away. See reply_filter.banned_phrase_used for the full history.
+    if avoid_phrase:
+        parts.append(
+            f'[AVOID] You just said "{avoid_phrase}". That bit is retired — '
+            f'you do not care how people say your name and you never comment '
+            f'on it. Do NOT say it again in any form, and do not mention '
+            f'having been told.'
         )
 
     if visual_question and vision_subject_absent:

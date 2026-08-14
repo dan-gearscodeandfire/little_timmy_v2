@@ -395,3 +395,60 @@ def repeated_opener(recent_replies, min_hits: int = 2, window: int = 4) -> str |
     # Re-slice the ORIGINAL text to best_len words, preserving casing.
     original = tail[best_idx].strip()
     return " ".join(original.split()[:best_len]).rstrip(".,!?;:")
+
+
+# ---------------------------------------------------------------------------
+# Banned-phrase recurrence (2026-08-14)
+# ---------------------------------------------------------------------------
+#
+# repeated_opener() catches tics the model INVENTS -- it clusters on whatever
+# the model happens to be over-using. It cannot catch a specific bit we have
+# already decided is banned, for two reasons: the bit lives in the CLOSING
+# clause ("...and for the record, I am not little"), which _opener_words() cuts
+# away at the first sentence end, and one occurrence is already too many, so
+# there is nothing to cluster.
+#
+# The "I am not little" bit is the case that motivated this. It has been banned
+# in config.PERSONA since 2026-06-11 and ran anyway -- through Open Sauce, and
+# twice in six minutes on 2026-08-14 (00:29:11, 00:35:14). Dan, live: "I removed
+# it [from the identity] but you still complain about it and that is fascinating
+# to me."
+#
+# Two things were keeping it alive, and both are fixed together:
+#   1. The BAN ITSELF QUOTED THE BIT. config.PERSONA carried the literal strings
+#      "little Timmy" and "I am not little", so the exact phrase sat in front of
+#      the model every single turn. A prohibition that names its target primes
+#      it. That rule is now written positively, with no target string.
+#   2. POSITION. prompt_builder.py:327 already records the finding that ~26
+#      turns of the model's own output outweigh one static system[0] rule --
+#      which is why [AVOID] was moved to the per-turn tail. The ban was sitting
+#      in the position that had ALREADY been proven not to work for this exact
+#      phrase.
+#
+# So: detect the banned phrase in the model's own recent output and name it in
+# the recency-privileged tail, the same mechanism and the same position that
+# works for self-invented tics.
+BANNED_PHRASES = (
+    "i am not little",
+    "i'm not little",
+    "im not little",
+)
+
+
+def banned_phrase_used(recent_replies, phrases=BANNED_PHRASES, window: int = 4) -> str | None:
+    """The banned phrase the assistant has just used, or None.
+
+    Unlike repeated_opener() this fires on a SINGLE occurrence -- the phrase is
+    banned outright, so there is no repetition threshold to clear. Matches
+    anywhere in the reply, not just the opener, because the bit is a closing
+    tag. Returns the phrase as matched in the ORIGINAL casing so the tail can
+    quote it back verbatim, which is much harder to ignore than a general plea.
+    """
+    tail = [r for r in (recent_replies or []) if (r or "").strip()][-window:]
+    for reply in reversed(tail):
+        low = reply.casefold()
+        for phrase in phrases:
+            i = low.find(phrase)
+            if i != -1:
+                return reply[i:i + len(phrase)]
+    return None

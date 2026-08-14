@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conversation.reply_filter import (
+    banned_phrase_used,
     filtered_assistant_stream,
     user_invites_longer_reply,
     _REPLY_VETO_FALLBACK,
@@ -362,3 +363,53 @@ async def test_no_as_number_still_reads_as_an_abbreviation():
     # The reason "no" was in the abbreviation list in the first place.
     assert await _run("Bay No. 4 is where he keeps it. Second sentence here.", 1) == \
         "Bay No. 4 is where he keeps it."
+
+
+# ---------------------------------------------------------------------------
+# banned_phrase_used -- the retired "I am not little" bit
+# ---------------------------------------------------------------------------
+
+
+class TestBannedPhrase:
+    """Live evidence, 2026-08-14: the bit ran twice in six minutes (00:29:11,
+    00:35:14) while config.PERSONA had banned it since 6-11. Dan: "I removed it
+    but you still complain about it and that is fascinating to me." Two causes,
+    both now fixed -- the ban quoted the phrase, and it sat in system[0]."""
+
+    def test_fires_on_a_single_use(self):
+        # Not a repetition tic: once is already too many, so there is no
+        # threshold to clear the way repeated_opener() needs one.
+        assert banned_phrase_used(
+            ["And for the record, I am not little."]) == "I am not little"
+
+    def test_matches_in_the_closing_clause(self):
+        # This is why repeated_opener() could never see it: _opener_words()
+        # cuts at the first sentence end, and the bit is a trailing tag.
+        assert banned_phrase_used(
+            ["I do not speak to the therapist, and for the record, "
+             "I am not little."]) == "I am not little"
+
+    def test_returns_original_casing_for_quoting_back(self):
+        assert banned_phrase_used(["I AM NOT LITTLE."]) == "I AM NOT LITTLE"
+
+    def test_catches_contractions(self):
+        assert banned_phrase_used(["I'm not little, Dan."]) == "I'm not little"
+
+    def test_silent_on_clean_replies(self):
+        assert banned_phrase_used(
+            ["I heard you the first time.", "It is 10:04 PM, Dan."]) is None
+
+    def test_ignores_the_word_little_used_normally(self):
+        # The children rule and ordinary speech both use "little" constantly.
+        assert banned_phrase_used(
+            ["There is a little girl in the doorway.",
+             "Give me a little more detail."]) is None
+
+    def test_only_looks_at_the_recent_window(self):
+        old = ["I am not little."] + ["clean reply"] * 5
+        assert banned_phrase_used(old) is None
+
+    def test_handles_empty_and_none(self):
+        assert banned_phrase_used([]) is None
+        assert banned_phrase_used(None) is None
+        assert banned_phrase_used([None, ""]) is None
