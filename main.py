@@ -1408,6 +1408,7 @@ class Orchestrator:
             speaker_db_id=speaker_db_id,
             spk_ms=spk_ms,
             voice_confidence=speaker_result.confidence,
+            voice_margin=speaker_result.margin,
             recall_block=outcome.recall_block,
             stt_words=stt_words,
             resolved_query=resolved_query,
@@ -1604,6 +1605,7 @@ class Orchestrator:
                                   speaker_db_id: int | None = 1,
                                   spk_ms: int = 0,
                                   voice_confidence: float | None = None,
+                                  voice_margin: float | None = None,
                                   recall_block: str | None = None,
                                   stt_words: list | None = None,
                                   resolved_query: str | None = None,
@@ -1778,10 +1780,24 @@ class Orchestrator:
                 voice_is_unknown=speaker_name.startswith("unknown_"),
                 face=face_obs,
                 voice_confidence=voice_confidence,
+                voice_margin=voice_margin,
                 face_conf_threshold=config.FACE_CONF_THRESHOLD,
                 streak_high_conf=config.FACE_STREAK_HIGH_CONF,
                 head_steady_min_ms=config.HEAD_STEADY_MS,
             )
+            # Observability: the 22:32 misID was undiagnosable after the fact
+            # because none of the fusion inputs were logged -- only the voice's
+            # own distances were. Log the decision whenever the veto could have
+            # mattered (thin voice, or the veto actually firing).
+            if verdict.gates.get("voice_thin_margin") or verdict.gates.get("thin_veto_applied"):
+                log.info("[FUSION] thin voice margin=%s voice=%r face_hint=%r "
+                         "-> %s (source=%s, gates: present=%s single=%s above_thr=%s)",
+                         "n/a" if voice_margin is None else f"{voice_margin:.3f}",
+                         speaker_name, verdict.face_hint_name, verdict.final_name,
+                         verdict.resolution_source,
+                         verdict.gates.get("face_present"),
+                         verdict.gates.get("single_face"),
+                         verdict.gates.get("face_above_threshold"))
             # Track face_hint streak for auto voice-enrollment.
             # Use pre-override speaker_name (the unknown_N temp_id).
             streak_temp_id = speaker_name if speaker_name.startswith("unknown_") else None

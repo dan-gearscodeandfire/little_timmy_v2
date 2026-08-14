@@ -134,6 +134,12 @@ def band_of(
 _PARTY_REGIMES = frozenset({"party", "expo"})
 
 
+# A voice win narrower than this is a coin flip, not a match. Calibrated from
+# the 2026-08-13 session: Dan's 73 genuine accepts ran margins 0.22-0.26; the
+# single false accept ran 0.094. 0.15 sits in the empty band between them.
+THIN_VOICE_MARGIN = 0.15
+
+
 def fuse_identity(
     *,
     voice_name: str,
@@ -149,6 +155,10 @@ def fuse_identity(
     prior_identity: Optional[str] = None,
     prior_identity_fresh: bool = False,
     regime: str = "normal",
+    # --- thin-margin face veto (2026-08-13), default OFF ----------------------
+    voice_margin: Optional[float] = None,
+    thin_margin_veto_enabled: bool = False,
+    thin_margin_threshold: float = THIN_VOICE_MARGIN,
 ) -> FusionVerdict:
     """Resolve speaker identity given voice result and optional face observation.
 
@@ -174,6 +184,25 @@ def fuse_identity(
     Both are disabled in PARTY/EXPO regime (a wrong bind beats an abstain there),
     and neither is ever allowed to train a voiceprint (auto-enroll gates on
     face_hint_source=='face').
+
+    THIN-MARGIN FACE VETO (2026-08-13, default OFF). "Voice always wins for
+    confident matches" treats a 0.548 accept against a 0.55 threshold exactly
+    like a 0.367 one, and only consults the face when the voice says `unknown`.
+    Live cost 22:32 that night: `best=nathan dist=0.5481 2nd=0.6418
+    margin=0.0937` was accepted outright and Timmy called Dan "Nathan", while
+    the face had confirmed `dan` 628 times and was in frame. When the voice wins
+    by less than `thin_margin_threshold` and a recognised sole face disagrees,
+    the face takes the turn.
+
+    The veto deliberately uses a WEAKER gate set than promotion above --
+    face_present + single_face + face_above_threshold, without the behavior/
+    tracking/head-steady chain. Those gates exist to protect *naming an unknown
+    from nothing*, which is an attribution made on no other evidence. Choosing
+    between two competing names is a different, cheaper decision, and the strict
+    chain is unavailable exactly when it is needed most: at 22:32 the frontality
+    scores were 0.04-0.12 against a 0.35 gate because Dan was looking down at
+    the workbench. A veto that only fires when he is staring into the lens is a
+    veto that never fires.
     """
     voice_name = canonicalize(voice_name) or voice_name
     face_hint_name = None
@@ -189,6 +218,8 @@ def fuse_identity(
         "tracking_mode": False,
         "face_visible_flag": False,
         "head_steady": False,
+        "voice_thin_margin": False,
+        "thin_veto_applied": False,
     }
 
     top_band = "low"
@@ -240,9 +271,35 @@ def fuse_identity(
         and gates["head_steady"]
     )
 
+    # Thin-margin veto: an accepted-but-indecisive voice loses to a recognised
+    # sole face that names someone else. Never fires when the voice already said
+    # `unknown` (that is the promotion path above), never invents a name (the
+    # face must be recognised), and never fires in PARTY/EXPO, where faces are
+    # the less trustworthy modality.
+    voice_thin = (
+        thin_margin_veto_enabled
+        and not voice_is_unknown
+        and voice_margin is not None
+        and voice_margin < thin_margin_threshold
+        and str(regime or "normal").strip().lower() not in _PARTY_REGIMES
+    )
+    gates["voice_thin_margin"] = bool(voice_thin)
+    thin_veto = (
+        voice_thin
+        and gates["face_present"]
+        and gates["single_face"]
+        and gates["face_above_threshold"]
+        and face_hint_name is not None
+        and face_hint_name != voice_name
+    )
+    gates["thin_veto_applied"] = bool(thin_veto)
+
     if promote and face_hint_name is not None:
         final_name = face_hint_name
         resolution_source = "face_hint"
+    elif thin_veto:
+        final_name = face_hint_name
+        resolution_source = "face_veto"
     else:
         final_name = voice_name
         resolution_source = "voice"
@@ -330,6 +387,7 @@ class IdentityFusion:
         voice_is_unknown: bool,
         face: Optional[FaceObservation],
         voice_confidence: Optional[float] = None,
+        voice_margin: Optional[float] = None,
         face_conf_threshold: float = FACE_ATTRIBUTION_CONF,
         streak_high_conf: float = FACE_STREAK_HIGH_CONF,
         head_steady_min_ms: int = 2000,
@@ -346,6 +404,11 @@ class IdentityFusion:
         except (TypeError, ValueError):
             window = 2.5
         regime = self._knobs("identity_regime") or "normal"
+        thin_veto = bool(self._knobs("identity_thin_margin_veto_enabled"))
+        try:
+            thin_thresh = float(self._knobs("identity_thin_margin_threshold"))
+        except (TypeError, ValueError):
+            thin_thresh = THIN_VOICE_MARGIN
 
         prior_fresh = (
             self._last_identity is not None
@@ -365,6 +428,9 @@ class IdentityFusion:
             prior_identity=self._last_identity,
             prior_identity_fresh=prior_fresh,
             regime=regime,
+            voice_margin=voice_margin,
+            thin_margin_veto_enabled=thin_veto,
+            thin_margin_threshold=thin_thresh,
         )
 
         # Refresh memory ONLY from a real face observation — never from a

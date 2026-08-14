@@ -254,6 +254,14 @@ class SpeakerResult:
     is_new: bool               # first time seeing this voice
     should_ask_name: bool      # True when unknown becomes stable
     confidence: float          # 1 - cosine_distance to best match
+    # How decisively the winner beat the runner-up (2nd_best_dist - best_dist),
+    # or None when there was no runner-up to beat. Distance alone cannot tell a
+    # decisive match from a coin flip: on 2026-08-13 22:32 `nathan` was accepted
+    # at dist=0.548 against a 0.55 threshold with a margin of 0.094, while Dan's
+    # genuine matches all evening ran margins of 0.22-0.26. Threaded out to
+    # identity fusion so a THIN win can be overruled by a face -- see
+    # presence.identity.fuse_identity.
+    margin: float | None = None
 
 
 class SpeakerIdentifier:
@@ -534,8 +542,11 @@ class SpeakerIdentifier:
                 best_known.name, deque(maxlen=8)).append(emb)
             if best_known_dist < TIGHT_DRIFT_THRESHOLD:
                 self._record_for_drift(best_known.name, emb)
-            log.info("Speaker identified: %s (dist=%.3f, %dms)",
-                     best_known.name, best_known_dist, extract_ms)
+            _margin = (second_best_known_dist - best_known_dist
+                       if second_best_known_dist != float("inf") else None)
+            log.info("Speaker identified: %s (dist=%.3f margin=%s, %dms)",
+                     best_known.name, best_known_dist,
+                     "n/a" if _margin is None else f"{_margin:.3f}", extract_ms)
             return SpeakerResult(
                 speaker_id=best_known.speaker_id,
                 name=best_known.name,
@@ -543,6 +554,7 @@ class SpeakerIdentifier:
                 is_new=False,
                 should_ask_name=False,
                 confidence=1 - best_known_dist,
+                margin=_margin,
             )
 
         # Short-audio continuity fallback. Caps/window are live runtime toggles

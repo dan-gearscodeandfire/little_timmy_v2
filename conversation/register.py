@@ -38,9 +38,32 @@ WARM = "WARM"
 _FACTUAL_RE = re.compile(
     r"^\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
     r"(?:what(?:'s| is| are| was| were)?|who(?:'s| is| are)?|when(?:'s| is)?|"
-    r"where(?:'s| is| are)?|which|how (?:many|much|old|tall|long|far)|"
+    r"where(?:'s| is| are)?|which|why|how (?:many|much|old|tall|long|far)|"
     r"do you (?:know|remember|recall)|can you (?:tell|remember)|"
     r"tell me (?:what|who|when|where|how many))\b",
+    re.IGNORECASE,
+)
+
+# Polar (yes/no) questions -- "Is Alien Earth in your training data?", "Did
+# you already move the servos?". _FACTUAL_RE is a wh-word list, so every
+# aux-fronted question fell through to BANTER and bought the jab sentence.
+# Measured 8-13: "Is Aliens Earth in your training data?" only reached STRAIGHT
+# by accident, because the same utterance opened with "No, no it's not" and
+# tripped _CORRECTION_RE. Kept separate from _FACTUAL_RE because this branch
+# terminates on "?" rather than a word boundary -- folding it into that group's
+# trailing \b makes it match nothing at all.
+#
+# The 4-token floor after the auxiliary is load-bearing, not a heuristic hedge:
+# tests/test_register.py pins short fronted polars to BANTER as social phatics
+# ("Can you hear me?", "Is that so?", "Was it you?", "Are you serious?"), and
+# without the floor this branch collapses all of them to a one-sentence answer.
+# Substantive polars clear it comfortably -- "Is Alien Earth in your training
+# data?" (6), "Did you already move the servos?" (5), "Have you ever met X?" (4)
+# -- while every phatic in that test is 2-3.
+_POLAR_Q_RE = re.compile(
+    r"^\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
+    r"(?:is|are|was|were|do|does|did|can|could|will|would|should|have|has|am)\s+"
+    r"(?:\S+\s+){3,}[^?]*\?",
     re.IGNORECASE,
 )
 
@@ -76,7 +99,9 @@ _TAG_QUESTION_RE = re.compile(
 # veto "tell me a joke", which is the same frame asking for the opposite thing.
 _RECALL_ASK_RE = re.compile(
     r"^\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
-    r"(?:tell me about|remind me|refresh my memory|"
+    r"(?:tell me (?:something|more|anything|what you know) about|tell me about|"
+    r"what do you know about|do you know anything about|"
+    r"remind me|refresh my memory|"
     r"walk me through|fill me in on|catch me up on)\b",
     re.IGNORECASE,
 )
@@ -84,9 +109,38 @@ _RECALL_ASK_RE = re.compile(
 # Explicitly invites opinion / performance / play. A right answer does not
 # exist, so wit is the point rather than an evasion of the point.
 _OPINION_RE = re.compile(
-    r"\b(?:what do you think|how do you feel|do you like|do you enjoy|"
+    r"\b(?:what do you think|how do you feel|do you like|do you enjoy|do you want|"
     r"your opinion|favorite|favourite|would you rather|imagine|pretend|"
     r"tell me a (?:joke|story|poem)|sing|rate|guess|make fun|roast)\b",
+    re.IGNORECASE,
+)
+
+# Polar questions that are not questions. _POLAR_Q_RE has to admit proper nouns
+# ("Is Alien Earth in your training data?"), which also admits set-phrase
+# questions that want no answer. Vetoed here rather than by narrowing that
+# branch, because narrowing is what made it miss the real question. Exasperation
+# ("are you kidding me") is deliberately NOT in this list -- see the next block.
+_RHETORICAL_RE = re.compile(
+    r"\b(?:do you mind|can you believe|what did you expect|am i right)\b",
+    re.IGNORECASE,
+)
+
+# Exasperation. Reads as a rhetorical question and is anything but: from Dan to
+# Timmy, "Are you kidding me right now?" is a complaint about the CODEBASE --
+# Timmy has just done something wrong and Dan is naming it. Dan's correction,
+# 2026-08-13, after this classifier's first draft filed it under the rhetorical
+# veto: "it's a strong 'what's wrong with you' indicator, in re: LT's codebase."
+#
+# It therefore belongs with _CORRECTION_RE, not with "tell me a joke": the reply
+# that must NOT follow it is a jab, which is exactly what the 2-sentence BANTER
+# budget buys. Note this deliberately MOVES a boundary that tests/test_register.py
+# pinned ("Are you serious?" -> BANTER); that assertion was written from the
+# tag-question angle and is updated with this rationale.
+_EXASPERATION_RE = re.compile(
+    r"\b(?:are you (?:kidding|serious|for real)|you kidding me|"
+    r"what(?:'s| is) wrong with you|do you even (?:hear|listen)|"
+    r"are you (?:happy|proud) now|what are you (?:doing|talking about)|"
+    r"seriously\?|you'?ve got to be kidding)",
     re.IGNORECASE,
 )
 
@@ -104,7 +158,22 @@ _CORRECTION_RE = re.compile(
     # my silence." -- wrong AND a jab, on a turn where the user was correcting
     # him. Being told you are repeating yourself is a correction.
     r"you (?:said|already said)|said that already|already told|"
-    r"repeating yourself|same thing again|you keep saying)\b",
+    r"repeating yourself|same thing again|you keep saying|"
+    # Decorum / content-safety corrections (added after 8-13 live audit).
+    # "It sounded slightly sexualized and this needs to be an all ages thing."
+    # classified BANTER, so the reply spent its second sentence on "maybe you
+    # should be the one screening the chat" -- arguing with a stated content
+    # constraint. On a livestream that is the clip that gets screenshotted.
+    r"that was (?:a little|a bit|kind of|too|way too|sort of)|"
+    r"too far|went there|uncalled for|inappropriate|not appropriate|"
+    r"sexualiz|racy|keep it (?:clean|pg|family)|all[- ]ages|"
+    r"watch (?:your|the) (?:language|mouth)|tone it down|"
+    # Clarification requests. Being asked to restate is not an invitation to
+    # refuse: "I don't completely follow" drew "I don't have the patience to
+    # repeat myself for the half-brained."
+    r"i don'?t (?:completely |quite |really )?follow|"
+    r"say (?:that|it) again|repeat that|come again|restate|"
+    r"i didn'?t (?:catch|get) that|what do you mean)\b",
     re.IGNORECASE,
 )
 
@@ -117,6 +186,26 @@ _CORRECTION_RE = re.compile(
 _CHILD_RE = re.compile(
     r"\b(?:child|children|kid|kids|little (?:girl|boy)|young (?:girl|boy)|"
     r"toddler|boy|girl)\b",
+    re.IGNORECASE,
+)
+
+
+# The user is challenging something Timmy JUST said. Structurally the
+# highest-stakes turn type there is: the answer is verifiable from his own hot
+# history one turn back, so a jab here is not edge, it is a denial of the
+# record. Live cost 8-13 22:33: "Why the hell did you just call me Nathan?"
+# classified BANTER -> 2-sentence budget -> "I didn't call you Nathan, Dan.
+# You're just projecting your own confusion onto me." Both sentences false.
+_OWN_TURN_CHALLENGE_RE = re.compile(
+    r"\b(?:"
+    r"why did you (?:just )?(?:call|say|do|tell|ask)|"
+    r"what did you (?:just )?(?:call|say)|"
+    r"did you just (?:call|say)|"
+    r"you just (?:called|said)|"
+    r"(?:why|what) the (?:hell|heck|fuck) did you|"
+    r"you (?:did|do) so|you did too|"
+    r"that'?s not what (?:i|you) said"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -139,6 +228,14 @@ def classify(user_text: str,
     """
     text = user_text or ""
 
+    # Challenging what Timmy JUST said outranks everything, including the
+    # child/stranger WARM guards -- there is no register in which denying the
+    # record is the right move, and STRAIGHT is not unkind (one plain sentence,
+    # dry delivery is fine). A child who says "why did you call me that?"
+    # deserves the true answer as much as Dan does.
+    if _OWN_TURN_CHALLENGE_RE.search(text):
+        return STRAIGHT
+
     if vision_description and _CHILD_RE.search(vision_description):
         return WARM
     # A stranger's opening turn: they have not earned the edge yet and it reads
@@ -146,14 +243,17 @@ def classify(user_text: str,
     if speaker_is_unknown and turns_with_speaker <= 1:
         return WARM
 
-    if _CORRECTION_RE.search(text):
+    if _CORRECTION_RE.search(text) or _EXASPERATION_RE.search(text):
         return STRAIGHT
     # All three "asks for a real answer" shapes share ONE opinion veto, so
     # "tell me a joke" and "what's your favorite album?" still land in BANTER.
     asks_for_an_answer = (_FACTUAL_RE.search(text)
+                          or _POLAR_Q_RE.search(text)
                           or _TAG_QUESTION_RE.search(text)
                           or _RECALL_ASK_RE.search(text))
-    if asks_for_an_answer and not _OPINION_RE.search(text):
+    if (asks_for_an_answer
+            and not _OPINION_RE.search(text)
+            and not _RHETORICAL_RE.search(text)):
         return STRAIGHT
 
     return BANTER

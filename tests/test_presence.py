@@ -94,6 +94,131 @@ class TestFuseIdentity:
         assert v.resolution_source == "voice"
         assert v.face_hint_name == "sky"
 
+    # --- thin-margin face veto (2026-08-13) ---------------------------------
+    #
+    # Replays the live failure: 22:32:58, `best=nathan dist=0.5481 2nd=0.6418
+    # margin=0.0937 threshold=0.55` was accepted outright and Timmy said "I said
+    # to eat your lunch, Nathan" to Dan, whose face had been confirmed 628 times
+    # that session and was in frame. Voice-always-wins had no band between
+    # "confident" and "unknown".
+
+    def test_thin_voice_margin_loses_to_a_recognised_sole_face(self):
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.91)], _good_behavior(),
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "dan"
+        assert v.resolution_source == "face_veto"
+        assert v.gates["thin_veto_applied"] is True
+
+    def test_veto_fires_without_the_tracking_and_head_steady_chain(self):
+        """The strict promotion gates are unavailable exactly when the veto is
+        needed: at 22:32 frontality ran 0.04-0.12 against a 0.35 gate because
+        Dan was looking down at the bench. Choosing between two names is a
+        cheaper decision than naming an unknown from nothing, so the veto
+        deliberately does not require behavior/tracking/head-steady."""
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.91)], behavior=None,
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "dan"
+        assert v.resolution_source == "face_veto"
+
+    def test_decisive_voice_margin_still_beats_the_face(self):
+        """Dan's 73 genuine accepts that session ran margins 0.22-0.26. A
+        decisive voice must keep winning, or the veto becomes a face override."""
+        v = fuse_identity(
+            voice_name="dan",
+            voice_is_unknown=False,
+            voice_margin=0.2572,
+            face=_face_obs([_pred("Sky", 0.95)], _good_behavior(),
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "dan"
+        assert v.resolution_source == "voice"
+        assert v.gates["voice_thin_margin"] is False
+
+    def test_veto_is_off_by_default(self):
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.91)], _good_behavior(),
+                           detected_face_count=1),
+        )
+        assert v.final_name == "nathan"
+        assert v.resolution_source == "voice"
+
+    def test_veto_needs_a_sole_face(self):
+        """Two faces in frame is the ambiguity contract: abstain, don't guess."""
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.91), _pred("Erin", 0.88)],
+                           _good_behavior(), detected_face_count=2),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "nathan"
+
+    def test_veto_never_invents_a_name_from_an_unrecognised_face(self):
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([], _good_behavior(), detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "nathan"
+
+    def test_veto_is_disabled_in_party_regime(self):
+        """At a party the face is the LESS trustworthy modality."""
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.91)], _good_behavior(),
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+            regime="PARTY",
+        )
+        assert v.final_name == "nathan"
+
+    def test_veto_never_makes_a_turn_voiceprint_eligible(self):
+        """A vetoed turn must never train a voiceprint -- that is the
+        "calls everyone Dan" corruption vector."""
+        v = fuse_identity(
+            voice_name="nathan",
+            voice_is_unknown=False,
+            voice_margin=0.0937,
+            face=_face_obs([_pred("Dan", 0.99, )], _good_behavior(),
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.resolution_source == "face_veto"
+        assert v.streak_eligible is False
+
+    def test_agreeing_face_is_not_a_veto(self):
+        v = fuse_identity(
+            voice_name="dan",
+            voice_is_unknown=False,
+            voice_margin=0.05,
+            face=_face_obs([_pred("Dan", 0.91)], _good_behavior(),
+                           detected_face_count=1),
+            thin_margin_veto_enabled=True,
+        )
+        assert v.final_name == "dan"
+        assert v.gates["thin_veto_applied"] is False
+
     def test_voice_unknown_plus_sole_steady_face_promotes(self):
         v = fuse_identity(
             voice_name="unknown_3",

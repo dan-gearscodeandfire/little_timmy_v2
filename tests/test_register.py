@@ -201,10 +201,89 @@ def test_social_turns_stay_banter(text):
     # tests/test_conversation_turn.py before it shipped.
     "how are you?",
     "How are you?",
-    "Are you serious?",
+    # "Are you serious?" was pinned here too, until Dan's 8-13 correction moved
+    # it: see test_exasperation_is_a_correction_not_banter below. The tag-rule
+    # property this case was really guarding (a fronted question must not parse
+    # as <clause>+<tag>) is still covered by the remaining four.
     "Can you hear me?",
     "Is that so?",
     "Was it you?",
 ])
 def test_fronted_questions_are_not_tag_questions(text):
     assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # Dan's correction, 2026-08-13, on the first draft of this classifier, which
+    # filed these under a rhetorical-question veto next to "tell me a joke":
+    # "'Are you kidding me right now?' is not banter. It's a strong 'what's
+    # wrong with you' indicator, in re: LT's codebase."
+    #
+    # That is the whole point -- from Dan to Timmy these are COMPLAINTS: Timmy
+    # has just malfunctioned and Dan is naming it. BANTER grants the 2-sentence
+    # budget, and the second sentence is a jab, which is the single worst reply
+    # to a bug report. STRAIGHT's one-sentence budget removes the beat it lives
+    # in. Live precedent, 22:33: "Why the hell did you just call me Nathan?"
+    # classified BANTER and drew "I didn't call you Nathan, Dan. You're just
+    # projecting your own confusion onto me." -- both sentences false.
+    "Are you serious?",
+    "Are you kidding me right now?",
+    "What's wrong with you?",
+    "Do you even hear yourself?",
+    "What are you doing?",
+    "You've got to be kidding.",
+])
+def test_exasperation_is_a_correction_not_banter(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # Challenging what Timmy JUST said -- verifiable one turn back in his own
+    # hot history, so a jab here denies the record rather than landing an edge.
+    "Why the hell did you just call me Nathan?",
+    "Why did you say that?",
+    "What did you just call me?",
+    "Did you just say Nathan?",
+    "You just said the opposite.",
+])
+def test_own_turn_challenge_is_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # Substantive polar (yes/no) questions. _FACTUAL_RE is a wh-word list, so
+    # every one of these fell to BANTER and bought the jab sentence. Live cost
+    # 22:40: "Is Aliens Earth in your training data?" -> "Yes, Dan." -> "I don't
+    # know it, Dan. Stop fishing for compliments about my knowledge base."
+    "Is Alien Earth in your training data?",
+    "Did you already move the servos?",
+    "Have you ever met Erin?",
+    "Can you actually see the workbench right now?",
+])
+def test_substantive_polar_questions_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # Decorum / content-safety corrections and clarification requests. Both
+    # drew refusals on 8-13: "maybe you should be the one screening the chat"
+    # and "I don't have the patience to repeat myself for the half-brained".
+    "That was a little racy, dude.",
+    "It sounded slightly sexualized and this needs to be an all ages thing.",
+    "Keep it clean, there are kids watching.",
+    "I said I don't completely follow.",
+    "Say that again.",
+])
+def test_decorum_and_clarification_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # Imperative recall in the shapes people actually use. _RECALL_ASK_RE only
+    # had "tell me about", so "tell me something about X" fell to BANTER.
+    "Tell me something about the Voyager probe.",
+    "Tell me more about that party.",
+    "What do you know about the Voyager probe?",
+])
+def test_recall_asks_are_straight(text):
+    assert classify(text) == STRAIGHT

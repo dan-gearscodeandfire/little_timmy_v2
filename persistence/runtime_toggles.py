@@ -247,6 +247,13 @@ _DEFAULTS: dict = {
     #   regime: "party" short-circuits BOTH new blocks to today's exact behavior
     #     (at a party a wrong bind is worse than an abstain).
     "identity_regime": "normal",
+    #   thin-margin face veto (2026-08-13): an ACCEPTED voice that beat the
+    #     runner-up by less than `identity_thin_margin_threshold` loses the turn
+    #     to a recognised sole face that names someone else. Fixes the 22:32
+    #     "I said to eat your lunch, Nathan" (accepted at margin 0.094 while the
+    #     face had confirmed dan 628x). Rollback = set False; no restart needed.
+    "identity_thin_margin_veto_enabled": False,
+    "identity_thin_margin_threshold": 0.15,
     # --- Short-audio speaker-continuity hardening (2026-06-12, party-prep) ----
     # Live-tunable caps for speaker/identifier.py's short-audio continuity
     # fallback (stamps a brief, non-confident utterance as whoever JUST spoke).
