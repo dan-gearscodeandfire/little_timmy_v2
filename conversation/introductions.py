@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from persistence import runtime_toggles
@@ -60,9 +61,48 @@ class Introductions:
         self._face_sampler = face_sampler
         self._pending_capture: str | None = None          # temp_id awaiting a name
         self._pending_confirm: dict | None = None         # {"temp_id", "name"}
+        self._armed_at: float = 0.0                       # monotonic, 0 == nothing armed
+
+    # A pending name exchange EXPIRES (2026-08-13). Until then this state had no
+    # timestamp at all: it cleared only when the same unknown_* speaker talked
+    # again, burned three attempts, or drop_pending() was called, so wall-clock
+    # silence never cleared it. Live cost: a probe answered "My name is Marcus"
+    # at 15:44:10, walked away, and 7 MINUTES 40 SECONDS later an unrelated
+    # conversation opened "Hey Timmy. Been a while." and got "Are you Marcus or
+    # not?" -- then burned its remaining re-asks over the next three turns, all
+    # of which bypassed register, retrieval and reply_filter as canned dialog.
+    #
+    # The 2026-07-05 review found this same root cause ("Introductions has no
+    # expiry of its own") but bounded only the SYMPTOM it cared about, in
+    # main._dialog_owns_turn, so the latch itself stayed immortal. Fixing it
+    # here means every consumer gets the expiry, not just the proactive gate.
+    PENDING_TTL_SEC = 120.0   # a name-ask nobody answered in two minutes belongs
+                              # to a conversation that is over. Matches
+                              # conversation_idle_gate_seconds.
+
+    def _expire_if_stale(self) -> None:
+        """Drop a pending name exchange that has gone unanswered past the TTL.
+
+        Self-correcting: with nothing pending the stamp is meaningless, so it is
+        reset here rather than at each of handle()'s many clear-sites -- one of
+        which would inevitably be missed."""
+        if not (self._pending_capture or self._pending_confirm):
+            self._armed_at = 0.0
+            return
+        if self._armed_at and (time.monotonic() - self._armed_at) > self.PENDING_TTL_SEC:
+            what = "confirm" if self._pending_confirm else "capture"
+            log.info("[INTRO] pending name %s went unanswered for >%.0fs -> expired",
+                     what, self.PENDING_TTL_SEC)
+            self._pending_capture = None
+            self._pending_confirm = None
+            self._armed_at = 0.0
+
+    def _arm(self) -> None:
+        self._armed_at = time.monotonic()
 
     @property
     def awaiting(self) -> bool:
+        self._expire_if_stale()
         return self._pending_capture is not None or self._pending_confirm is not None
 
     def drop_pending(self) -> None:
@@ -75,21 +115,30 @@ class Introductions:
                      "pending -> silent drop")
             self._pending_capture = None
             self._pending_confirm = None
+            self._armed_at = 0.0
 
     async def ask_name(self, unknown_info) -> None:
         """Ask an unknown speaker for their name, then await it next utterance."""
-        known_names = [ks.name for ks in self._spk._known_speakers]
-        known_str = ", ".join(n.title() for n in known_names if n != "timmy")
+        # NO ROSTER (2026-08-13). This used to interpolate EVERY name ever
+        # enrolled and assert they were all present -- "I know {43 names} is
+        # here". Both halves were wrong: the list is the enrolment table, not
+        # the room, so the presence claim was false; and it grows without bound,
+        # so the synthetic prompt eventually swamps the instruction. Observed
+        # live: Timmy spoke all 43 names as his reply, ~54 seconds of audio,
+        # which then swallowed the next two turns through the TTS mic gate.
+        # The ask does not need a roster to do its job.
         last_quote = unknown_info.last_text[:80] if unknown_info.last_text else "something"
         prompt_text = (
-            f"A new person has joined the conversation. I know {known_str} is here, "
-            f"but someone new just said: \"{last_quote}\". "
-            f"Ask them for their name in a friendly, in-character way."
+            f"A new person has joined the conversation. Someone whose voice you "
+            f"do not recognise just said: \"{last_quote}\". "
+            f"Ask them for their name in a friendly, in-character way. "
+            f"Do not list or recite any names."
         )
         result = await self._turn.say(prompt_text)
         log.info("[TIMMY] %s (name solicitation)", result.text)
         # Next utterance from this unknown triggers name capture.
         self._pending_capture = unknown_info.temp_id
+        self._arm()
 
     async def offer_confirm(self, temp_id: str, name: str) -> None:
         """Arm the confirm flow from a PASSIVE self-intro (2026-07-06): an
@@ -99,6 +148,7 @@ class Introductions:
         assign_name, and (toggle-gated) the co-sampled face commit."""
         self._pending_capture = None
         self._pending_confirm = {"temp_id": temp_id, "name": name}
+        self._arm()
         await self._say_confirm(name)
 
     async def handle(self, user_text: str, speaker_name: str) -> IntroOutcome:
@@ -215,6 +265,7 @@ class Introductions:
             name = _extract_name(user_text)
             if name:
                 # Confirm before committing.
+                self._arm()
                 self._pending_confirm = {
                     "temp_id": self._pending_capture,
                     "name": name,
