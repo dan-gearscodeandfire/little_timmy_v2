@@ -434,6 +434,28 @@ BANNED_PHRASES = (
     "im not little",
 )
 
+# The same bit wearing a different coat. 2026-08-14 00:44, ~2 minutes after the
+# "I am not little" fix went live: Dan said "Mike, Mike, check" -- a MIC check
+# -- STT heard the proper noun "Mike", and Timmy opened with "First of all, I
+# am Timmy, not Mike." Dan: "I didn't even call you Mike. You misheard that and
+# you just assumed I somehow forgot your name."
+#
+# Two things this proves. The retired bit is not the STRING "I am not little",
+# it is the BEHAVIOUR of correcting how he was addressed -- so a literal phrase
+# list was always going to be whack-a-mole. And the correction was built on a
+# word the pipeline had already flagged as unreliable: [QUERY-VCONF] logged
+# `low-confidence content word heard as 'Mike,' (<0.55) -> confirm-input hint`
+# on that very turn, and the reply asserted over it. The detector was right and
+# the model overrode it, which is the same failure mode as the system[0] ban.
+_BANNED_PATTERNS = (
+    # "I am Timmy, not Mike." / "I'm Timmy, not Mike"
+    re.compile(r"\bI(?:'m| am) Timmy,?\s+not\b", re.IGNORECASE),
+    # "My name is not X" / "My name isn't X"
+    re.compile(r"\bmy name is(?:n't| not)\b", re.IGNORECASE),
+    # "You called me X" as an opening complaint about being misnamed.
+    re.compile(r"\byou (?:just )?called me\b", re.IGNORECASE),
+)
+
 
 def banned_phrase_used(recent_replies, phrases=BANNED_PHRASES, window: int = 4) -> str | None:
     """The banned phrase the assistant has just used, or None.
@@ -451,4 +473,8 @@ def banned_phrase_used(recent_replies, phrases=BANNED_PHRASES, window: int = 4) 
             i = low.find(phrase)
             if i != -1:
                 return reply[i:i + len(phrase)]
+        for rx in _BANNED_PATTERNS:
+            m = rx.search(reply)
+            if m:
+                return m.group(0)
     return None

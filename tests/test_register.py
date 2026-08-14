@@ -287,3 +287,30 @@ def test_decorum_and_clarification_are_straight(text):
 ])
 def test_recall_asks_are_straight(text):
     assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # The question is the LAST sentence of a multi-sentence turn -- which is how
+    # real STT delivers speech. All the question patterns are ^-anchored, so
+    # before 2026-08-14 these graded BANTER and bought a jab/invention sentence.
+    # Live cost 00:44: this exact turn produced "And yes, it reminds me of the
+    # time she tried to fix the sink and flooded the kitchen" -- a story that
+    # exists in no store. Dan: "Boo! Hallucination."
+    "Timmy, Timmy, you legitimately just saw me trying to drill a hole in a "
+    "pottery pot. Does that remind you of any stories with my wife, Erin?",
+    "I was out in the shop all day. What time is it?",
+    "So I finished the bracket. Do you remember what I called it?",
+    "Long preamble that means nothing. Tell me something about the party.",
+])
+def test_question_in_the_last_sentence_is_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # De-anchoring must not drag ordinary multi-sentence chat into STRAIGHT.
+    "I finished the bracket today. It came out clean.",
+    "That was a long day. I am going to bed.",
+    "Tell me a joke. Make it a good one.",
+])
+def test_de_anchoring_leaves_ordinary_talk_in_banter(text):
+    assert classify(text) == BANTER

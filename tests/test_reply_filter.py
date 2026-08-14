@@ -413,3 +413,30 @@ class TestBannedPhrase:
         assert banned_phrase_used([]) is None
         assert banned_phrase_used(None) is None
         assert banned_phrase_used([None, ""]) is None
+
+
+class TestRetiredNameCorrection:
+    """2026-08-14 00:44, two minutes after the "I am not little" fix shipped:
+    Dan said "Mike, Mike, check" (a MIC check), STT heard the name "Mike", and
+    Timmy opened "First of all, I am Timmy, not Mike." Dan: "I didn't even call
+    you Mike. You misheard that and you just assumed I somehow forgot your
+    name." The retired bit is the BEHAVIOUR, not one string -- so the guard
+    matches patterns, not just a phrase list."""
+
+    def test_catches_the_mike_form(self):
+        assert banned_phrase_used(
+            ["First of all, I am Timmy, not Mike."]) == "I am Timmy, not"
+
+    def test_catches_my_name_is_not(self):
+        assert banned_phrase_used(["My name is not Mike, Dan."]) == "My name is not"
+
+    def test_catches_you_called_me(self):
+        assert banned_phrase_used(["You just called me Mike again."]) == "You just called me"
+
+    def test_still_catches_the_original_phrase(self):
+        assert banned_phrase_used(
+            ["And for the record, I am not little."]) == "I am not little"
+
+    def test_does_not_fire_on_ordinary_self_reference(self):
+        assert banned_phrase_used(
+            ["I am Timmy and I am busy.", "My name came up twice."]) is None

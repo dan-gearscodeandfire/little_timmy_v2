@@ -210,6 +210,28 @@ _OWN_TURN_CHALLENGE_RE = re.compile(
 )
 
 
+# Real speech does not arrive one sentence at a time. STT hands over the whole
+# turn, and the question is usually LAST: "Timmy, you legitimately just saw me
+# trying to drill a hole in a pottery pot. Does that remind you of any stories
+# with my wife, Erin?" _FACTUAL_RE / _POLAR_Q_RE / _RECALL_ASK_RE are all
+# ^-anchored, so all three looked at "Timmy, you legitimately just saw me..."
+# and saw no question -> BANTER -> the 2-sentence budget -> and the bought
+# second sentence was "And yes, it reminds me of the time she tried to fix the
+# sink and flooded the kitchen", a story that exists nowhere in any store
+# (prop_search top score 0.057). Dan, live 2026-08-14: "Boo! Hallucination."
+#
+# The 79-turn replay that validated those patterns could not surface this: it
+# measured which TURNS were reclassified, never where in a turn the question
+# sat. So: run the anchored patterns against the final sentence as well.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _last_sentence(text: str) -> str:
+    """The final sentence of a multi-sentence turn, or the text itself."""
+    parts = [p for p in _SENTENCE_SPLIT_RE.split((text or "").strip()) if p.strip()]
+    return parts[-1] if parts else (text or "")
+
+
 def classify(user_text: str,
              *,
              vision_description: str | None = None,
@@ -247,10 +269,14 @@ def classify(user_text: str,
         return STRAIGHT
     # All three "asks for a real answer" shapes share ONE opinion veto, so
     # "tell me a joke" and "what's your favorite album?" still land in BANTER.
-    asks_for_an_answer = (_FACTUAL_RE.search(text)
-                          or _POLAR_Q_RE.search(text)
-                          or _TAG_QUESTION_RE.search(text)
-                          or _RECALL_ASK_RE.search(text))
+    # Anchored patterns get two shots: the turn as spoken, and its last
+    # sentence (see _last_sentence above -- the question is usually there).
+    _tail = _last_sentence(text)
+    asks_for_an_answer = any(
+        rx.search(candidate)
+        for rx in (_FACTUAL_RE, _POLAR_Q_RE, _TAG_QUESTION_RE, _RECALL_ASK_RE)
+        for candidate in (text, _tail)
+    )
     if (asks_for_an_answer
             and not _OPINION_RE.search(text)
             and not _RHETORICAL_RE.search(text)):
