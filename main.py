@@ -22,7 +22,8 @@ from pathlib import Path
 from db import migrate
 from db.connection import get_pool, close_pool
 from audio.capture import AudioCapture
-from stt.client import transcribe
+from stt.client import transcribe, annotation_only as stt_annotation_only
+from feedback import axes as _feedback_axes
 from tts.engine import TTSEngine
 from audio import fillers as audio_fillers
 from llm.client import stream_conversation, set_reasoning_tap
@@ -936,6 +937,31 @@ class Orchestrator:
             if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
                 self.speaker_id_module.undo_last_observation(speaker_result.name)
             log.debug("Empty transcription, skipping")
+            return
+
+        # --- Singing gate (Dan 2026-08-15: "is there a way to allow me to sing
+        # that doesn't involve Timmy responding?") ---
+        # Whisper marks non-lexical audio with stage directions (*singing*, ♪,
+        # [Music]). When a turn is NOTHING BUT annotation, no human words were
+        # spoken: reply to it and Timmy is answering a song.
+        #
+        # Rolling back the speaker observation is the load-bearing half.
+        # Measured 2026-08-15 00:55-01:20, seven unknown_N were minted in half
+        # an hour and RETRO re-attribution (04dd0ec) reclaimed only three --
+        # it absorbs an orphan when a CONFIDENT match lands within 90s, and a
+        # sustained run of singing never produces one. So sung phantoms are
+        # precisely the ones that survive, and nothing else collects them.
+        # Nobody sings by accident mid-conversation, so the false-positive risk
+        # is close to zero.
+        #
+        # Deliberately narrow: partial turns ("*singing* Sorry, I'm singing.")
+        # already had the annotation stripped in transcribe() and proceed
+        # normally, because Dan is genuinely talking in them.
+        if transcription.non_speech and stt_annotation_only(user_text):
+            if speaker_result.is_new or speaker_result.name.startswith("unknown_"):
+                self.speaker_id_module.undo_last_observation(speaker_result.name)
+            log.info("[SING-GATE] non-speech turn %r -- no reply, no attribution, "
+                     "no unknown mint", user_text[:60])
             return
 
         # Eye LED: signal thinking state — eye flashes during LLM processing
@@ -2331,6 +2357,20 @@ class Orchestrator:
         try:
             await asyncio.to_thread(self._write_compliment_log, log_dir, filename, entry)
             log.info("[PERSONA] Logged compliment example: %s", filename.name)
+            # Grade the PRAISED reply on both axes before recording it.
+            # This is the path that matters most for Dan's 00:30 complaint --
+            # "the nature of the erroneous response is funny so I give you
+            # positive feedback" describes a COMPLIMENT, and a compliment row
+            # written without a substance label is indistinguishable from a
+            # verified-correct one. Grading here is what stops a funny
+            # fabrication becoming a positive example.
+            # Cheap in practice: Dan's "good one" convention resolves in a
+            # regex with no model call at all, and compliments are rare.
+            graded = await _feedback_axes.label_axes(prev_user, response, user_text)
+            if graded["substance"] == "wrong":
+                log.info("[PERSONA] praised reply graded substance=wrong "
+                         "(delivery=%s) -- NOT safe for positive tuning: %r",
+                         graded["delivery"], response[:70])
             try:
                 from feedback.storage import append_flagged
                 await asyncio.to_thread(append_flagged, "good", {
@@ -2342,6 +2382,10 @@ class Orchestrator:
                     "comment": user_text,
                     "system_prompt": ephemeral,
                     "persona_tuning_file": filename.name,
+                    "delivery": graded["delivery"],
+                    "substance": graded["substance"],
+                    "axes_source": graded["axes_source"],
+                    "safe_for_positive_tuning": _feedback_axes.safe_for_positive_tuning(graded),
                 })
             except Exception as fe:
                 log.warning("append_flagged(good) failed: %s", fe)

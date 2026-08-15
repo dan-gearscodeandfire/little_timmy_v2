@@ -1038,6 +1038,16 @@ async def manual_flag(payload: dict | None = None):
         else:
             persona_path = write_persona_tuning_negative(persona_entry)
         conversation_history = snap.get("conversation_history") or []
+        # Third and last append_flagged call site to carry the axes. A thumbs-up
+        # clicked in the UI is the same undifferentiated approval as a spoken
+        # one -- see feedback/axes.py. Graded here so all three writers
+        # (verbal critique, verbal compliment, UI button) produce rows with the
+        # same shape; a consumer that has to ask "does this row have axes?" will
+        # eventually forget to.
+        from feedback import axes as _axes
+        graded = await _axes.label_axes(
+            snap.get("user_text", ""), snap.get("assistant_response", ""),
+            reason or ("thumbs up" if kind == "good" else "thumbs down"))
         append_flagged(kind, {
             "ts": ts,
             "source": "ui_button",
@@ -1048,6 +1058,10 @@ async def manual_flag(payload: dict | None = None):
             "system_prompt": snap.get("ephemeral", ""),
             "conversation_history": conversation_history,
             "persona_tuning_file": persona_path.name,
+            "delivery": graded["delivery"],
+            "substance": graded["substance"],
+            "axes_source": graded["axes_source"],
+            "safe_for_positive_tuning": _axes.safe_for_positive_tuning(graded),
         })
         log.info("[FEEDBACK] manual %s id=%s persona=%s reason=%r",
                  kind, event_id, persona_path.name, reason[:80])

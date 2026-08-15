@@ -17,6 +17,7 @@ import time
 
 from llm.client import generate_memory
 from feedback.storage import append_event
+from feedback import axes as _axes
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +137,21 @@ _CONFIRM_PROMPT = (
 )
 
 
+# Same triage question, plus the DELIVERY x SUBSTANCE grading on a second line.
+# Built by substitution rather than duplication so the two prompts cannot drift.
+#
+# Why merge instead of adding a call: a score==1 capture ALREADY pays this
+# inference, so the axes ride along free. The verdict stays the first token of
+# the first line, and `_run` still reads it with `.split()[0]` -- so a model
+# that ignores the axes block behaves exactly as it did before this change.
+# Only score==2 (which skips the confirm entirely) pays for a separate call.
+_CONFIRM_WITH_AXES_PROMPT = _CONFIRM_PROMPT.replace(
+    "Answer (one word, yes or no):",
+    "On the FIRST line answer the meta-feedback question above with one word, "
+    "yes or no." + _axes.AXES_INSTRUCTION + "\n\nAnswer:",
+)
+
+
 async def maybe_capture_feedback(
     user_text: str,
     current_assistant: str,
@@ -179,14 +195,16 @@ async def _run(
             return
 
         confirmed = (score == 2)
+        graded = dict(_axes.UNLABELLED)
         if not confirmed:
             try:
                 verdict = await generate_memory(
-                    _CONFIRM_PROMPT.format(
+                    _CONFIRM_WITH_AXES_PROMPT.format(
                         prev_assistant=(prev_assistant[:1500] or ""),
                         user_text=user_text,
                     ),
                     thinking=False,
+                    temperature=0.0,   # yes/no + two labels: reproducible or useless
                 )
             except Exception as e:
                 log.warning("feedback confirm LLM error: %s", e)
@@ -198,6 +216,14 @@ async def _run(
                 log.debug("feedback verdict: %r (skipping)",
                           first or verdict_clean[:30])
                 return
+            graded = _axes.parse_axes(verdict or "")
+
+        # Two paths land here unlabelled: a score==2 capture (no confirm call
+        # was made at all) and a merged call whose second line did not parse.
+        # Both get one standalone grading call -- on :8084 behind the
+        # conversation-idle gate, so it cannot stall a live turn.
+        if graded["delivery"] == "unknown" and graded["substance"] == "unknown":
+            graded = await _axes.label_axes(prev_user, prev_assistant, user_text)
 
         entry = {
             "ts": time.time(),
@@ -210,6 +236,9 @@ async def _run(
             "llm_confirmed": (score < 2),
             "source": "verbal_meta_feedback",
             "system_prompt": ephemeral or "",
+            "delivery": graded["delivery"],
+            "substance": graded["substance"],
+            "axes_source": graded["axes_source"],
         }
         try:
             event_id = await asyncio.to_thread(append_event, entry)
@@ -225,6 +254,10 @@ async def _run(
                     "response": prev_assistant,
                     "comment": user_text,
                     "system_prompt": ephemeral or "",
+                    "delivery": graded["delivery"],
+                    "substance": graded["substance"],
+                    "axes_source": graded["axes_source"],
+                    "safe_for_positive_tuning": _axes.safe_for_positive_tuning(graded),
                 })
             except Exception as fe:
                 log.warning("append_flagged(bad) failed: %s", fe)

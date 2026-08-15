@@ -27,6 +27,13 @@ class Transcription:
     text: str = ""
     confidence: float = 1.0
     words: list = field(default_factory=list)
+    # True when whisper marked part of this utterance as non-speech (singing,
+    # music, laughter). Set by _strip_annotations. Downstream consumers should
+    # treat a non_speech turn as unreliable for SPEAKER attribution -- sung
+    # audio is acoustically nothing like the enrolled conversational voice, and
+    # on 2026-08-14 it minted phantom unknowns and escalated to a name
+    # solicitation. Nobody sings by accident mid-conversation.
+    non_speech: bool = False
 
     def __bool__(self) -> bool:
         return bool(self.text)
@@ -226,6 +233,74 @@ _STT_CORRECTIONS = {
 }
 
 
+# Whisper marks non-lexical audio with stage directions rather than words.
+# The vocabulary is OPEN and varies by build and by clarity of the audio:
+# `♪ lyric ♪`, `*singing*`, `[Music]`, `(applause)`, `[BLANK_AUDIO]`. A guard
+# matching one glyph is not enough -- measured 2026-08-15, `grep -rn "♪"` found
+# nothing in this tree while the live turn arrived as `*singing*`.
+#
+# Left in place, these annotations are consumed as if Dan had SAID them. One
+# sung turn on 2026-08-15 01:06 put "*singing*" into three paths at once:
+#   1. the LLM prompt, as part of the user's utterance
+#   2. `prop_search`, as a retrieval query term
+#   3. `[QUERY-VCONF] low-confidence content word heard as '*singing*'`, which
+#      arms the confirm-input path -- so Timmy can ask Dan to clarify a "word"
+#      no human ever spoke.
+# Stripping them here, at the STT boundary, fixes all three at once.
+_ANNOTATION_RE = re.compile(
+    r"""
+      \u266a[^\u266a]*\u266a       # sung lyrics fenced by a pair of music notes
+    | [\u266a\u266b\u2669\u266c]  # a lone music note
+    | \*[^*\n]{1,40}\*             # *singing*, *laughs*, *coughs*
+    | \[[^\]\n]{1,40}\]           # [Music], [BLANK_AUDIO], [applause]
+    | \([^)\n]{0,40}(?:music|singing|laugh|applause|inaudible|silence)[^)\n]{0,40}\)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def annotation_only(text: str) -> bool:
+    """True when the utterance is nothing but whisper stage directions.
+
+    The caller uses this to drop a turn that carried no human words at all --
+    a purely sung or purely musical segment. Kept separate from
+    `_strip_annotations` because that function deliberately PRESERVES the text
+    of a wholly-annotated turn (erasing it would make singing look like
+    silence); the decision to discard belongs to the caller, not the stripper.
+    """
+    if not text:
+        return False
+    return not _ANNOTATION_RE.sub(" ", text).strip()
+
+
+def _strip_annotations(text: str, words: list) -> tuple[str, list, bool]:
+    """Remove whisper's non-speech stage directions from the transcript.
+
+    Returns (clean_text, clean_words, non_speech). `words` is filtered in step
+    with the text because the per-word probability list is what feeds VCONF --
+    leaving `*singing*` in there re-creates the confirm-input bug even after the
+    text is clean.
+
+    Deliberately conservative: if stripping would empty the utterance, the
+    original is kept and only the `non_speech` flag is raised. A turn that was
+    ENTIRELY singing still has to reach the caller so it can be gated rather
+    than silently vanishing.
+    """
+    if not text:
+        return text, words, False
+    stripped = _ANNOTATION_RE.sub(" ", text)
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip()
+    found = stripped != text.strip()
+    if not found:
+        return text, words, False
+    if not stripped:
+        # whole utterance was annotation -- keep the text, flag it, drop nothing
+        return text, words, True
+    clean_words = [(w, p) for (w, p) in words
+                   if w and not _ANNOTATION_RE.fullmatch(w.strip())]
+    return stripped, clean_words, True
+
+
 def _apply_stt_corrections(text: str) -> str:
     """Apply known name/word corrections to STT output."""
     words = text.split()
@@ -386,10 +461,17 @@ async def transcribe(audio: np.ndarray,
     words = [(w.get("word", ""), float(w.get("probability", 1.0)))
              for s in segments for w in (s.get("words") or [])]
 
+    # Strip whisper's non-speech stage directions BEFORE anything scores the
+    # text -- corrections, VCONF and retrieval all read what comes out of here.
+    text, words, non_speech = _strip_annotations(text, words)
+    if non_speech:
+        log.info("[STT] non-speech annotation stripped -> %r", text[:80])
+
     # Apply known name corrections (e.g., Aaron → Erin)
     corrected = _apply_stt_corrections(text)
     if corrected != text:
         log.info("STT correction: %r -> %r", text, corrected)
         text = corrected
 
-    return Transcription(text=text, confidence=confidence, words=words)
+    return Transcription(text=text, confidence=confidence, words=words,
+                         non_speech=non_speech)

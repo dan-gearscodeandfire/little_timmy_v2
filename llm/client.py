@@ -292,12 +292,21 @@ async def stream_conversation(
         _last_conversation_activity_ts = time.time()
 
 
-async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
+async def generate_memory(prompt: str, thinking: bool | None = None,
+                          temperature: float | None = None) -> str:
     """Send a prompt to the brain LLM (LLM_MEMORY_URL) for memory extraction. Non-streaming.
 
     `thinking`: when True/False, sends `chat_template_kwargs:{enable_thinking:bool}`
     so a Qwen3.6-style server gates the thinking trace per-request. None preserves
     legacy behavior (no kwarg, server default applies).
+
+    `temperature`: overrides config.MEMORY_TEMPERATURE (0.3) for this call.
+    Added 2026-08-15 for feedback.axes, where 0.3 made GRADING non-deterministic
+    -- two consecutive runs over the identical exchange returned
+    substance=unknown and then substance=right, and `right` is precisely the
+    value that would let a false claim into positive tuning. A judgement that
+    changes between runs is not a measurement. Pass 0.0 for anything whose
+    output is a label rather than prose. Extraction keeps the 0.3 default.
 
     Priority gate: when conversation and memory share a server, this call
     blocks until conversation is idle; when memory and vision share the :8084
@@ -312,7 +321,8 @@ async def generate_memory(prompt: str, thinking: bool | None = None) -> str:
         payload: dict = {
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": config.MEMORY_MAX_TOKENS,
-            "temperature": config.MEMORY_TEMPERATURE,
+            "temperature": (config.MEMORY_TEMPERATURE if temperature is None
+                            else temperature),
             "stream": False,
         }
         if thinking is not None:

@@ -45,6 +45,9 @@ persona_tuning/
 
 # Runtime feedback inbox (mirrors persona_tuning convention)
 feedback_inbox.jsonl
+# Two-axis label sidecar written by ops/backfill_feedback_axes.py -- generated
+# data keyed by event ts, rebuildable by re-running the backfill.
+feedback_axes.jsonl
 
 # Runtime state
 data/
