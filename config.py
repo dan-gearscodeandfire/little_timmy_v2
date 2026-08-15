@@ -578,6 +578,20 @@ STREAMERPI_BEHAVIOR_MODE_URL = os.getenv(
     # Payload {mode,priority,timeout_ms} already matches handle_behavior_command.
     "TIMMY_BEHAVIOR_MODE_URL", "https://192.168.1.110:8080/behavior"
 )
+# --- Servo watchdog (2026-08-13) ---
+# The pan/tilt head can freeze while every status field on the Pi still echoes
+# success (Wombat alive on the bus, per-pin servo config gone). These drive the
+# `servo_check` router intent: selftest is camera-verified and MOVES the head;
+# reattach is the in-place fix when the chip is alive.
+STREAMERPI_SERVO_SELFTEST_URL = os.getenv(
+    "TIMMY_SERVO_SELFTEST_URL", "https://192.168.1.110:8080/servo/selftest"
+)
+STREAMERPI_SERVO_REATTACH_URL = os.getenv(
+    "TIMMY_SERVO_REATTACH_URL", "https://192.168.1.110:8080/servo/reattach"
+)
+SERVO_CHECK_ENABLED = True   # 2026-08-13 (Dan): `servo_check` router intent.
+                             # Rollback = set False + restart.
+
 # Face fusion gate (recalibrated 2026-06-24, was 0.85). 0.85 = cosine dist 0.15,
 # buried deep inside streamerpi's "high" band (dist<0.30) -- it blocked genuine
 # high matches from promoting (PARTY-2 fact-surfacing + voiceprint auto-bind).

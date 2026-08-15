@@ -39,6 +39,38 @@ subject to search for.
 If BOTH a topic and a time window are present ("what did I say about the budget
 last week"), prefer "recall_temporal" -- the time window is the stronger anchor.
 
+Emit tool "servo_check" when the user asks you to CHECK, TEST, or FIX your own
+head/neck movement hardware, or TELLS YOU that your head, neck, servos, or motors
+are stuck, frozen, jammed, dead, or not moving. This is about YOUR OWN physical
+motion hardware -- not the room, not someone else's gear.
+- "check your servos" -> servo_check
+- "Timmy, check your servos" -> servo_check
+- "your servos are stuck" -> servo_check
+- "are your servos working" -> servo_check
+- "your head isn't moving" -> servo_check
+- "your neck is frozen" -> servo_check
+- "you're stuck" -> servo_check
+- "are you frozen" -> servo_check
+- "why aren't you moving" -> servo_check
+- "test your motors" -> servo_check
+- "can you still move your head" -> servo_check
+- "your motors are jammed" -> servo_check
+- "self test your head" -> servo_check
+A request to simply LOOK somewhere ("look left", "look at me", "turn around") is
+ordinary movement, NOT a diagnostic -- that is "none".
+
+CRITICAL for servo_check -- the STUCK/FROZEN/JAMMED THING MUST BE YOU. The
+subject has to be your own head, neck, servos, or motors. If the user is talking
+about themselves, their work, or any other object being stuck, frozen, jammed, or
+not moving, it is "none" -- never servo_check:
+- "I'm stuck on this bug" -> none
+- "I'm frozen" -> none
+- "the door is jammed" -> none
+- "my car won't start" -> none
+- "the printer is stuck" -> none
+- "this code is frozen" -> none
+- "traffic isn't moving" -> none
+
 Emit tool "none" for EVERYTHING ELSE: greetings, jokes, general questions,
 banter, acknowledgments, requests to do something other than the above, or a
 vague mention that carries NO specific value to store. A statement of mere

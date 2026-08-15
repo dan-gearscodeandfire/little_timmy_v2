@@ -28,6 +28,38 @@ then.
 - "did we talk about the budget a couple weeks ago" -> recall_temporal
 - "what was I telling you about last Saturday" -> recall_temporal
 
+Emit tool "servo_check" when the user asks you to CHECK, TEST, or FIX your own
+head/neck movement hardware, or TELLS YOU that your head, neck, servos, or motors
+are stuck, frozen, jammed, dead, or not moving. This is about YOUR OWN physical
+motion hardware -- not the room, not someone else's gear.
+- "check your servos" -> servo_check
+- "Timmy, check your servos" -> servo_check
+- "your servos are stuck" -> servo_check
+- "are your servos working" -> servo_check
+- "your head isn't moving" -> servo_check
+- "your neck is frozen" -> servo_check
+- "you're stuck" -> servo_check
+- "are you frozen" -> servo_check
+- "why aren't you moving" -> servo_check
+- "test your motors" -> servo_check
+- "can you still move your head" -> servo_check
+- "your motors are jammed" -> servo_check
+- "self test your head" -> servo_check
+A request to simply LOOK somewhere ("look left", "look at me", "turn around") is
+ordinary movement, NOT a diagnostic -- that is "none".
+
+CRITICAL for servo_check -- the STUCK/FROZEN/JAMMED THING MUST BE YOU. The
+subject has to be your own head, neck, servos, or motors. If the user is talking
+about themselves, their work, or any other object being stuck, frozen, jammed, or
+not moving, it is "none" -- never servo_check:
+- "I'm stuck on this bug" -> none
+- "I'm frozen" -> none
+- "the door is jammed" -> none
+- "my car won't start" -> none
+- "the printer is stuck" -> none
+- "this code is frozen" -> none
+- "traffic isn't moving" -> none
+
 Emit tool "none" for EVERYTHING ELSE: greetings, jokes, general questions,
 banter, acknowledgments, requests to do something other than state or recall a
 fact, or a vague mention that carries NO specific value to store. A statement of
@@ -38,6 +70,7 @@ question with no past-time reference is "none" even if it's about memory.
 - "do you remember my dog's name" (fact lookup, no time window) -> none
 - "I have a dog" (mere existence, no specific value to store) -> none
 - "remember my face" (face enrollment, not a fact) -> none
+- "look to your left" (a movement request, not a diagnostic) -> none
 
 CRITICAL — asking you to NAME / tell / state a fact is RETRIEVAL, not storage.
 The verb "name" as a question ("name my X", "name one of my Y") means "tell me

@@ -85,19 +85,21 @@ def _load_acks() -> list[str]:
 # tool_router_bench_constrained.py). char excludes the JSON string delimiters so
 # the emitted object is always parseable.
 _ROUTE_GRAMMAR = r'''
-root         ::= store-call | recall-call | none-call
+root         ::= store-call | recall-call | servo-call | none-call
 store-call   ::= "{\"tool\":\"store_fact\"}"
 recall-call  ::= "{\"tool\":\"recall_temporal\"}"
+servo-call   ::= "{\"tool\":\"servo_check\"}"
 none-call    ::= "{\"tool\":\"none\"}"
 '''
 
 # Extended grammar adding recall_semantic — selected ONLY when
 # config.RECALL_SEMANTIC_ENABLED. Default OFF => _ROUTE_GRAMMAR above, unchanged.
 _ROUTE_GRAMMAR_SEM = r'''
-root          ::= store-call | recall-call | semantic-call | none-call
+root          ::= store-call | recall-call | semantic-call | servo-call | none-call
 store-call    ::= "{\"tool\":\"store_fact\"}"
 recall-call   ::= "{\"tool\":\"recall_temporal\"}"
 semantic-call ::= "{\"tool\":\"recall_semantic\"}"
+servo-call    ::= "{\"tool\":\"servo_check\"}"
 none-call     ::= "{\"tool\":\"none\"}"
 '''
 
@@ -469,6 +471,76 @@ async def _resolve_semantic_block(user_text: str) -> str | None:
     return _build_semantic_block(episodes)
 
 
+
+async def _run_servo_check() -> tuple[str, dict]:
+    """Run streamerpi's camera-verified servo selftest; auto-fix when it can.
+
+    The Pi is the only place this check can live: its motor service owns the
+    bit-banged I2C bus, so an out-of-process probe reads an EMPTY bus (a false
+    negative that looks exactly like dead hardware). We just drive its
+    endpoints and put the verdict into words.
+
+    Returns (spoken_text, raw_result).
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=40.0) as c:
+            r = await c.post(config.STREAMERPI_SERVO_SELFTEST_URL,
+                             json={"reason": "voice"})
+            res = r.json()
+    except Exception:
+        log.exception("[TOOL servo_check] selftest call failed")
+        return ("I can't reach my motor controller at all. That's worse than "
+                "a stuck servo.", {"verdict": "unreachable"})
+
+    verdict = res.get("verdict")
+
+    if verdict == "moving":
+        return (f"Servos are good. I panned my head and the camera watched it "
+                f"move.", res)
+
+    if verdict == "frozen":
+        if not res.get("chip_alive"):
+            # Silent Wombat: no software fix exists. Say the thing that
+            # actually gets Dan to the right action.
+            return ("My head's frozen and my servo controller isn't answering "
+                    "at all. It's wedged. You'll have to pull my power for "
+                    "about ten seconds. A reboot won't clear it.", res)
+        # Chip alive => lost pin config => the in-place fix.
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=40.0) as c:
+                await c.post(config.STREAMERPI_SERVO_REATTACH_URL, json={})
+                again = (await c.post(config.STREAMERPI_SERVO_SELFTEST_URL,
+                                      json={"reason": "voice-post-fix"})).json()
+        except Exception:
+            log.exception("[TOOL servo_check] reattach failed")
+            return ("My head's frozen. I tried to re-attach my servos and the "
+                    "fix itself failed.", res)
+        if again.get("verdict") == "moving":
+            return ("My head was frozen. My servos had lost their pin "
+                    "configuration, so I re-attached them and I'm moving "
+                    "again.", again)
+        return ("My head's frozen. Re-attaching my servos didn't take, so "
+                "you'll need to pull my power for about ten seconds.", again)
+
+    if verdict == "command_dropped":
+        if res.get("motors_enabled") is False:
+            return ("My motors are switched off. Nothing's broken. Turn them "
+                    "back on and I'll move.", res)
+        return ("Something's dropping my movement commands before they reach "
+                "the servos. The hardware's probably fine, but something's "
+                "overriding me.", res)
+
+    if verdict in ("scene_too_flat", "no_camera", "no_frames"):
+        return ("I can't tell. I moved my head, but I can't see well enough "
+                "right now to confirm it actually went anywhere.", res)
+
+    if verdict == "not_initialized":
+        return ("My servos aren't initialized at all.", res)
+
+    return (f"My servo check came back inconclusive.", res)
+
+
 async def maybe_handle_tool_call(
     user_text: str,
     speaker_name: str | None,
@@ -559,6 +631,40 @@ async def maybe_handle_tool_call(
         except Exception:
             log.debug("[TOOL recall_semantic] publish failed (non-fatal)", exc_info=True)
         return ToolOutcome(handled=False, recall_block=block)
+
+    # servo_check: TERMINAL diagnostic tool. Unlike store_fact this writes
+    # nothing; it drives streamerpi's selftest and speaks the verdict, and will
+    # auto-re-attach a live-but-unconfigured Wombat. Terminal because the reply
+    # IS the tool output -- the brain has no way to know any of this.
+    if route == "servo_check":
+        if not getattr(config, "SERVO_CHECK_ENABLED", False):
+            return _FALLTHROUGH
+        # The probe moves the head and takes a few seconds; say something first
+        # so the pause doesn't read as a hang.
+        try:
+            await tts.speak("Hang on, let me check.")
+        except Exception:
+            log.debug("[TOOL servo_check] holding line failed", exc_info=True)
+        ack, result = await _run_servo_check()
+        await conversation.add_assistant_turn(ack)
+        await tts.speak(ack)
+        try:
+            from web.app import broadcast_event, update_metrics
+            import time as _t
+            await broadcast_event("turn", {"role": "assistant", "content": ack})
+            await broadcast_event("tool_call", {
+                "name": "servo_check",
+                "verdict": result.get("verdict"),
+                "diff": result.get("diff"),
+            })
+            update_metrics(last_tool_call="servo_check",
+                           last_tool_call_ts=_t.time())
+        except Exception:
+            log.debug("[TOOL servo_check] UI publish failed (non-fatal)",
+                      exc_info=True)
+        log.info("[TOOL servo_check] verdict=%s diff=%s -> %r",
+                 result.get("verdict"), result.get("diff"), ack)
+        return ToolOutcome(handled=True)
 
     if route != "store_fact":
         return _FALLTHROUGH  # 'none', None (error), or unknown tool -> pipeline
