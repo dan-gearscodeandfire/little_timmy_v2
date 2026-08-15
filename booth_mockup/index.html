@@ -1051,7 +1051,12 @@
         if (!ln) continue;
         if (ln.includes('[WHO IS PRESENT]'))      { cur = 'who';    continue; }
         if (ln.startsWith('GROUND TRUTH'))         { cur = 'ground'; continue; }
-        if (ln.startsWith('Relevant memories'))    { cur = 'mem';    continue; }
+        // Header renamed 8-13 in e75af06 (bare 'Relevant memories:' ->
+        // 'RECALLED FROM PAST CONVERSATIONS — ...'). This panel scrapes the
+        // prompt text, so the rename silently emptied it while WHO IS PRESENT
+        // and GROUND TRUTH kept working. Match both spellings.
+        if (ln.startsWith('Relevant memories') ||
+            ln.startsWith('RECALLED FROM PAST')) { cur = 'mem';    continue; }
         if (ln.startsWith('MOOD')         ||
             ln.startsWith('Current time') ||
             ln.startsWith('- Engagement') ||
