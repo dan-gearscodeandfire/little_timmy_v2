@@ -405,3 +405,31 @@ def test_bare_judgment_corrections_are_straight(text):
 ])
 def test_judgment_patterns_do_not_eat_praise(text):
     assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # Being told you fabricated something. Live 2026-08-15 00:07, after Timmy
+    # welded retrieved "Frank" material onto an unrelated turn and produced
+    # "you were nervous about being Frank": Dan relayed "the couples therapist
+    # told me that you invented the Frank thing" -> BANTER -> "You're still
+    # stuck on the 'Frank' bit. I never invented it."
+    "The couples therapist told me that you invented the Frank thing.",
+    "You made that up.",
+    "You just made that up.",
+    "You fabricated that.",
+    "You're making that up.",
+    "That never happened.",
+])
+def test_fabrication_challenges_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # ...without catching ordinary uses of make/invent.
+    "I made a sandwich.",
+    "You made me laugh.",
+    "I invented a new bracket.",
+    "That was a great response.",
+])
+def test_fabrication_patterns_do_not_overreach(text):
+    assert classify(text) == BANTER

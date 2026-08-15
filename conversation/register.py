@@ -194,6 +194,16 @@ _CORRECTION_RE = re.compile(
     # my silence." -- wrong AND a jab, on a turn where the user was correcting
     # him. Being told you are repeating yourself is a correction.
     r"you (?:said|already said)|said that already|already told|"
+    # Being told you FABRICATED something. Live 2026-08-15 00:07: "the couples
+    # therapist told me that you invented the Frank thing" matched nothing here
+    # -- no "no", no "wrong", no "that's not" -- so it graded BANTER, bought a
+    # second sentence, and spent it on "I never invented it." Fifth register gap
+    # of the session with the same shape: the formal phrasing was covered and
+    # the conversational one was not.
+    r"you (?:invented|fabricated|made (?:that|it|this) up|"
+    r"(?:just )?made (?:that|it|this) up)|"
+    r"(?:that|it|this) (?:was|is) (?:made up|invented|a fabrication)|"
+    r"you'?re making (?:that|it|this) up|didn'?t happen|never happened|"
     r"repeating yourself|same thing again|you keep saying|"
     # Decorum / content-safety corrections (added after 8-13 live audit).
     # "It sounded slightly sexualized and this needs to be an all ages thing."
