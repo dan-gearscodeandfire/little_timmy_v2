@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conversation.reply_filter import (
+    _is_real_terminator,
     banned_phrase_used,
     filtered_assistant_stream,
     user_invites_longer_reply,
@@ -440,3 +441,34 @@ class TestRetiredNameCorrection:
     def test_does_not_fire_on_ordinary_self_reference(self):
         assert banned_phrase_used(
             ["I am Timmy and I am busy.", "My name came up twice."]) is None
+
+
+class TestQuotedTerminators:
+    """Live 2026-08-14 20:08. Dan: "I don't follow your last response." That
+    now routes to STRAIGHT (cap 1) and Timmy quoted him back -- and the reply
+    went out as `You said "Operational?` with 12 chars dropped, because the "?"
+    inside the quotation counted as the end of the sentence.
+
+    Same class as the ellipsis/decimal cases: a terminator that is not a
+    boundary. It surfaced only after the clarification fix started routing
+    "I don't follow" to STRAIGHT, which is exactly what makes him quote."""
+
+    def test_question_mark_inside_a_quote_is_not_a_boundary(self):
+        s = 'You said "Operational?" and I answered.'
+        ends = [i for i, c in enumerate(s) if c in ".!?" and _is_real_terminator(s, i)]
+        assert ends == [len(s) - 1]
+
+    def test_period_inside_a_quote_is_not_a_boundary(self):
+        s = 'He said "Stop." Then he left.'
+        ends = [i for i, c in enumerate(s) if c in ".!?" and _is_real_terminator(s, i)]
+        assert ends == [len(s) - 1]
+
+    def test_plain_sentences_still_split(self):
+        s = "Normal sentence. Second one."
+        ends = [i for i, c in enumerate(s) if c in ".!?" and _is_real_terminator(s, i)]
+        assert ends == [15, 27]
+
+    def test_closed_quote_then_a_real_end(self):
+        s = 'I said "no". Then I left.'
+        ends = [i for i, c in enumerate(s) if c in ".!?" and _is_real_terminator(s, i)]
+        assert 11 in ends

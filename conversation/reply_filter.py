@@ -96,6 +96,18 @@ def _is_real_terminator(s: str, i: int) -> bool:
     ch = s[i]
     if ch not in ".!?":
         return False
+    # A terminator INSIDE an open quotation is not a sentence boundary.
+    # Observed live 2026-08-14 20:08: asked to clarify, Timmy quoted Dan back
+    # and the reply was cut to `You said "Operational?` (dropped 12 chars) --
+    # the "?" inside the quote consumed the whole 1-sentence STRAIGHT budget.
+    # This is the same class as the ellipsis and decimal cases below, and it
+    # surfaced only after "I don't follow" started routing to STRAIGHT, which
+    # is precisely what makes him quote the user back. Counting unbalanced
+    # quote marks before i is enough: an odd count means we are inside one.
+    if (s.count('"', 0, i) - s.count('\\"', 0, i)) % 2 == 1:
+        return False
+    if (s.count("\u201c", 0, i) > s.count("\u201d", 0, i)):
+        return False
     if ch == ".":
         # Part of "..." (or a unicode ellipsis) -> not a boundary.
         if s[i:i + 3] == "..." or s[i:i + 2] == "..":
