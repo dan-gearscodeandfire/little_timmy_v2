@@ -444,6 +444,18 @@ BANNED_PHRASES = (
     "i am not little",
     "i'm not little",
     "im not little",
+    # Retired 2026-08-15 at Dan's instruction ("I want you to stop referring to
+    # yourself as a skeleton. Maybe refer to yourself as a wonderful
+    # abomination."). He had asked once before, on 8-13, and the word survived
+    # because it sat in the identity line AND in the rule banning it -- the same
+    # priming trap as "I am not little". The word is now gone from config.PERSONA
+    # entirely; this catches the habit in his own recent output, which is the
+    # position that empirically works.
+    "i am a skeleton",
+    "i'm a skeleton",
+    "im a skeleton",
+    "a skeleton, not",
+    "skeleton, not a",
 )
 
 # The same bit wearing a different coat. 2026-08-14 00:44, ~2 minutes after the
