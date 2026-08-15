@@ -128,6 +128,29 @@ char  ::= [^"\\{}]
 '''
 
 
+# Predicates whose rows are expensive to lose. `_is_identity_predicate` covers
+# name/alias only; `dan.occupation` was destroyed unrecoverably by a synthetic
+# test (feedback_lt_store_fact_overwrites_not_supersedes) and is not an identity
+# predicate, so it needs naming explicitly.
+#
+# Erring wide is correct here because the action is DEFER, not block: a false
+# positive costs the user one restatement, a false negative costs a real fact
+# permanently.
+_HIGH_VALUE_PREDICATES = frozenset({
+    "occupation", "job", "profession", "employer", "works at", "works_at",
+    "wife", "husband", "spouse", "partner", "daughter", "son", "child",
+    "children", "mother", "father", "parent", "sibling", "brother", "sister",
+    "birthday", "age", "lives in", "lives_in", "address", "phone", "email",
+})
+
+
+def _is_high_value_predicate(predicate: str) -> bool:
+    """Identity predicates plus the relationship/PII rows that are costly to lose."""
+    from memory.facts import _is_identity_predicate as _identity
+    p = (predicate or "").strip().lower()
+    return _identity(p) or p in _HIGH_VALUE_PREDICATES
+
+
 async def classify_intent(user_text: str) -> str | None:
     """Tier-1 route. Returns 'store_fact' | 'recall_temporal' | 'none' (or also
     'recall_semantic' when config.RECALL_SEMANTIC_ENABLED), or None on any
@@ -731,6 +754,7 @@ async def maybe_handle_tool_call(
     # value back for confirmation instead of the breezy canned ACK. turn-level
     # confidence isn't enough; we score the value span specifically.
     from stt.client import value_confidence, is_name_like_value
+    from memory.facts import get_facts_about
     import config as _cfg
     vconf = value_confidence(stt_words, value) if stt_words else None
     low_conf = vconf is not None and vconf < getattr(
@@ -748,13 +772,65 @@ async def maybe_handle_tool_call(
     log.info("[VCONF] %.3f value=%r low=%s name=%s",
              vconf if vconf is not None else -1.0, value, low_conf, name_forced)
 
-    try:
-        await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
-                         source="tool",
-                         confidence=vconf if vconf is not None else 1.0)
-    except Exception:
-        log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
-        return _FALLTHROUGH
+    # --- Destructive-overwrite guard (2026-08-15) -------------------------
+    # `store_fact` UPSERTS on (subject, predicate): it REPLACES the value in
+    # place and keeps the row id, so a bad write does not supersede a real
+    # fact, it destroys it. The read-back below is NOT a gate -- it runs AFTER
+    # the store -- so confirming "no, cancel" cannot undo anything.
+    #
+    # Proven live, not hypothetical: at 01:08 on 2026-08-15 the utterance
+    # 'I know you know the lyrics to "Kissed by a Rose on the Grave by Seal."
+    # I think it came out in 1990.' routed to store_fact with predicate=name,
+    # and fact id=83 -- `dan name Dan` -- became
+    # `dan name "Kissed by a Rose on the Grave by Seal"`. Dan said "No, cancel"
+    # and it changed nothing. Every turn afterwards was built on a corrupted
+    # GROUND TRUTH block until it was restored by hand.
+    #
+    # So: when we are about to REPLACE an existing identity fact with a
+    # DIFFERENT value, and we were not confident enough to skip the read-back,
+    # do not write. Ask first. The cost of being wrong here is asymmetric --
+    # declining to overwrite loses at most one restatement, while overwriting
+    # loses a real fact permanently.
+    overwrite_deferred = False
+    if read_back and _is_high_value_predicate(predicate):
+        try:
+            existing = await get_facts_about(subject, limit=25)
+            prior = next((f for f in existing
+                          if f.predicate == predicate
+                          and (f.value or "").strip().lower() != value.strip().lower()),
+                         None)
+        except Exception:
+            log.exception("[TOOL store_fact] prior-fact lookup failed; "
+                          "treating as no prior (write proceeds)")
+            prior = None
+        if prior is not None:
+            overwrite_deferred = True
+            log.warning(
+                "[TOOL store_fact] DEFERRED destructive overwrite: %s.%s "
+                "%r -> %r (vconf=%s, low=%s, name=%s). Asking instead of writing.",
+                subject, predicate, prior.value, value,
+                f"{vconf:.2f}" if vconf is not None else "n/a", low_conf, name_forced)
+
+    if not overwrite_deferred:
+        try:
+            await store_fact(subject, predicate, value, speaker_id=speaker_db_id,
+                             source="tool",
+                             confidence=vconf if vconf is not None else 1.0)
+        except Exception:
+            log.exception("[TOOL store_fact] store_fact failed; falling through to normal reply")
+            return _FALLTHROUGH
+
+    if overwrite_deferred:
+        # Nothing was written. Say what we think we heard and what it would
+        # replace, so the correction is one plain sentence away.
+        ack = (f'Did you mean to change your {predicate} to "{value}"? '
+               f"I haven't changed anything yet.")
+        await conversation.add_assistant_turn(ack)
+        # Must SPEAK it too. Adding the turn without speaking produces exactly
+        # the dead-air failure logged at 01:23 -- a suppressed reply the user
+        # experiences as a crash.
+        await tts.speak(ack)
+        return ack
 
     if read_back:
         reason = "low_conf" if low_conf else "proper_noun"
