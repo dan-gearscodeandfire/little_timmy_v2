@@ -57,11 +57,50 @@ _ADDRESS_RE = re.compile("|".join(_ADDRESS_OR_REFER_PATTERNS), re.IGNORECASE)
 _CRITIQUE_RE = re.compile("|".join(_CRITIQUE_PATTERNS), re.IGNORECASE)
 
 
+def _register_says_correction(user_text: str) -> bool:
+    """True when conversation.register grades this turn as a correction.
+
+    `_CRITIQUE_RE` below was written once and never revised; measured
+    2026-08-15 it returns False for every criticism Dan actually voiced that
+    session -- "Too mean, too mean there.", "That's a bizarre response.",
+    "Boo! Hallucination.", "I don't follow your last response.", "you invented
+    the Frank thing" -- while scoring PRAISE ("That was a great response.") a 1.
+    Net effect: ZERO feedback captures across a five-hour session in which Dan
+    corrected Timmy repeatedly. An empty feedback file is indistinguishable
+    from a well-behaved session, so the persona-tuning loop starved while every
+    log stayed green.
+
+    register._CORRECTION_RE is the same judgement -- "is the user telling me I
+    got that wrong" -- and it has been hardened against live conversation all
+    night: factual corrections, repetition complaints, decorum ("too mean",
+    "that was a little racy"), clarification requests ("I don't follow"), and
+    fabrication challenges ("you made that up"). Reusing it means one detector
+    to maintain instead of two that drift apart, and the weaker one silently
+    winning.
+
+    Deliberately one-directional: the register does NOT read this module. An
+    earlier proposal to drive the register FROM the detector was measured and
+    dropped -- it would have been a downgrade.
+    """
+    try:
+        from conversation import register as _reg
+    except Exception:
+        return False
+    # The CORRECTION patterns specifically -- not classify()'s verdict. STRAIGHT
+    # also covers ordinary factual questions ("what time is it?"), and keying on
+    # it turned every question into feedback.
+    for name in ("_CORRECTION_RE", "_EXASPERATION_RE", "_OWN_TURN_CHALLENGE_RE"):
+        rx = getattr(_reg, name, None)
+        if rx is not None and rx.search(user_text):
+            return True
+    return False
+
+
 def _keyword_score(user_text: str) -> int:
     if not user_text:
         return 0
     addr = bool(_ADDRESS_RE.search(user_text))
-    crit = bool(_CRITIQUE_RE.search(user_text))
+    crit = bool(_CRITIQUE_RE.search(user_text)) or _register_says_correction(user_text)
     if addr and crit:
         return 2
     if addr or crit:

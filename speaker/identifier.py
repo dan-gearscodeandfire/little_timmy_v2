@@ -273,6 +273,8 @@ class SpeakerIdentifier:
 
     def __init__(self):
         self._encoder = None
+        # (temp_id, minted_at, nearest_known_name) for retroactive re-attribution.
+        self._recent_unknown_mints: list[tuple] = []
         # Shared, modality-agnostic persistence (see presence.prototype_base).
         # The id-map file is the ONE canonical name->speaker_id map; the face
         # identifier points its own IdMap at this SAME file so a person keeps one
@@ -502,6 +504,52 @@ class SpeakerIdentifier:
 
     # ---------- identify() ----------
 
+    # --- retroactive re-attribution (2026-08-15) ----------------------------
+    # A short or off-axis utterance mints an `unknown_N`, and the very next
+    # good turn proves who was actually speaking. Measured across 2026-08-14/15
+    # this cost a turn on EVERY restart (eight of them in one session) plus
+    # every run of quiet turns, via three distinct routes:
+    #   cold start   -- no continuity anchor exists yet, so the bridge cannot
+    #                   fire at all; the first turn of a session is a short
+    #                   greeting, i.e. the riskiest kind, and the least protected
+    #   starvation   -- the anchor only refreshes on a CONFIDENT match, so a run
+    #                   of misses staled it; 21:09 died 0.003 over threshold with
+    #                   every other gate passing
+    #   eligibility  -- continuity only applies under SHORT_AUDIO_SAMPLES (~5s),
+    #                   so a 5.4s turn was ineligible by 0.4s
+    # All three vanish if the record is fixed after the fact instead of guessed
+    # in the moment: no threshold, no new signal, no tuning.
+    #
+    # HONEST LIMIT: this cannot un-say the reply that already went out. The
+    # WARM "Hello there. I'm Timmy." is spoken before the next turn exists. What
+    # it does fix is everything downstream -- the phantom stops accumulating,
+    # and crucially the continuity anchor gets set, which turns a CASCADE into a
+    # single miss. That is where most of the pain actually was.
+    #
+    # Never touches the voiceprint. The orphaned audio is by definition the
+    # unreliable kind (0.55-0.88 from the print); training on it is the
+    # "calls everyone Dan" corruption path.
+    RETRO_WINDOW_S = 90.0
+
+    def _absorb_orphans(self, name: str) -> None:
+        """Fold recent unknowns whose nearest known identity was `name`."""
+        if not self._recent_unknown_mints:
+            return
+        now = time.time()
+        keep, absorbed = [], []
+        for temp_id, ts, best_name in self._recent_unknown_mints:
+            if now - ts <= self.RETRO_WINDOW_S and best_name == name:
+                absorbed.append(temp_id)
+            elif now - ts <= self.RETRO_WINDOW_S:
+                keep.append((temp_id, ts, best_name))
+        self._recent_unknown_mints = keep
+        if not absorbed:
+            return
+        self._unknown_speakers = [
+            u for u in self._unknown_speakers if u.temp_id not in absorbed]
+        log.info("[RETRO] %s confirmed -- absorbed orphan(s) %s minted in the "
+                 "last %.0fs", name, ", ".join(absorbed), self.RETRO_WINDOW_S)
+
     def identify(self, audio_16k: np.ndarray, transcribed_text: str = "") -> SpeakerResult:
         # First, finalize any expired re-enrollment window from a prior turn.
         self._maybe_finalize_reenrollment()
@@ -559,6 +607,7 @@ class SpeakerIdentifier:
             # Trigger 3 only on tight match).
             self._last_known_speaker = best_known
             self._last_known_seen_ts = time.time()
+            self._absorb_orphans(best_known.name)
             self._record_for_reenrollment(best_known.name, emb)
             self._recent_confident_embs.setdefault(
                 best_known.name, deque(maxlen=8)).append(emb)
@@ -664,6 +713,9 @@ class SpeakerIdentifier:
             last_text=transcribed_text,
         )
         self._unknown_speakers.append(new_unknown)
+
+        self._recent_unknown_mints.append(
+            (temp_id, time.time(), best_known.name if best_known else None))
 
         log.info("New unknown speaker: %s (known_best_dist=%.3f, %dms)",
                  temp_id, best_known_dist, extract_ms)

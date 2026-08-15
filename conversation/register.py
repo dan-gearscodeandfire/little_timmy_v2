@@ -218,6 +218,11 @@ _CORRECTION_RE = re.compile(
     # correction, which is the exact reply this register exists to prevent.
     r"too (?:mean|harsh|much|far|rude|cruel|nasty|sharp|personal|aggressive)|"
     r"that was (?:mean|harsh|rude|cruel|nasty|cold|brutal)|"
+    # Judgments of the REPLY itself. "That's a bizarre response." was the
+    # phrasing Dan used on 2026-08-14 when a phantom speaker made Timmy greet
+    # him as a stranger; it matched nothing and scored 0 for feedback capture.
+    r"(?:that'?s|that was|this is) (?:a )?(?:bizarre|weird|strange|nonsense|"
+    r"gibberish|word salad|non sequitur|incoherent|confusing)|"
     r"you(?:'re| are| were)?\s*(?:being\s+)?(?:too\s+)?"
     r"(?:mean|harsh|rude|cruel|nasty) (?:to|about)|"
     r"too far|went there|uncalled for|inappropriate|not appropriate|"
