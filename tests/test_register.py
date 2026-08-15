@@ -376,3 +376,32 @@ def test_how_to_questions_are_straight(text):
 ])
 def test_bare_how_does_not_swallow_greetings(text):
     assert classify(text) == BANTER
+
+
+@pytest.mark.parametrize("text", [
+    # Bare judgment forms. The decorum patterns were anchored on "that was ...",
+    # which is not how people talk when something lands badly. Live 2026-08-14
+    # 23:54: "Too mean, too mean there." -> BANTER -> "I am not being mean. I am
+    # being accurate." Arguing with a correction is the single reply this
+    # register was built to remove.
+    "Too mean, too mean there.",
+    "Too harsh.",
+    "Too far, dude.",
+    "That was mean.",
+    "You were too mean to me.",
+    "You are being cruel to me.",
+])
+def test_bare_judgment_corrections_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # ...without swallowing praise or ordinary talk that happens to carry the
+    # same adjectives or the word "mean".
+    "That was a great response.",
+    "That was hilarious.",
+    "You are so impressive.",
+    "I mean, it works.",
+])
+def test_judgment_patterns_do_not_eat_praise(text):
+    assert classify(text) == BANTER

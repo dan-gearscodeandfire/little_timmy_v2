@@ -252,6 +252,12 @@ _DEFAULTS: dict = {
     #     to a recognised sole face that names someone else. Fixes the 22:32
     #     "I said to eat your lunch, Nathan" (accepted at margin 0.094 while the
     #     face had confirmed dan 628x). Rollback = set False; no restart needed.
+    #   IDF-weighted lexical ranking for the proposition tier (2026-08-15).
+    #     ts_rank weights every query term equally, so "correct" outranked
+    #     "Radiohead" and a 40-item OpenSauce corpus retrieved nothing. OFF
+    #     until a real eval set exists; flip live to A/B. See
+    #     memory/propositions.py:_IDF_FTS_SQL.
+    "prop_idf_ranking": False,
     "identity_thin_margin_veto_enabled": False,
     "identity_thin_margin_threshold": 0.15,
     # --- Short-audio speaker-continuity hardening (2026-06-12, party-prep) ----

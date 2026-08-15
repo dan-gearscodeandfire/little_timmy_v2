@@ -201,6 +201,15 @@ _CORRECTION_RE = re.compile(
     # should be the one screening the chat" -- arguing with a stated content
     # constraint. On a livestream that is the clip that gets screenshotted.
     r"that was (?:a little|a bit|kind of|too|way too|sort of)|"
+    # Bare judgment forms. The patterns above are anchored on "that was ...",
+    # so the shapes people actually use when something lands badly slipped
+    # through. Live 2026-08-14 23:54: Dan said "Too mean, too mean there." ->
+    # BANTER -> "I am not being mean. I am being accurate." -- arguing with a
+    # correction, which is the exact reply this register exists to prevent.
+    r"too (?:mean|harsh|much|far|rude|cruel|nasty|sharp|personal|aggressive)|"
+    r"that was (?:mean|harsh|rude|cruel|nasty|cold|brutal)|"
+    r"you(?:'re| are| were)?\s*(?:being\s+)?(?:too\s+)?"
+    r"(?:mean|harsh|rude|cruel|nasty) (?:to|about)|"
     r"too far|went there|uncalled for|inappropriate|not appropriate|"
     r"sexualiz|racy|keep it (?:clean|pg|family)|all[- ]ages|"
     r"watch (?:your|the) (?:language|mouth)|tone it down|"

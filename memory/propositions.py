@@ -192,9 +192,71 @@ async def _semantic(pool, query_embedding, limit):
     return [(r["id"], i, float(r["distance"])) for i, r in enumerate(rows)]
 
 
+# IDF-weighted lexical ranking (2026-08-15, default OFF).
+#
+# `ts_rank` over an OR-of-lexemes weights every query term equally, so a
+# throwaway word outranks the one term that carries the question. Measured
+# 2026-08-14: "we've spoken about Radiohead before, correct?" ranked five
+# propositions about Timmy CORRECTING people (matching "correct") above the two
+# that actually mention Radiohead, and Timmy answered "I don't remember that
+# conversation" -- an honest reply built on a broken lookup, which is worse than
+# a fabrication because nothing about it looks wrong. Same night, "do you
+# remember anything from OpenSauce?" retrieved none of the 40 stored OpenSauce
+# items.
+#
+# Score = sum over matched query terms of ln(N/df), divided by (1 + ln(doclen)).
+#   - IDF is what ts_rank lacks: it makes "radiohead" (df 2) worth far more
+#     than "correct" (df ~40).
+#   - Length normalisation is load-bearing. Without it, long propositions win
+#     by matching more terms; with MAX(idf) instead of SUM, a hapax like
+#     "N-O-T-S-A-M" (df 1, idf 7.16) beats "opensauce" (df 31, idf 3.73), so
+#     rare JUNK wins. Sum-then-normalise was the only variant of the three that
+#     improved both probe queries.
+#
+# Measured on the live corpus (1289 propositions): Radiohead 0/5 -> 3/5
+# relevant in the top five, including the correct "Dan's favorite Radiohead
+# song is Paranoid Android". OpenSauce improved but remains noisy -- the query
+# carries rare-but-meaningless filler ("hopefully", "curious", "seriously")
+# that still earns IDF. Default OFF pending a real eval set; flip
+# `prop_idf_ranking` live to A/B it.
+_IDF_FTS_SQL = """
+    WITH terms AS (
+      SELECT DISTINCT unnest(tsvector_to_array(to_tsvector('english', $1))) AS w),
+    total AS (SELECT GREATEST(count(*),1)::float n FROM propositions),
+    df AS (
+      SELECT t.w,
+             GREATEST((SELECT count(*) FROM propositions p
+                        WHERE p.content_tsv @@ plainto_tsquery('english', t.w)),1)::float d
+      FROM terms t),
+    tq AS (SELECT string_agg(quote_literal(w), ' | ')::tsquery q FROM terms),
+    cand AS (
+      SELECT p.id, p.content_tsv, GREATEST(length(p.content_tsv),1)::float dl
+      FROM propositions p, tq
+      WHERE tq.q IS NOT NULL AND p.content_tsv @@ tq.q)
+    SELECT c.id
+    FROM cand c, df, total
+    GROUP BY c.id, c.dl
+    ORDER BY SUM(CASE WHEN c.content_tsv @@ plainto_tsquery('english', df.w)
+                      THEN ln(total.n / df.d) ELSE 0 END) / (1 + ln(c.dl)) DESC,
+             c.id
+    LIMIT $2"""
+
+
 async def _fts(pool, query, limit):
     """OR-of-lexemes. See memory.episodic_search._fts -- plainto_tsquery ANDs
-    every term and returned nothing on half of real questions."""
+    every term and returned nothing on half of real questions.
+
+    With `prop_idf_ranking` on, ranking switches to IDF-weighted scoring (see
+    _IDF_FTS_SQL above); the candidate set is identical either way, only the
+    ORDER BY changes."""
+    try:
+        from persistence import runtime_toggles as _rt
+        _idf = bool(_rt.get("prop_idf_ranking"))
+    except Exception:
+        _idf = False
+    if _idf:
+        rows = await pool.fetch(_IDF_FTS_SQL, query, limit)
+        return [(r["id"], i) for i, r in enumerate(rows)]
     rows = await pool.fetch(
         """WITH tq AS (
              SELECT string_agg(quote_literal(w), ' | ')::tsquery AS q
