@@ -38,7 +38,19 @@ WARM = "WARM"
 _FACTUAL_RE = re.compile(
     r"^\s*(?:hey\s+|ok(?:ay)?\s+|so\s+)?(?:little\s+)?(?:timmy[,\s]+){0,2}"
     r"(?:what(?:'s| is| are| was| were)?|who(?:'s| is| are)?|when(?:'s| is)?|"
-    r"where(?:'s| is| are)?|which|why|how (?:many|much|old|tall|long|far)|"
+    r"where(?:'s| is| are)?|which|why|"
+    # Bare "how" -- how-TO questions ("how are you supposed to knock these
+    # out?", "how do I wire this outlet?") are the practical ones Dan most
+    # needs a real answer to, and until 2026-08-14 only the measurement forms
+    # (how many/much/old/...) were listed, so every one of them graded BANTER
+    # and bought a jab. Live: "You hit them with a screwdriver and a hammer,
+    # Dan. It's not advanced physics." -- right answer, taxed.
+    #
+    # "how" was excluded here to protect the phatic "how are you?", which
+    # tests/test_register.py pins as BANTER. _PHATIC_RE now owns that case
+    # explicitly, so the exclusion is no longer load-bearing and the veto below
+    # keeps the greetings out.
+    r"how|"
     r"do you (?:know|remember|recall)|can you (?:tell|remember)|"
     r"tell me (?:what|who|when|where|how many))\b",
     re.IGNORECASE,
@@ -162,7 +174,8 @@ _PHATIC_RE = re.compile(
     r"(?:timmy[,\s]+){0,2}"
     r"(?:what(?:'s| is)\s+(?:shaking|up|new|good|happening|going on|cooking|"
     r"the word|crackin['g]?|poppin['g]?)|"
-    r"how(?:'s| is| goes)\s+(?:it going|it|things|life|tricks)|"
+    r"how(?:'s| is| goes| are)\s+(?:it going|it|things|life|tricks|"
+    r"you(?:\s+doing)?(?!\s+\w))|"
     r"you (?:doing )?(?:ok|okay|alright|good)|how you doing)\b",
     re.IGNORECASE,
 )

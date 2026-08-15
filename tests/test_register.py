@@ -344,3 +344,35 @@ def test_phatic_greetings_stay_banter(text):
 ])
 def test_phatic_veto_does_not_eat_real_questions(text):
     assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # Bare "how" -- the how-TO questions. _FACTUAL_RE listed only the
+    # measurement forms (how many/much/old/tall/long/far), so every practical
+    # question graded BANTER and bought a jab. Live 2026-08-14 21:03: "How are
+    # you supposed to knock them out?" -> "You hit them with a screwdriver and
+    # a hammer, Dan. It's not advanced physics." Right answer, taxed.
+    "How are you supposed to knock them out?",
+    "How do I wire this outlet?",
+    "How does the servo work?",
+    "How are you going to fix that?",
+    "How are you doing that?",
+    "Why do these exist?",
+])
+def test_how_to_questions_are_straight(text):
+    assert classify(text) == STRAIGHT
+
+
+@pytest.mark.parametrize("text", [
+    # ...without swallowing the greeting that shares its prefix. "how are you"
+    # and "how are you doing" end there; "how are you supposed/going to ..."
+    # continue into a real question. _PHATIC_RE owns this distinction now,
+    # which is what made it safe to add bare "how" to _FACTUAL_RE at all.
+    "How are you?",
+    "How are you doing?",
+    "How are things?",
+    "How's it going?",
+    "How you doing?",
+])
+def test_bare_how_does_not_swallow_greetings(text):
+    assert classify(text) == BANTER
