@@ -60,6 +60,22 @@ not moving, it is "none" -- never servo_check:
 - "this code is frozen" -> none
 - "traffic isn't moving" -> none
 
+CRITICAL for servo_check -- MENTIONING a check is not REQUESTING one. Route
+servo_check only for an actual request to check, or an actual report that YOUR
+hardware is failing RIGHT NOW. If the user is talking ABOUT the servo check
+itself, about the WORD "servos" or how you misheard it, about a check that
+already ran, or is telling you NOT to run one, it is "none" -- never
+servo_check. The word "servo" appearing in the sentence is NOT enough:
+- "why did you run a servo check just now" -> none
+- "the servo check tool call is firing too easily" -> none
+- "you keep hearing a different word as servos" -> none
+- "I said self-aware and you heard that as servo check" -> none
+- "the word that sounds like servos is going too quickly to a tool call" -> none
+- "don't run a servo check" -> none
+- "stop checking your servos every time I talk" -> none
+- "I am servo aware" -> none
+- "no, no, it's servo check" -> none
+
 Emit tool "none" for EVERYTHING ELSE: greetings, jokes, general questions,
 banter, acknowledgments, requests to do something other than state or recall a
 fact, or a vague mention that carries NO specific value to store. A statement of
