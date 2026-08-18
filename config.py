@@ -306,7 +306,10 @@ PROPOSITION_RRF_W_TRIGRAM = float(os.getenv("TIMMY_PROP_RRF_W_TRIGRAM", "0.5"))
 PROPOSITION_DEDUPE_BY_EPISODE = os.getenv("TIMMY_PROPOSITION_DEDUPE_EPISODE", "1") == "1"
 
 # --- Retrieval ---
-RETRIEVAL_TOP_K = 5
+# Top-K 5->3 (2026-08-18, prefill program final lever): ~60 tok less per
+# memory turn. Measured cost on the corpus-generated probe set: recall@5 94%
+# -> recall@3 88%. Env override is the rollback: TIMMY_RETRIEVAL_TOP_K=5.
+RETRIEVAL_TOP_K = int(os.getenv("TIMMY_RETRIEVAL_TOP_K", "3"))
 RETRIEVAL_CANDIDATES = 20      # candidates per search path before reranking
 
 # Weighted RRF fusion (2026-06-02, REBALANCED 2026-08-13). Each channel's
