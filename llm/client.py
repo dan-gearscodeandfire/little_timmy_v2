@@ -24,6 +24,33 @@ _client: httpx.AsyncClient | None = None
 # 15-45 s behind a thinking-on memory extraction. Dan: 'conversational
 # call always takes preference over summarization.'
 _conversation_in_flight = asyncio.Event()
+
+# Last conversation turn's prompt accounting, straight from llama.cpp. Reset at
+# the start of every stream so a served-from-nothing turn cannot report the
+# previous turn's numbers as its own.
+_LAST_CONV_TIMINGS: dict = {}
+
+
+def _record_conversation_timings(t: dict) -> None:
+    """Keep the FIRST timings object of a stream. Later chunks repeat the same
+    prompt figures, and taking the last one would mean the value is only
+    complete after the stream ends -- too late for the first-token log line."""
+    global _LAST_CONV_TIMINGS
+    if _LAST_CONV_TIMINGS.get("prompt_n") is None:
+        _LAST_CONV_TIMINGS = {
+            "prompt_n": t.get("prompt_n"),      # tokens actually re-prefilled
+            "cache_n": t.get("cache_n"),        # tokens reused from KV
+            "prompt_ms": t.get("prompt_ms"),
+        }
+
+
+def get_last_conversation_timings() -> dict:
+    """Prompt accounting for the most recent conversation turn.
+
+    prompt_n + cache_n = total prompt. A turn where cache_n == 0 is a full
+    cache miss (something else used the slot); a turn where prompt_n is large
+    and cache_n is healthy means the per-turn [CONTEXT] block grew."""
+    return dict(_LAST_CONV_TIMINGS)
 _slow_call_tasks: set[asyncio.Task] = set()
 # Vision-priority gate (2026-06-20, Dan): memory/extraction now shares the
 # :8084 VISION server (own KV cache, off the :8083 conversation slot). On that
@@ -246,6 +273,8 @@ async def stream_conversation(
     # (that's vision's job now, via vision_priority()).
     if _conversation_shares_brain():
         _cancel_in_flight_slow_calls("CONV-PRIORITY")
+    global _LAST_CONV_TIMINGS
+    _LAST_CONV_TIMINGS = {}
     _conversation_in_flight.set()
     _last_conversation_activity_ts = time.time()
     client = await _get_client()
@@ -262,6 +291,18 @@ async def stream_conversation(
     # MUST NOT be gated on _conversation_shares_brain() -- that broke when memory
     # moved to :8084 (2026-06-20), un-gating thinking and muting replies.
     payload["chat_template_kwargs"] = {"enable_thinking": False}
+    # KV-cache accounting (2026-08-17). llama.cpp attaches a `timings` object to
+    # every SSE chunk when this is set -- including the FIRST one, so the numbers
+    # are available at first-token time rather than only at stream end. Costs one
+    # small object per chunk and nothing on the GPU.
+    #
+    # Why it is worth carrying: `llm_ft` alone cannot distinguish a warm turn
+    # (~570 tok re-prefilled, ~900 ms) from a full cache miss (~3500 tok, ~4 s),
+    # and those need completely different fixes -- a miss is a co-tenant on the
+    # single :8083 slot, a slow warm turn is the per-turn [CONTEXT] block being
+    # too fat. Without cache_n the two are indistinguishable in the logs, so a
+    # prompt-size regression and a slot-contention event look identical.
+    payload["timings_per_token"] = True
 
     conv_url = _current_conversation_url()
     try:
@@ -279,6 +320,12 @@ async def stream_conversation(
                     break
                 try:
                     chunk = json.loads(data)
+                    # Record before touching choices[]: the final chunk carries
+                    # timings but may have an empty/absent delta, and the old
+                    # KeyError path would skip it.
+                    _t = chunk.get("timings")
+                    if _t:
+                        _record_conversation_timings(_t)
                     delta = chunk["choices"][0]["delta"]
                     if "content" in delta and delta["content"]:
                         yield delta["content"]

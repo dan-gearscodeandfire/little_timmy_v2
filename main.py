@@ -26,7 +26,8 @@ from stt.client import transcribe, annotation_only as stt_annotation_only
 from feedback import axes as _feedback_axes
 from tts.engine import TTSEngine
 from audio import fillers as audio_fillers
-from llm.client import stream_conversation, set_reasoning_tap
+from llm.client import (stream_conversation, set_reasoning_tap,
+                        get_last_conversation_timings)
 from llm.prompt_builder import build_ephemeral_block, build_messages, build_proactive_messages
 from memory.retrieval import retrieve
 from memory.facts import get_all_facts_for_prompt, get_facts_about_speaker, resolve_entity
@@ -2158,11 +2159,25 @@ class Orchestrator:
                 speech_to_reply_ms = max(0, int((first_audio_wall - vad_onset_ts) * 1000))
 
         log.info("[TIMMY] %s", full_response)
+        # Prompt accounting from llama.cpp itself (llm.client records it off the
+        # SSE stream). `reprefill` is the only part of the prompt the brain pays
+        # for on a warm turn, so it is the number to watch when a [CONTEXT]
+        # change lands; `cached=0` means the KV prefix was lost entirely, which
+        # is a slot-contention problem and NOT a prompt-size one. Rendered as a
+        # trailing segment so existing [PERF] parsers keep working.
+        _pt = get_last_conversation_timings()
+        _prompt_seg = ""
+        if _pt.get("prompt_n") is not None:
+            _cached = _pt.get("cache_n") or 0
+            _reprefill = _pt.get("prompt_n") or 0
+            _prompt_seg = (f" prompt={_cached + _reprefill}tok cached={_cached} "
+                           f"reprefill={_reprefill} prefill={(_pt.get('prompt_ms') or 0):.0f}ms"
+                           + (" MISS" if _cached == 0 else ""))
         log.info("[PERF] endpoint=%sms queue=%sms spk=%dms stt=%dms retrieval=%dms build=%dms "
-                 "llm_ft=%dms llm=%dms tts=%dms e2e=%dms reply_lag=%sms speech_to_reply=%sms",
+                 "llm_ft=%dms llm=%dms tts=%dms e2e=%dms reply_lag=%sms speech_to_reply=%sms%s",
                  endpoint_ms, queue_ms, spk_ms, stt_ms, retrieval_ms, build_ms,
                  llm_first_token_ms, llm_total_ms, tts_ms, e2e_ms,
-                 reply_lag_ms, speech_to_reply_ms)
+                 reply_lag_ms, speech_to_reply_ms, _prompt_seg)
 
         # The turn already broadcast the assistant "turn" event and persisted
         # the assistant turn; the doorway only assembles the metrics report.
