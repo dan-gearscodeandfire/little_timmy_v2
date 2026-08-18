@@ -151,6 +151,25 @@ conversation toward them and do not recite them unprompted.
 # do-the-opposite-of-the-row instruction, so it is recency-load-bearing like
 # WHO IS SPEAKING; at 49 tokens on a rare block, inline is the right price.
 
+# RECALLED licence + near-miss guard (2026-08-13, see the tail comment where
+# the marker is emitted for the William Osman / Alan Pan failure that earned
+# the guard). 134 fixed tokens on every non-tool turn with retrieved memories.
+# The marker deliberately keeps BOTH kernels (ignorable suggestions; mentioning
+# is not answering) — the UNCONFIRMED revert above is the cautionary tale for
+# trimming a do-the-opposite instruction out of the recency slot entirely.
+RECALLED_RULE = """
+RECALLED-MEMORY RULES (apply whenever [CONTEXT] carries a RECALLED FROM PAST
+CONVERSATIONS section): its lines were retrieved because they looked related
+to what was just said. Timestamps are when it happened, so don't describe an
+old one as recent. If one genuinely answers or enriches the current turn, use
+it and speak as though you remember it. If none of them fit, say nothing about
+them — they are suggestions from your own memory, not facts you must mention.
+Matching a name or topic is NOT the same as answering the question: if a line
+merely mentions what was asked about without actually stating the answer, do
+NOT infer or reconstruct one from it — say plainly that you don't know or
+don't remember.
+""".strip()
+
 
 def build_static_persona_system() -> str:
     """Return the truly-static system[0] content: persona + protocol clause +
@@ -164,6 +183,7 @@ def build_static_persona_system() -> str:
         parts.append(SCENE_GROUNDING_RULE)
     parts.append(VISION_RULE)
     parts.append(GROUND_TRUTH_RULE)
+    parts.append(RECALLED_RULE)
     return "\n\n".join(parts)
 
 
@@ -401,24 +421,16 @@ def build_ephemeral_block(
         # explicit licence to be used, and an explicit licence to be IGNORED --
         # retrieval always returns its top-K, so a weak match must be
         # discardable rather than something the model feels obliged to work in.
+        # Marker only — the full licence + near-miss guard is cached in
+        # system[0] (RECALLED_RULE; the William Osman / Alan Pan failure that
+        # earned the guard is documented there). The marker keeps both kernels
+        # in the recency slot, and the "RECALLED FROM PAST" prefix the booth
+        # panel scrapes (startsWith — see 86fc93b for the silent-rename cost).
         mem_lines = [
-            "RECALLED FROM PAST CONVERSATIONS — retrieved because they looked "
-            "related to what was just said. Timestamps are when it happened, so "
-            "don't describe an old one as recent. If one genuinely answers or "
-            "enriches the current turn, use it and speak as though you remember "
-            "it. If none of them fit, say nothing about them — they are "
-            "suggestions from your own memory, not facts you must mention. "
-            # Added after a live acoustic failure 2026-08-13: asked "who is
-            # William Osman?", a proposition naming BOTH William Osman and Alan
-            # Pan was retrieved, and the reply asserted "That is Alan Pan's
-            # name, not William Osman's" -- a confident falsehood built on a
-            # memory that merely MENTIONED the entity. Retrieval returns its
-            # top-K by similarity, so a near-miss always arrives; the model has
-            # to be told that proximity is not an answer.
-            "Matching a name or topic is NOT the same as answering the "
-            "question: if a line merely mentions what was asked about without "
-            "actually stating the answer, do NOT infer or reconstruct one from "
-            "it — say plainly that you don't know or don't remember:"
+            "RECALLED FROM PAST CONVERSATIONS — ignorable suggestions from "
+            "your own memory (timestamps = when it happened). Use one only if "
+            "it truly fits; a line that merely mentions what was asked does "
+            "NOT answer it — then say you don't remember:"
         ]
         for m in memories:
             time_str = _format_relative_time(m.created_at)
