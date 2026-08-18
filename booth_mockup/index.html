@@ -322,10 +322,7 @@
      layer and the .fx vignette (z 55) — Dan wants the words nearer the viewer
      than the scan lines. Width is calc'd to reserve the 320px/372px side
      columns at any stage width while staying dead-centred. */
-  #voxBand { position: fixed; left: 50%; transform: translateX(-50%);
-    bottom: 96px; width: calc(100% - 800px); max-width: 900px; min-width: 420px;
-    z-index: 72; pointer-events: none;
-    opacity: 0; transition: opacity 0.45s ease; }
+  #voxBand { opacity: 0; transition: opacity 0.45s ease; }
   #voxBand.on { opacity: 1; }
   #voxBand .voxplate {
     position: relative; padding: 11px 20px 14px;
@@ -454,6 +451,63 @@
   .faceid .tag .mt { font-size: 16px; }
   .faceid .tag .demo { font-size: 13px; }
 
+
+  /* ===== added 2026-08-16: INPUT caption band ==========================
+     What the human just SAID, typed out on its own plate directly above the
+     VOX band. Driven by LT's existing `turn` {role:'user', speaker, content}
+     websocket event over the same /lt/ws relay the VOX band uses -- no new
+     endpoint, no new inference, nothing added server-side.
+
+     NOT live dictation: `turn` only fires after VAD endpointing + speaker ID +
+     STT complete (~650ms after the speaker stops), so the whole utterance
+     arrives at once and is typed out retroactively, exactly like VOX does for
+     Timmy's sentences.
+
+     Deliberately distinct from VOX so an attendee can tell the two apart at a
+     glance: bone/salmon text instead of the gold --signal, a steady lamp
+     instead of a pulsing one, and its own speaker-named tag.
+
+     Geometry: VOX is bottom:96px and its plate runs ~88px tall, so bottom:200px
+     clears it with room to spare while staying under the RETRIEVED MEMORIES
+     panel (bottom:337px). Same width calc so the two plates align exactly. */
+  /* 2026-08-16: both caption plates live in one bottom-anchored flex column
+     (#captionStack) instead of each carrying its own `bottom:` px. VOX grows
+     UPWARD as a reply wraps to 2-3 lines, so fixed offsets collided the moment
+     a sentence got long -- the stack makes the gap structural. Opacity does not
+     affect layout, so VOX never shifts when INPUT is hidden. */
+  #captionStack { position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: 96px; width: calc(100% - 800px); max-width: 900px; min-width: 420px;
+    z-index: 72; pointer-events: none;
+    display: flex; flex-direction: column; gap: 10px; }
+  #inputBand { opacity: 0; transition: opacity 0.06s linear; }
+  #inputBand.on { opacity: 1; }
+  #inputBand .inplate {
+    position: relative; padding: 11px 20px 14px;
+    background: linear-gradient(180deg, rgba(4,6,10,0.60) 0%, rgba(2,3,6,0.78) 100%);
+    border: 1px solid rgba(196,150,110,0.34);
+    box-shadow: 0 0 22px rgba(0,0,0,0.55), inset 0 0 26px rgba(90,70,40,0.13);
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+  #inputBand .inplate::before, #inputBand .inplate::after {
+    content: ''; position: absolute; width: 12px; height: 12px;
+    border: 1px solid var(--brass); opacity: 0.65; }
+  #inputBand .inplate::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  #inputBand .inplate::after  { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+  #inputBand .intag { font-family: var(--cop); font-size: 11px; letter-spacing: 0.30em;
+    text-transform: uppercase; color: var(--bone-mid); text-shadow: var(--shadow-light);
+    margin-bottom: 7px; display: flex; align-items: center; gap: 9px; }
+  #inputBand .intag::after { content: ''; flex: 1; height: 1px;
+    background: linear-gradient(90deg, rgba(196,150,110,0.40), transparent); }
+  /* steady lamp -- the human has already finished speaking by the time this
+     shows, so a "live" pulse would be a lie. */
+  #inputBand .intag .lamp { width: 6px; height: 6px; border-radius: 50%;
+    background: var(--brass); box-shadow: 0 0 7px rgba(196,150,110,0.70); }
+  #inputBand .intext { font-family: var(--mono); font-size: 22px; line-height: 1.35;
+    letter-spacing: 0.012em; color: var(--bone-strong); text-shadow: var(--shadow-strong);
+    min-height: 30px; word-break: break-word; }
+  #inputBand .incur { display: inline-block; width: 0.55em; height: 1.02em;
+    margin-left: 3px; vertical-align: -0.16em; background: var(--bone-strong);
+    box-shadow: 0 0 9px rgba(214,170,140,0.45); }
+  #inputBand.typed .incur { animation: vox-blink 1.06s steps(1) infinite; }
 </style>
 </head>
 <body>
@@ -473,6 +527,16 @@
     <div class="mlabel">cogitator mood</div>
     <div class="grid"><span class="dot" id="moodDot"></span></div>
   </div>
+  <!-- Caption stack: INPUT (what the human said) above VOX (what Timmy is
+       saying now). Deliberately OUTSIDE .stage so it composites above the
+       scanlines and the vignette. -->
+  <div id="captionStack">
+  <div id="inputBand" aria-hidden="true">
+    <div class="inplate">
+      <div class="intag"><span class="lamp"></span><span id="inTag">input</span></div>
+      <div class="intext"><span id="inOut"></span><span class="incur"></span></div>
+    </div>
+  </div>
   <!-- VOX caption band: the sentence Timmy is speaking right now. Deliberately
        OUTSIDE .stage so it stacks above the scanlines and the vignette. -->
   <div id="voxBand" aria-hidden="true">
@@ -480,6 +544,7 @@
       <div class="voxtag"><span class="lamp"></span>vox · cogitator speaking</div>
       <div class="voxtext"><span id="voxOut"></span><span class="voxcur"></span></div>
     </div>
+  </div>
   </div>
 
   <div class="stage">
@@ -1608,6 +1673,67 @@
       }, 1600);
     }
 
+    // ----- INPUT caption: what the human just said -----
+    // Rides LT's existing `turn` {role:'user', speaker, content} broadcast
+    // (main.py ~992 for the speech path) on the /lt/ws relay the VOX band
+    // already holds open. Zero server-side cost: the event is on the wire
+    // today and this handler used to throw it away.
+    //
+    // Speaker naming: identify() runs BEFORE transcribe() in the LT pipeline
+    // (main.py 896 vs 929, ~42ms vs ~104ms), so `speaker` is already resolved
+    // by the time the text exists -- no async name backfill needed. Falls back
+    // to the bare tag only for genuinely unresolved voices and the typed path.
+    const inputBand = document.getElementById('inputBand');
+    const inOut     = document.getElementById('inOut');
+    const inTag     = document.getElementById('inTag');
+    let inClearTimer = null;
+
+    function inputLabel(speaker) {
+      const s = (speaker || '').trim().toLowerCase();
+      if (!s || s.startsWith('unknown') || s === 'guest') return 'input';
+      return 'input \u00b7 ' + s;
+    }
+
+    function inputShow(speaker, text) {
+      const line = (text || '').trim();
+      if (!line) return;
+      // The supervisor / couples-therapist channel must never reach the
+      // attendee screen. /api/announce already passes caption=false for the
+      // spoken side, but inject:true creates a REAL user turn that would
+      // otherwise land here -- drop it explicitly.
+      if ((speaker || '').toLowerCase() === 'couples_therapist') return;
+      clearTimeout(inClearTimer);
+      inTag.textContent = inputLabel(speaker);
+      inputBand.classList.add('on');
+      // 2026-08-16 (Dan): the human's line lands ALL AT ONCE, no teletype.
+      // VOX still types because it is locked to Timmy's audio; this is not --
+      // it arrives ~650ms after the speaker stops (VAD endpoint ~510ms + STT
+      // ~104ms) and a character-walk only ADDED ~900ms before it was readable.
+      // Painting it in one go makes the plate as fast as the pipeline allows.
+      inOut.textContent = line;
+      inputBand.classList.add('typed');   // cursor blinks immediately
+      // FALLBACK ONLY. Normally this plate is retired by `speech_end` in
+      // lockstep with VOX (see the ws handler) -- Dan 2026-08-16: his quote
+      // must disappear at the same moment Timmy's does, not linger after it.
+      // This timer only matters when Timmy never answers at all, so no
+      // speech_end ever arrives and the plate would otherwise sit forever.
+      inClearTimer = setTimeout(inputEnd, 30000);
+    }
+
+    // Same hold + fade shape as voxEnd, so when both are called from the same
+    // speech_end the two plates retire on identical timers and read as one
+    // exchange leaving the screen together.
+    function inputEnd() {
+      clearTimeout(inClearTimer);
+      inClearTimer = setTimeout(() => {
+        inputBand.classList.remove('on');
+        inClearTimer = setTimeout(() => {
+          inOut.textContent = '';
+          inputBand.classList.remove('typed');
+        }, 500);
+      }, 1600);
+    }
+
     function connectVox() {
       let ws;
       try {
@@ -1620,7 +1746,8 @@
         // the sentence is d.text, not d.data.text. Ignore the other traffic on
         // this feed (turn / token / metrics / reasoning / tool_call ...).
         if (d.type === 'speaking') voxShow(d.text);
-        else if (d.type === 'speech_end') voxEnd();
+        else if (d.type === 'speech_end') { voxEnd(); inputEnd(); }
+        else if (d.type === 'turn' && d.role === 'user') inputShow(d.speaker, d.content);
       };
       // LT restarts (systemctl restart little-timmy.service) drop this socket;
       // reconnect on a slow timer so the booth heals itself unattended.
