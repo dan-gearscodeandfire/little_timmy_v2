@@ -124,6 +124,34 @@ VISION_MARKER_BACKGROUND = "VISION: background awareness only — do not narrate
 VISION_MARKER_QUESTION = "VISION: the user is asking about what you can see — answer from this."
 
 
+# R1 (2026-08-18): the remaining fixed [CONTEXT] prose follows the R2 pattern
+# above, one block at a time — the RULE paragraph moves to system[0] (KV-cached
+# once), a short MARKER keeps the block's original tail position so
+# recency-dependent constraints keep their slot. HARD CONSTRAINT: everything
+# here is emitted UNCONDITIONALLY — if system[0] varies at runtime (per
+# speaker, per situation, per register) the KV prefix breaks and every turn
+# pays a full re-prefill. Config-gated variation (restart-level) is fine.
+
+# GROUND TRUTH framing (2026-08-13, see the tail comment where the marker is
+# emitted for the audit history). 74 fixed tokens per turn-with-facts.
+GROUND_TRUTH_RULE = """
+GROUND TRUTH RULES (apply whenever [CONTEXT] carries a GROUND TRUTH section):
+its rows are verified facts about the person you're talking to. They are
+correct: never contradict or second-guess them. But they are NOT necessarily
+about what was just said — use one only when it actually answers or bears on
+the current turn, and otherwise ignore it completely. Do not steer the
+conversation toward them and do not recite them unprompted.
+""".strip()
+
+# HEARD BUT UNCONFIRMED was tried here too (R1, 2026-08-18) and REVERTED the
+# same day: with the rule in system[0] and a short "hedge these" marker at the
+# tail, the model answered "Is my dog's name Bixby?" with a confident
+# "It is Biscuit." — the hedge only survives with the full preamble inline
+# (A/B'd acoustically, identical replies both legs, twice each). A hedge is a
+# do-the-opposite-of-the-row instruction, so it is recency-load-bearing like
+# WHO IS SPEAKING; at 49 tokens on a rare block, inline is the right price.
+
+
 def build_static_persona_system() -> str:
     """Return the truly-static system[0] content: persona + protocol clause +
     the hoisted guard rules.
@@ -135,6 +163,7 @@ def build_static_persona_system() -> str:
     if getattr(config, "SCENE_GROUNDING_GUARD", True):
         parts.append(SCENE_GROUNDING_RULE)
     parts.append(VISION_RULE)
+    parts.append(GROUND_TRUTH_RULE)
     return "\n\n".join(parts)
 
 
@@ -311,18 +340,21 @@ def build_ephemeral_block(
             # is still wrong) but scoped to relevance, so the model stops
             # reaching for them. Proper fix is relevance-ranked facts; this is
             # the framing half. See Areas/lt-retrieval-channel-repair-2026-08-13.
+            # Marker only — the framing paragraph is cached in system[0]
+            # (GROUND_TRUTH_RULE). Line must keep the "GROUND TRUTH" prefix:
+            # the booth context panel switches sections on startsWith (see
+            # booth_mockup parseSections; 86fc93b is what a silent rename
+            # does to it).
             gt_lines = [
-                "GROUND TRUTH — verified facts about the person you're talking to. "
-                "They are correct: never contradict or second-guess them. But they "
-                "are NOT necessarily about what was just said — use one only when "
-                "it actually answers or bears on the current turn, and otherwise "
-                "ignore it completely. Do not steer the conversation toward them "
-                "and do not recite them unprompted:"
+                "GROUND TRUTH — verified facts about this person; use only "
+                "what bears on the current turn, never contradict them:"
             ]
             for f in verified:
                 gt_lines.append(f"- {f.subject} {f.predicate} {f.value}")
             parts.append("\n".join(gt_lines))
         if unconfirmed:
+            # Stays INLINE by measurement (see the R1 note above GROUND_TRUTH_RULE):
+            # hoisting this one loses the hedge behavior.
             unc_lines = [
                 "HEARD BUT UNCONFIRMED — you weren't sure you heard these correctly. "
                 "If asked, you may share the value but HEDGE (say you're not certain) "
