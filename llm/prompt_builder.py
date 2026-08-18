@@ -493,6 +493,13 @@ def build_ephemeral_block(
     # since 6-11 and it ran all through Open Sauce anyway, because ~26 turns of
     # the model's own output outweigh one static rule. Quoting the exact phrase
     # back, in the recency-privileged position, is the version that has a chance.
+    #
+    # R1 (2026-08-18) deliberately did NOT hoist these two templates, nor
+    # [UNCERTAIN INPUT] below: all three are do-the-opposite instructions (the
+    # class the R1a UNCONFIRMED A/B proved loses its behavior when the prose
+    # leaves the tail), they fire rarely (~50-70 tok on rare turns), and none
+    # can be triggered on demand for acoustic validation. Unvalidatable
+    # behavioral risk for a handful of rare-turn tokens is a bad trade.
     if avoid_opener:
         parts.append(
             f'[AVOID] You have opened several of your last replies with '
