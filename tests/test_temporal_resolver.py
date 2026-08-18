@@ -333,6 +333,17 @@ def test_overlap_query_seeded():
 
     async def go():
         import time
+        # This test runs on its own fresh event loop, but db.connection caches
+        # its asyncpg pool globally -- if an earlier test in the session built
+        # the pool on ITS loop, every acquire here dies with "Event loop is
+        # closed" (seen in full-suite runs only; standalone always passed).
+        # Drop any cached pool so it is rebuilt on the current loop.
+        from db import connection as _dbc
+        _dbc._pool = None
+        # Same cross-loop hazard for memory.manager's cached embed client
+        # (store_episode embeds via httpx; anyio transports die the same way).
+        from memory import manager as _mm
+        _mm._embed_client = None
         # 2000 days ago: permanently clear of live data. The original "30
         # days ago" aged out on 2026-08-18 -- the live DB accumulated 52 Open
         # Sauce episodes in that window, so with limit=20 the seeded rows
