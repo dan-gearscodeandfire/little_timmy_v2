@@ -211,6 +211,11 @@ def build_static_persona_system() -> str:
     parts.append(GROUND_TRUTH_RULE)
     parts.append(RECALLED_RULE)
     parts.append(SPEAKER_RULES)
+    if getattr(config, "REGISTER_ENABLED", False):
+        # Definitions for the per-turn [REGISTER] marker (R1d). Env-gated =
+        # restart-level, so the KV prefix stays stable at runtime.
+        from conversation.register import REGISTER_RULES
+        parts.append(REGISTER_RULES)
     return "\n\n".join(parts)
 
 
