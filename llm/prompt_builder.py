@@ -170,6 +170,32 @@ NOT infer or reconstruct one from it — say plainly that you don't know or
 don't remember.
 """.strip()
 
+# WHO IS SPEAKING rule prose (branch history in the tail comments where the
+# markers are emitted). ALL branches live here unconditionally — the branch
+# taken varies per turn, but system[0] must not (hard KV constraint). The tail
+# keeps a short per-branch marker at the very END of [CONTEXT], the recency
+# slot the 6-11 reorder won: the marker still names the speaker and carries
+# the NOT-Dan kernel, it just stops paying for the paragraph every turn.
+SPEAKER_RULES = """
+WHO-IS-SPEAKING RULES (the [WHO IS SPEAKING] line at the end of [CONTEXT]
+identifies this turn's speaker — obey it over any name in the history):
+- If it names a known person, address your reply to that person. When it says
+  the speaker is NOT Dan, do not address Dan or call the speaker Dan unless
+  Dan himself is the one speaking.
+- "Unknown voice" means someone you have not met: do NOT assume they are Dan
+  and do NOT invent a name for them. Address them as a guest you are meeting
+  for the first time; you may ask who they are. Never call an unrecognized
+  speaker "Dan".
+- "Face suggests NAME" means the voiceprint did not match but face recognition
+  recognized the person in front of you: address them by that name as a
+  working hypothesis and go with a correction if they give one. If they are
+  someone you have met before, draw on what you know about them and do NOT
+  tell them you don't know them.
+- A parenthetical "facts filed under SUBJECT" means the GROUND TRUTH rows
+  under that subject describe this same person — use them, but always address
+  the person by the display name given, never by the subject tag.
+""".strip()
+
 
 def build_static_persona_system() -> str:
     """Return the truly-static system[0] content: persona + protocol clause +
@@ -184,6 +210,7 @@ def build_static_persona_system() -> str:
     parts.append(VISION_RULE)
     parts.append(GROUND_TRUTH_RULE)
     parts.append(RECALLED_RULE)
+    parts.append(SPEAKER_RULES)
     return "\n\n".join(parts)
 
 
@@ -542,48 +569,42 @@ def build_ephemeral_block(
     # branch below, so a known guest whose voiceprint never bound is greeted by
     # name. Their facts are already retrieved under this name (LiveMemory.gather).
     # Lower-severity than the promoted case: NO voiceprint was bound.
+    # Markers only from here down — the branch paragraphs are cached in
+    # system[0] (SPEAKER_RULES). Each marker still names the speaker and
+    # carries the NOT-Dan kernel in this recency slot; R1a's UNCONFIRMED
+    # revert is the evidence that the kernel itself cannot be hoisted.
     face_trust = (face_trust_name or "").strip()
     if fusion_source == "face_hint" and face_hint_name:
         _fh = display_name(face_hint_name)
         parts.append(
-            f"[WHO IS SPEAKING] The voiceprint did not match a known speaker. "
-            f"Face recognition strongly suggests this is {_fh} "
-            f"(only visible person, head centered on them). "
-            f"Treat this as a working hypothesis: address them as {_fh} "
-            f"unless they correct you. Do NOT default to calling them Dan."
+            f"[WHO IS SPEAKING] Voice unknown; face strongly suggests {_fh} "
+            f"(only visible person). Address them as {_fh} — working "
+            f"hypothesis, NOT Dan."
         )
     elif face_trust and sp.startswith("unknown") and not face_trust.lower().startswith("unknown"):
         _ft = display_name(face_trust)
         parts.append(
-            f"[WHO IS SPEAKING] The voiceprint did not match, but face recognition "
-            f"identifies the person in front of you as {_ft} — someone "
-            f"you have met before and already know things about. Address them as "
-            f"{_ft} and draw on what you know about them; treat it as a "
-            f"working hypothesis and go with a correction if they give one. Do NOT tell "
-            f"them you don't know them, and do NOT default to calling them Dan."
+            f"[WHO IS SPEAKING] Voice unknown, but face recognition identifies "
+            f"them: this is {_ft}, someone you have met before. Address them "
+            f"as {_ft}, use what you know about them — NOT Dan."
         )
     elif sp.startswith("unknown"):
         parts.append(
-            "[WHO IS SPEAKING] This voice does NOT match anyone you know — it is "
-            "someone you have not met before. Do NOT assume this is Dan and do NOT "
-            "invent a name for them. Address them as a guest you are meeting for the "
-            "first time; you may ask who they are. Never call an unrecognized "
-            'speaker "Dan".'
+            "[WHO IS SPEAKING] Unknown voice — a stranger you have not met, "
+            'NOT Dan. Never call them "Dan"; you may ask who they are.'
         )
     elif sp and sp != "timmy":
         sp_disp = display_name(sp)
         line = (f"[WHO IS SPEAKING] You are speaking with {sp_disp} right now. "
                 f"Address your reply to {sp_disp}.")
         if sp != "dan":
-            line += (f" This is {sp_disp}, NOT Dan — do not address Dan or call "
-                     f"the speaker Dan unless Dan himself is the one speaking.")
+            line += f" This is {sp_disp}, NOT Dan."
         if display_base(sp) != sp:
             # Auto-suffixed fork (expo duplicate names): GROUND TRUTH lines
             # keep the raw canonical subject; this clause supplies the join
             # so the model uses those facts WITHOUT speaking the suffix.
             line += (f" (Their remembered facts are filed under the subject "
-                     f"'{sp}' — that is this same person; always address "
-                     f"them simply as {sp_disp}.)")
+                     f"'{sp}' — always address them simply as {sp_disp}.)")
         parts.append(line)
 
     return "\n\n".join(parts)

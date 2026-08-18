@@ -132,9 +132,9 @@ def test_face_trust_addresses_recognized_face_when_voice_unknown():
     )
     assert "WHO IS SPEAKING" in block
     assert "Voss" in block
-    # Must NOT run the stranger branch.
-    assert "have not met before" not in block
-    assert "meeting for the first" not in block
+    # Must NOT run the stranger branch (marker text; rules live in system[0]).
+    assert "stranger" not in block
+    assert "someone you have met before" in block
 
 
 def test_face_trust_yields_to_full_promotion():
@@ -145,7 +145,7 @@ def test_face_trust_yields_to_full_promotion():
         face_trust_name="voss", fusion_source="face_hint",
     )
     assert block.count("WHO IS SPEAKING") == 1
-    assert "strongly suggests this is Voss" in block
+    assert "face strongly suggests Voss" in block
 
 
 def test_unknown_voice_without_face_trust_still_stranger():
@@ -153,7 +153,8 @@ def test_unknown_voice_without_face_trust_still_stranger():
     block = build_ephemeral_block(
         [], [], speaker_name="unknown_4", fusion_source="voice",
     )
-    assert "does NOT match anyone you know" in block
+    assert "Unknown voice — a stranger" in block
+    assert 'Never call them "Dan"' in block
 
 
 def test_face_trust_ignored_for_unknown_face_name():
@@ -163,7 +164,7 @@ def test_face_trust_ignored_for_unknown_face_name():
         fusion_source="voice",
     )
     # Falls through to the stranger branch, never addresses 'Unknown_2'.
-    assert "does NOT match anyone you know" in block
+    assert "Unknown voice — a stranger" in block
     assert "Unknown_2" not in block
 
 

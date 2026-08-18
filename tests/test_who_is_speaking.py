@@ -43,7 +43,7 @@ def test_known_non_dan_speaker_is_named_and_dan_default_forbidden():
 def test_unknown_speaker_is_never_called_dan():
     block = _block("unknown_15")
     assert "[WHO IS SPEAKING]" in block
-    assert "do NOT assume this is Dan" in block.replace("Do NOT", "do NOT")
+    assert "NOT Dan" in block  # kernel stays in the tail marker; prose in system[0]
     assert '"Dan"' in block
     # Must not leak the temp id as a name to address.
     assert "Unknown_15" not in block
