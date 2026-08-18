@@ -22,15 +22,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import config
-from llm.prompt_builder import build_ephemeral_block
+from llm.prompt_builder import build_ephemeral_block, build_static_persona_system
 
 
 def test_guard_fires_by_default():
+    """2026-08-17: the guard is now split — the RULE is cached in system[0],
+    a short MARKER stays in the tail at its original position. The invariant
+    is that the model receives both, not that the paragraph sits in the tail."""
     blk = build_ephemeral_block(memories=[], facts=[], speaker_name="Dan")
+    sys0 = build_static_persona_system()
     assert "[SCENE GROUNDING]" in blk
-    assert "never invent guests" in blk
+    assert "never invent guests" in blk.lower()
     # Negative-constraint phrasing — bans invention, doesn't assert presence.
-    assert "walked in" in blk
+    assert "walked in" in sys0
+    assert "never invent guests" in sys0
 
 
 def test_guard_present_with_dan_only_room():
@@ -70,3 +75,28 @@ def test_guard_does_not_assert_who_is_present():
     assert "no one is here" not in lowered
     assert "nobody is" not in lowered
     assert "you are alone" not in lowered
+
+
+def test_rule_is_cached_not_repeated_per_turn():
+    """The point of the 2026-08-17 split: the paragraph must NOT be in the
+    per-turn block (it is the one part of the prompt that is never KV-cached),
+    and the tail marker must stay small."""
+    blk = build_ephemeral_block(memories=[], facts=[], speaker_name="Dan")
+    marker = [p for p in blk.split("\n\n") if p.startswith("[SCENE GROUNDING]")][0]
+    assert len(marker) < 140, f"tail marker grew back into a paragraph: {marker!r}"
+    assert "sensors miss people" not in blk      # rule text stayed in system[0]
+    assert "sensors miss people" in build_static_persona_system()
+
+
+def test_guard_off_removes_rule_from_system_prompt():
+    """Disabling the guard must drop the RULE too, not just the marker —
+    otherwise the toggle silently stops working while still costing tokens."""
+    import config as _c
+    orig = _c.SCENE_GROUNDING_GUARD
+    try:
+        _c.SCENE_GROUNDING_GUARD = False
+        assert "never invent guests" not in build_static_persona_system()
+        assert "[SCENE GROUNDING]" not in build_ephemeral_block(
+            memories=[], facts=[], speaker_name="Dan")
+    finally:
+        _c.SCENE_GROUNDING_GUARD = orig

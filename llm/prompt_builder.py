@@ -79,13 +79,63 @@ def _fmt_age(age_s) -> str:
     return f"{h}h{m:02d}m" if m else f"{h}h"
 
 
+# Rule text hoisted out of the per-turn [CONTEXT] block (2026-08-17, R2).
+#
+# These two guards carried ~130 tokens of FIXED prose with zero interpolation,
+# re-tokenized on every single turn — [SCENE GROUNDING] fires unconditionally,
+# and VISION RULES fires on every turn with a scene. The tail is the one part of
+# the prompt that is never KV-cached, so that was ~130 tokens of pure repeat
+# cost per turn (measured: ~170 ms of prefill).
+#
+# What stays behind in the tail is the deliberate part. The scene-grounding
+# guard's POSITION is load-bearing: it was placed after [WHO IS PRESENT] and
+# before [WHO IS SPEAKING] on 2026-06-16 specifically so it would out-recency
+# the presence list it constrains (the persona had invented "the guest who just
+# walked in" for insult color). Hoisting it wholesale would move the directive
+# ~2000 tokens away from generation — exactly the recency fight the 6-11
+# WHO IS SPEAKING reorder lost. So the RULE moves here and a short MARKER stays
+# at the original position: the model still meets the constraint late, it just
+# stops paying to re-read the paragraph.
+SCENE_GROUNDING_RULE = """
+SCENE GROUNDING (applies whenever [CONTEXT] shows a [SCENE GROUNDING] marker):
+The only people you actually know about are those named in the [WHO IS PRESENT]
+or [WHAT YOU SEE] sections of [CONTEXT]. Do NOT announce or imply that anyone
+has just walked in, arrived, or is in the room unless they appear there. Be as
+cutting as you like, but never invent guests, arrivals, or bystanders for
+effect. This does NOT mean the room is empty — your sensors miss people, so
+never deny that someone is there either.
+""".strip()
+
+VISION_RULE = """
+VISION RULES (apply whenever [CONTEXT] carries a [WHAT YOU SEE] section):
+That section is background awareness. Do NOT describe what you see unless
+directly asked. Do NOT narrate the scene. Do NOT volunteer visual details. If
+someone asks what you see or about visual details, you CAN and SHOULD answer
+using it. When the marker says the user is asking about what you can see,
+answer their question from it — be specific and descriptive about what you
+observe.
+""".strip()
+
+# Short tail markers. These keep the constraint in its original, deliberate
+# recency slot; the paragraphs above supply the meaning from system[0].
+SCENE_GROUNDING_MARKER = ("[SCENE GROUNDING] Only people named above are real. "
+                          "Never invent guests, arrivals, or bystanders.")
+VISION_MARKER_BACKGROUND = "VISION: background awareness only — do not narrate it."
+VISION_MARKER_QUESTION = "VISION: the user is asking about what you can see — answer from this."
+
+
 def build_static_persona_system() -> str:
-    """Return the truly-static system[0] content: persona + protocol clause.
+    """Return the truly-static system[0] content: persona + protocol clause +
+    the hoisted guard rules.
 
     No clock, no mood, no per-turn signal. Stable across the session so
     llama.cpp caches its tokens once and reuses forever. Mutates only on
-    persona edit (rare; restart-level event)."""
-    return config.PERSONA.strip() + "\n\n" + PROTOCOL_CLAUSE
+    persona edit or a SCENE_GROUNDING_GUARD flip (both restart-level events)."""
+    parts = [config.PERSONA.strip(), PROTOCOL_CLAUSE]
+    if getattr(config, "SCENE_GROUNDING_GUARD", True):
+        parts.append(SCENE_GROUNDING_RULE)
+    parts.append(VISION_RULE)
+    return "\n\n".join(parts)
 
 
 # Slice A (2026-06-12): NL text per situational-awareness regime. The empty/
@@ -282,6 +332,33 @@ def build_ephemeral_block(
                 unc_lines.append(f"- {f.subject} {f.predicate} {f.value} (~unsure)")
             parts.append("\n".join(unc_lines))
 
+    # CHANNEL MERGE (2026-08-18, "option C"). When a recall tool fired, the turn
+    # used to carry TWO retrieval blocks at once: the always-on RECALLED list
+    # below AND the tool's [WHAT WE TALKED ABOUT] block -- both built by
+    # search_propositions over the same table, so on the strongest recall
+    # questions ("do you remember X?") the two blocks were word-for-word
+    # duplicates (measured 69% overlap; 100% on direct topic questions), under
+    # preambles giving OPPOSITE instructions ("say nothing about them" vs
+    # "answer using ONLY these"). Fix: fold the always-on items into the tool's
+    # block -- dedupe by content (same table => same text => exact match), append
+    # only the genuinely unique ones, and drop the RECALLED block entirely for
+    # this turn. One block, one preamble, every unique item kept. ~190 tok saved
+    # on affected turns (~1 in 19). Non-tool turns are byte-identical to before.
+    if recall_block and memories:
+        _unique = [m for m in memories
+                   if (m.content or "").strip() not in recall_block]
+        _extra = []
+        for m in _unique:
+            _t = _format_relative_time(m.created_at)
+            _c = m.content if len(m.content) <= 200 else m.content[:200] + "..."
+            _extra.append(f"- ({_t}) {_c}")
+        if _extra:
+            recall_block = recall_block + "\n" + "\n".join(_extra)
+        logging.getLogger(__name__).debug(
+            "[MERGE] recall tool block absorbed always-on memories: "
+            "%d unique of %d kept", len(_unique), len(memories))
+        memories = []
+
     if memories:
         # These ARE selected for relevance (hybrid retrieval over episodes,
         # recency-decayed) -- unlike the fact block above, which is a recency
@@ -366,22 +443,12 @@ def build_ephemeral_block(
             "right now and that you'll turn toward them."
         )
     elif vision_description:
-        if visual_question:
-            parts.append(
-                "[WHAT YOU SEE]\n" + vision_description
-                + "\nThe user is asking about what you can see. "
-                + "Answer their question using the visual information above. "
-                + "Be specific and descriptive about what you observe."
-            )
-        else:
-            parts.append(
-                "[WHAT YOU SEE]\n" + vision_description
-                + "\nVISION RULES: This is background awareness. "
-                + "Do NOT describe what you see unless directly asked. "
-                + "Do NOT narrate the scene. Do NOT volunteer visual details. "
-                + "If someone asks what you see or about visual details, "
-                + "you CAN and SHOULD answer using this information."
-            )
+        # Rules live in system[0] (VISION_RULE); only the scene itself and a
+        # one-line marker are per-turn. Saves ~40 tok on every turn with vision.
+        parts.append(
+            "[WHAT YOU SEE]\n" + vision_description + "\n"
+            + (VISION_MARKER_QUESTION if visual_question else VISION_MARKER_BACKGROUND)
+        )
 
     # SCENE GROUNDING — forbid inventing room occupants. Emitted near the tail
     # (after presence/vision, before WHO IS SPEAKING) so it has recency over the
@@ -393,13 +460,10 @@ def build_ephemeral_block(
     # unsensed person must not be denied), so Timmy simply won't fabricate people
     # either direction. Sibling of the averted-gaze vision guard.
     if getattr(config, "SCENE_GROUNDING_GUARD", True):
-        parts.append(
-            "[SCENE GROUNDING] The only people you actually know about are those "
-            "named in [WHO IS PRESENT] or visible in [WHAT YOU SEE] above. Do NOT "
-            "announce or imply that anyone has just walked in, arrived, or is in "
-            "the room unless they appear there. Be as cutting as you like, but "
-            "never invent guests, arrivals, or bystanders for effect."
-        )
+        # Marker only — the rule itself is cached in system[0]. Position is
+        # unchanged on purpose (after presence, before WHO IS SPEAKING); see
+        # SCENE_GROUNDING_RULE for why that ordering is load-bearing.
+        parts.append(SCENE_GROUNDING_MARKER)
 
     # UNCERTAIN INPUT — a content word in the user's utterance came through STT
     # below threshold (stt.client.low_confidence_query_term). The store-side gate
