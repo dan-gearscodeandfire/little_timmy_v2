@@ -41,7 +41,7 @@ def test_each_regime_emits_situation_line(regime):
 def test_party_assumes_strangers_never_dan():
     block = _block("PARTY")
     assert "[SITUATION]" in block
-    assert "never default an unknown to" in block
+    assert "never Dan" in block  # kernel in the marker; full regime prose in system[0]
     assert "stranger" in block.lower()
 
 

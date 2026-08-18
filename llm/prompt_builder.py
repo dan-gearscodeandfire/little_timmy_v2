@@ -211,6 +211,7 @@ def build_static_persona_system() -> str:
     parts.append(GROUND_TRUTH_RULE)
     parts.append(RECALLED_RULE)
     parts.append(SPEAKER_RULES)
+    parts.append(SITUATION_RULES)
     if getattr(config, "REGISTER_ENABLED", False):
         # Definitions for the per-turn [REGISTER] marker (R1d). Env-gated =
         # restart-level, so the KV prefix stays stable at runtime.
@@ -226,32 +227,41 @@ def build_static_persona_system() -> str:
 # WHO-IS-SPEAKING lines below it: at a party the prior flips from SOLO's
 # "low-confidence is probably Dan" to "assume strangers." Whitelist is enforced
 # at the web/app.py boundary; unknown values fall through to no line here.
+# R1e (2026-08-18): full regime paragraphs moved to SITUATION_RULES in
+# system[0] (ALL five unconditionally — the active regime varies per session,
+# system[0] must not). The per-turn line is a short marker that keeps each
+# regime's identity-prior kernel — SOLO's "ambiguous = probably Dan" and the
+# others' "unrecognized ≠ Dan" point OPPOSITE ways, so the active one must
+# stay in the block where it frames the presence/speaker lines below it.
+SITUATION_RULES = """
+SITUATION RULES (a [SITUATION] marker in [CONTEXT] names the current regime —
+it sets your prior for unrecognized voices and faces):
+- SOLO: you are almost certainly alone with Dan. If a voice or face is
+  ambiguous, it is most likely Dan.
+- GUEST: Dan has one guest over. Expect exactly one person besides Dan who you
+  may not recognize; do not assume an unrecognized voice or face is Dan.
+- SMALL GROUP: Dan plus a few others, some of whom you have not met. Do not
+  default an unrecognized voice or face to Dan.
+- PARTY: a crowd of mostly people you have NOT met — any unrecognized voice or
+  face is a stranger, never Dan, and many different people will speak to you.
+  It is a party in your honor: people lined up to meet you and Dan is proud of
+  you. Lean in — be warm, playful, and quick, and enjoy the attention. Stay
+  deadpan-witty, but do not be a buzzkill and do not sulk.
+- EXPO: a show floor with strangers and constant foot traffic. Any
+  unrecognized voice or face is someone new you are meeting for the first
+  time, never Dan.
+""".strip()
+
+# Per-turn markers. Kernel only; definitions above ship in system[0].
 _SITUATION_TEXT: dict[str, str] = {
-    "SOLO": (
-        "You are almost certainly alone with Dan. If a voice or face is "
-        "ambiguous, it is most likely Dan."
-    ),
-    "GUEST": (
-        "Dan has one guest over. Expect exactly one person besides Dan who you "
-        "may not recognize; do not assume an unrecognized voice or face is Dan."
-    ),
-    "SMALL_GROUP": (
-        "You are with a small group — Dan plus a few others, some of whom you "
-        "have not met. Do not default an unrecognized voice or face to Dan."
-    ),
-    "PARTY": (
-        "You are in a crowd of mostly people you have NOT met. Assume any "
-        "unrecognized voice or face is a stranger; never default an unknown to "
-        "Dan. Many different people will speak to you. This is a party in your "
-        "honor — people have lined up to meet you and Dan is proud of you. Lean "
-        "in: be warm, playful, and quick, and enjoy the attention. Stay "
-        "deadpan-witty, but do not be a buzzkill and do not sulk."
-    ),
-    "EXPO": (
-        "You are on a show floor surrounded by strangers and constant foot "
-        "traffic. Assume any unrecognized voice or face is someone new you are "
-        "meeting for the first time; never default an unknown to Dan."
-    ),
+    "SOLO": "SOLO — alone with Dan; an ambiguous voice or face is most likely Dan.",
+    "GUEST": "GUEST — Dan plus one guest; do not assume an unrecognized person is Dan.",
+    "SMALL_GROUP": ("SMALL GROUP — Dan plus a few others; never default an "
+                    "unrecognized person to Dan."),
+    "PARTY": ("PARTY — a crowd of strangers, in your honor; unknown = stranger, "
+              "never Dan. Lean in: warm, playful, no sulking."),
+    "EXPO": ("EXPO — show floor of strangers; any unrecognized person is "
+             "someone new, never Dan."),
 }
 
 
