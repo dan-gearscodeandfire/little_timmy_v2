@@ -333,7 +333,11 @@ def test_overlap_query_seeded():
 
     async def go():
         import time
-        base = time.time() - 30 * 86400  # 30 days ago, clear of live data
+        # 2000 days ago: permanently clear of live data. The original "30
+        # days ago" aged out on 2026-08-18 -- the live DB accumulated 52 Open
+        # Sauce episodes in that window, so with limit=20 the seeded rows
+        # never made the cut and the overlap assertions saw 0 markers.
+        base = time.time() - 2000 * 86400
         # Three episodes on three consecutive days.
         ids = []
         for i, marker in enumerate(("DAY_A", "DAY_B", "DAY_C")):

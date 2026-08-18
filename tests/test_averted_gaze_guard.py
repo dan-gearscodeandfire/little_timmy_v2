@@ -100,7 +100,9 @@ def test_in_view_still_descriptive():
         vision_description="Dan wearing a blue shirt.",
         visual_question=True, vision_subject_absent=False,
     )
-    assert "Be specific and descriptive" in blk
+    # Marker in the tail; the "be specific and descriptive" prose is in
+    # system[0] (VISION_RULE) since the R2 hoist.
+    assert "asking about what you can see" in blk
     assert "blue shirt" in blk
     assert "NOT currently looking" not in blk
 
