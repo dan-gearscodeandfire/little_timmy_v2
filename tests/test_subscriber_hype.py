@@ -80,10 +80,11 @@ def test_pick_line_no_immediate_repeat():
     parsed = {subscriber_hype.parse_line(ln)[0] for ln in lines}
     prev, _ = subscriber_hype.pick_line()
     for _ in range(50):
-        cur, scale = subscriber_hype.pick_line()
+        cur, segments = subscriber_hype.pick_line()
         assert cur != prev
         assert cur in parsed
-        assert scale is None or scale > 0
+        assert segments and all(t and (sc is None or sc > 0)
+                                for t, sc in segments)
         prev = cur
 
 
@@ -95,6 +96,17 @@ def test_pick_line_covers_all_lines_eventually():
 
 
 def test_parse_line_scale_directive():
-    assert subscriber_hype.parse_line("[scale=1.0] POWER!") == ("POWER!", 1.0)
-    assert subscriber_hype.parse_line("[scale=0.85]X") == ("X", 0.85)
-    assert subscriber_hype.parse_line("WITNESS ME!") == ("WITNESS ME!", None)
+    assert subscriber_hype.parse_line("[scale=1.0] POWER!") == (
+        "POWER!", [("POWER!", 1.0)])
+    assert subscriber_hype.parse_line("WITNESS ME!") == (
+        "WITNESS ME!", [("WITNESS ME!", None)])
+
+
+def test_parse_line_segments():
+    display, segs = subscriber_hype.parse_line(
+        "[scale=1.8] Lawng || liv the new flesh!")
+    assert display == "Lawng liv the new flesh!"
+    assert segs == [("Lawng", 1.8), ("liv the new flesh!", None)]
+    # empty segments are dropped
+    assert subscriber_hype.parse_line("A || || B")[1] == [
+        ("A", None), ("B", None)]

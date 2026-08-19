@@ -214,6 +214,37 @@ class TTSEngine:
                 kind="real", on_play_start=on_play_start, gen=self._stop_gen,
                 caption=display_text if caption else None))
 
+    async def speak_segments(self, segments: list[tuple[str, float | None]],
+                             force: bool = False,
+                             suppress_mic: bool = True,
+                             caption: bool = True):
+        """Speak (text, length_scale) segments stitched into ONE gapless clip.
+
+        Per-SEGMENT speech-rate control (2026-08-19, subscriber_hype `||`
+        lines): each segment synthesizes at its own length_scale (None ->
+        config default) and the raw audio is concatenated BEFORE enqueue, so
+        there is no inter-clip cooldown gap — "Lawng"@1.8 flows straight into
+        "liv the new flesh!"@0.6 as one utterance. Same mute/mic/caption
+        contract as speak(); the caption is the joined display text."""
+        if not force and _tts_muted():
+            return
+        display = " ".join(t.strip() for t, _ in segments if t.strip())
+        parts, sr = [], None
+        for text, scale in segments:
+            text = text.replace(",", " —")
+            if not text.strip():
+                continue
+            audio, sr = await asyncio.to_thread(
+                _synthesize_raw, text, self.model_path, scale)
+            if len(audio) > 0:
+                parts.append(audio)
+        if not parts:
+            return
+        await self._playback_queue.put(PlaybackItem(
+            audio=np.concatenate(parts), sr=sr, cooldown_s=0.5,
+            suppress_mic=suppress_mic, kind="real", gen=self._stop_gen,
+            caption=display if caption else None))
+
     async def speak_blocking(self, text: str,
                              voice_model: str | None = None,
                              suppress_mic: bool = True) -> float:

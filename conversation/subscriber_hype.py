@@ -108,25 +108,33 @@ def _load_lines() -> list[str]:
 
 _last_line: str | None = None
 
-# Optional per-line one-shot speech-rate directive: "[scale=1.0] POWER..."
-# (higher = slower). Stripped from the spoken/displayed text; passed to
-# tts.speak(length_scale=...) for THAT clip only — normal speech rate is
-# untouched (Piper takes length_scale per synthesis call).
+# Per-segment one-shot speech-rate control. A line is split on "||"; each
+# segment may open with "[scale=X]" (higher = slower, None = config default).
+# Segments synthesize independently and are stitched into ONE gapless clip
+# (tts.speak_segments), so a single word can be drawn out without slowing
+# the rest: "[scale=1.8] Lawng || liv the new flesh!". A whole-line
+# directive is just the one-segment case. Directives are stripped from the
+# displayed/captioned text.
 _SCALE_DIRECTIVE = re.compile(r"^\[scale=(\d+(?:\.\d+)?)\]\s*")
 
 
-def parse_line(raw: str) -> tuple[str, float | None]:
-    """Split an optional leading [scale=X] directive off a line."""
-    m = _SCALE_DIRECTIVE.match(raw)
-    if not m:
-        return raw, None
-    return raw[m.end():], float(m.group(1))
+def parse_line(raw: str) -> tuple[str, list[tuple[str, float | None]]]:
+    """Parse a lines-file entry -> (display_text, [(text, scale), ...])."""
+    segments = []
+    for part in raw.split("||"):
+        part = part.strip()
+        m = _SCALE_DIRECTIVE.match(part)
+        scale = float(m.group(1)) if m else None
+        text = part[m.end():].strip() if m else part
+        if text:
+            segments.append((text, scale))
+    display = " ".join(t for t, _ in segments)
+    return display, segments
 
 
-def pick_line() -> tuple[str, float | None]:
-    """Random (text, length_scale) — never the same line twice in a row
-    (when >1 exists). length_scale is None unless the line carries a
-    [scale=X] directive."""
+def pick_line() -> tuple[str, list[tuple[str, float | None]]]:
+    """Random (display_text, segments) — never the same line twice in a row
+    (when >1 exists)."""
     global _last_line
     lines = _load_lines()
     candidates = [ln for ln in lines if ln != _last_line] or lines

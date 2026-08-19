@@ -595,9 +595,9 @@ async def maybe_handle_tool_call(
     # unknown speaker mid-name-exchange.
     if (runtime_toggles.get("subscriber_hype_enabled")
             and subscriber_hype.detect(user_text)):
-        line, scale = subscriber_hype.pick_line()
+        line, segments = subscriber_hype.pick_line()
         await conversation.add_assistant_turn(line)
-        await tts.speak(line, length_scale=scale)
+        await tts.speak_segments(segments)
         try:
             from web.app import broadcast_event, update_metrics
             import time as _t

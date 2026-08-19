@@ -298,7 +298,7 @@ async def announce(payload: dict | None = None):
         return JSONResponse({"spoken": False, "error": "tts_unavailable"}, status_code=503)
     body = payload or {}
     text = (body.get("text") or "").strip()
-    if not text:
+    if not text and not body.get("segments"):
         return JSONResponse({"spoken": False, "error": "empty_text"}, status_code=400)
 
     voice = (body.get("voice") or "couples_therapist").strip().lower()
@@ -343,9 +343,17 @@ async def announce(payload: dict | None = None):
     # Added 2026-08-18 for auditioning subscriber_hype [scale=X] line tuning.
     _ls = body.get("length_scale")
     length_scale = float(_ls) if _ls is not None else None
-    await _orchestrator.tts.speak(spoken_text, force=True, voice_model=voice_model,
-                                  suppress_mic=not let_timmy_hear, caption=False,
-                                  length_scale=length_scale)
+    # segments: audition path for subscriber_hype's per-segment rate lines —
+    # same "||" + "[scale=X]" syntax as the lines file, stitched gapless.
+    if body.get("segments"):
+        from conversation.subscriber_hype import parse_line
+        _, segs = parse_line(str(body["segments"]))
+        await _orchestrator.tts.speak_segments(
+            segs, force=True, suppress_mic=not let_timmy_hear, caption=False)
+    else:
+        await _orchestrator.tts.speak(spoken_text, force=True, voice_model=voice_model,
+                                      suppress_mic=not let_timmy_hear, caption=False,
+                                      length_scale=length_scale)
     if inject:
         import asyncio as _asyncio
         # Inject the bare text (no self-ID prefix) so Timmy sees the therapist's
