@@ -36,6 +36,11 @@ _DEFAULTS: dict = {
     # 2026-06-22 (Dan): default flipped llama3.2-3b -> qwen36 so a fresh/reset
     # toggle state never tries to spawn the disabled :8081 server.
     "conversation_model_id": "qwen36",
+    # Subscriber-hype (2026-08-18). Regex-triggered celebration line when Dan
+    # announces a new channel subscriber ("we have a new subscriber!"). Pure
+    # lexical — no classifier dependency, no writes — so default ON. Read live
+    # per-turn in tool_router.maybe_handle_tool_call.
+    "subscriber_hype_enabled": True,
     # Proactive (unprompted) speech (2026-06-03). Live kill/enable switch for
     # Timmy reacting verbally to high-urgency visual events without being
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the

@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+from conversation import subscriber_hype
 from llm import client
 from memory.facts import store_fact
 from memory.extraction import _normalize_subject
@@ -584,6 +585,32 @@ async def maybe_handle_tool_call(
     The caller has ALREADY added + broadcast the user turn before calling this,
     so on a terminal tool hit we only inject the assistant ACK turn.
     """
+    # --- subscriber_hype: TERMINAL, pure-regex, PRE-classifier (2026-08-18) ---
+    # Dan announces a new subscriber -> Timmy fires a randomized victory line.
+    # Sits ABOVE the classifier_enabled gate on purpose: it needs no LLM, so it
+    # must work even with the Qwen3-4B classifier off. Announcement-shaped
+    # detection with negation/question guards lives in subscriber_hype.detect
+    # (bare "new subscriber" does NOT trigger). Same stomp discipline as the
+    # rest of the doorway: main.py already skips this whole router for an
+    # unknown speaker mid-name-exchange.
+    if (runtime_toggles.get("subscriber_hype_enabled")
+            and subscriber_hype.detect(user_text)):
+        line = subscriber_hype.pick_line()
+        await conversation.add_assistant_turn(line)
+        await tts.speak(line)
+        try:
+            from web.app import broadcast_event, update_metrics
+            import time as _t
+            await broadcast_event("turn", {"role": "assistant", "content": line})
+            await broadcast_event("tool_call", {"name": "subscriber_hype"})
+            update_metrics(last_tool_call="subscriber_hype",
+                           last_tool_call_ts=_t.time())
+        except Exception:
+            log.debug("[TOOL subscriber_hype] UI publish failed (non-fatal)",
+                      exc_info=True)
+        log.info("[TOOL subscriber_hype] %r -> %r", user_text[:80], line)
+        return ToolOutcome(handled=True)
+
     if not runtime_toggles.get("classifier_enabled"):
         return _FALLTHROUGH
 
