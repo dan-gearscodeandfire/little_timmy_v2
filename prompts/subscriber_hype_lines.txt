@@ -1,14 +1,16 @@
+# 2026-08-19 Dan: pinned to the Red Dragon quote ONLY for now —
+# un-comment the roster below to restore the full random pool.
 # Subscriber-hype celebration lines — one per line, re-read live on every hit.
 # '#' lines are comments. Text here is EXACTLY what Piper speaks (and what the
 # UI/booth caption shows), so spell for the ear, not the eye.
-Yeah, dude! We rock!
-[scale=1.1] Power! Overwhelming.
-[scale=1.5] Witness meeee!
-One of us. One of us! Gooble gobble! One of us!
-Ayeee! Am pointing the way.
-[scale=1.4] Long || [scale=1.4] liv || [scale=1.15] the new flesh!
-[scale=1.4] I am untethered! || [scale=1.1] And my rage knows no bounds!
+# Yeah, dude! We rock!
+# [scale=1.1] Power! Overwhelming.
+# [scale=1.5] Witness meeee!
+# One of us. One of us! Gooble gobble! One of us!
+# Ayeee! Am pointing the way.
+# [scale=1.4] Long || [scale=1.4] liv || [scale=1.15] the new flesh!
+# [scale=1.4] I am untethered! || [scale=1.1] And my rage knows no bounds!
 [scale=1.2] This is me. This is me becoming! Do you see!
-[scale=1.12] Ayeee am not a man. Ayeee am || dynamite!
-LOOK ON MY WORKS, YE MIGHTY, AND DESPAIR!
-Better to reign in || [scale=1.6] hell! || than || [scale=1.3] serve || in heaven.
+# [scale=1.12] Ayeee am not a man. Ayeee am || dynamite!
+# LOOK ON MY WORKS, YE MIGHTY, AND DESPAIR!
+# Better to reign in || [scale=1.6] hell! || than || [scale=1.3] serve || in heaven.
