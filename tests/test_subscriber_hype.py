@@ -77,15 +77,24 @@ def test_negative(text):
 def test_pick_line_no_immediate_repeat():
     lines = subscriber_hype._load_lines()
     assert len(lines) >= 2, "lines file missing or too short"
-    prev = subscriber_hype.pick_line()
+    parsed = {subscriber_hype.parse_line(ln)[0] for ln in lines}
+    prev, _ = subscriber_hype.pick_line()
     for _ in range(50):
-        cur = subscriber_hype.pick_line()
+        cur, scale = subscriber_hype.pick_line()
         assert cur != prev
-        assert cur in lines
+        assert cur in parsed
+        assert scale is None or scale > 0
         prev = cur
 
 
 def test_pick_line_covers_all_lines_eventually():
-    lines = set(subscriber_hype._load_lines())
-    seen = {subscriber_hype.pick_line() for _ in range(400)}
-    assert seen == lines
+    expected = {subscriber_hype.parse_line(ln)[0]
+                for ln in subscriber_hype._load_lines()}
+    seen = {subscriber_hype.pick_line()[0] for _ in range(400)}
+    assert seen == expected
+
+
+def test_parse_line_scale_directive():
+    assert subscriber_hype.parse_line("[scale=1.0] POWER!") == ("POWER!", 1.0)
+    assert subscriber_hype.parse_line("[scale=0.85]X") == ("X", 0.85)
+    assert subscriber_hype.parse_line("WITNESS ME!") == ("WITNESS ME!", None)

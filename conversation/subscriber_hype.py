@@ -108,11 +108,27 @@ def _load_lines() -> list[str]:
 
 _last_line: str | None = None
 
+# Optional per-line one-shot speech-rate directive: "[scale=1.0] POWER..."
+# (higher = slower). Stripped from the spoken/displayed text; passed to
+# tts.speak(length_scale=...) for THAT clip only — normal speech rate is
+# untouched (Piper takes length_scale per synthesis call).
+_SCALE_DIRECTIVE = re.compile(r"^\[scale=(\d+(?:\.\d+)?)\]\s*")
 
-def pick_line() -> str:
-    """Random line, never the same one twice in a row (when >1 exists)."""
+
+def parse_line(raw: str) -> tuple[str, float | None]:
+    """Split an optional leading [scale=X] directive off a line."""
+    m = _SCALE_DIRECTIVE.match(raw)
+    if not m:
+        return raw, None
+    return raw[m.end():], float(m.group(1))
+
+
+def pick_line() -> tuple[str, float | None]:
+    """Random (text, length_scale) — never the same line twice in a row
+    (when >1 exists). length_scale is None unless the line carries a
+    [scale=X] directive."""
     global _last_line
     lines = _load_lines()
     candidates = [ln for ln in lines if ln != _last_line] or lines
     _last_line = random.choice(candidates)
-    return _last_line
+    return parse_line(_last_line)

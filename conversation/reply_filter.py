@@ -10,7 +10,15 @@ Pure logic, no LT services — safe to unit-test in isolation.
 """
 
 import logging
+import os
 import re
+
+# Interjection cap-exemption (2026-08-19): "!" / "?" after a <=2-word fragment
+# does not count as a sentence end. Env-gated for rollback; reply_filter stays
+# config-free (pure logic), so the flag is read directly from the environment.
+_INTERJECTION_EXEMPT = os.getenv(
+    "TIMMY_INTERJECTION_CAP_EXEMPT", "1").lower() not in ("0", "false")
+_INTERJECTION_MAX_WORDS = 2
 
 # Same named logger as main ("timmy"), so relocated log lines stay on the
 # existing handler/format and are indistinguishable in /tmp/little_timmy.log.
@@ -108,6 +116,24 @@ def _is_real_terminator(s: str, i: int) -> bool:
         return False
     if (s.count("\u201c", 0, i) > s.count("\u201d", 0, i)):
         return False
+    # An INTERJECTION'S "!" / "?" is not a sentence boundary (2026-08-19,
+    # Dan: "I do not want 'Ha!' when it could be 'Ha! <other text>'"). With
+    # the STRAIGHT cap at 1, a reply opening "Ha! The kettle is empty." was
+    # trimmed to just "Ha!" -- the mark survived but burned the whole budget
+    # and the answer was drained. A fragment of <=2 words before the mark is
+    # an interjection beat, not a sentence: don't count it toward the cap
+    # (and the TTS splitters, which share this predicate, keep the beat in
+    # the same clip -- better prosody than a solo "Ha!" clip anyway).
+    # Deliberately NOT applied to "." -- "No." must still terminate (the
+    # commonest STRAIGHT opener; see the abbreviation branch below).
+    # Bonus: the second mark of a doubled terminator ("?!") has a zero-word
+    # fragment, so it can no longer flush as a degenerate punctuation-only
+    # clip on the char-walking proactive splitter.
+    if ch in "!?" and _INTERJECTION_EXEMPT:
+        frag_start = max((s.rfind(t, 0, i) for t in ".!?"), default=-1) + 1
+        words = re.findall(r"[A-Za-z0-9']+", s[frag_start:i])
+        if len(words) <= _INTERJECTION_MAX_WORDS:
+            return False
     if ch == ".":
         # Part of "..." (or a unicode ellipsis) -> not a boundary.
         if s[i:i + 3] == "..." or s[i:i + 2] == "..":

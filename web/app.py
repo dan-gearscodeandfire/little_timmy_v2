@@ -338,8 +338,14 @@ async def announce(payload: dict | None = None):
     # the room. Its text must never land on the attendee-facing booth VOX band —
     # that applies to the "timmy" voice option too, which is still supervisor
     # copy, just spoken in Timmy's voice.
+    # length_scale: optional one-shot speech-rate override for THIS utterance
+    # (higher = slower; Piper applies it per synthesis call, nothing persists).
+    # Added 2026-08-18 for auditioning subscriber_hype [scale=X] line tuning.
+    _ls = body.get("length_scale")
+    length_scale = float(_ls) if _ls is not None else None
     await _orchestrator.tts.speak(spoken_text, force=True, voice_model=voice_model,
-                                  suppress_mic=not let_timmy_hear, caption=False)
+                                  suppress_mic=not let_timmy_hear, caption=False,
+                                  length_scale=length_scale)
     if inject:
         import asyncio as _asyncio
         # Inject the bare text (no self-ID prefix) so Timmy sees the therapist's

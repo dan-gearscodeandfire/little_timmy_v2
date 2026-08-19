@@ -2,7 +2,7 @@
 # '#' lines are comments. Text here is EXACTLY what Piper speaks (and what the
 # UI/booth caption shows), so spell for the ear, not the eye.
 Yeah, dude! We rock!
-POWER — — OVERWHELMING!
+[scale=1.1] Power! Overwhelming.
 WITNESS ME!
 One of us! One of us! Gooble gobble!
 I'M POINTING THE WAY!

@@ -114,13 +114,21 @@ def _load_voice(model_path: str):
     return voice
 
 
-def _synthesize_raw(text: str, model_path: str) -> tuple[np.ndarray, int]:
-    """Synthesize text to raw float32 numpy array. Returns (audio, sample_rate)."""
+def _synthesize_raw(text: str, model_path: str,
+                    length_scale: float | None = None) -> tuple[np.ndarray, int]:
+    """Synthesize text to raw float32 numpy array. Returns (audio, sample_rate).
+
+    length_scale: one-shot speech-rate override for THIS synthesis only
+    (higher = slower/more drawn out). None -> config.TTS_LENGTH_SCALE. Piper
+    takes it per-call via SynthesisConfig, so there is no engine state to
+    restore afterwards — used by subscriber_hype's [scale=X] line directive."""
     from piper.config import SynthesisConfig
     import config as cfg
     voice = _load_voice(model_path)
     text = _apply_pronunciations(text)
-    syn_config = SynthesisConfig(length_scale=cfg.TTS_LENGTH_SCALE)
+    syn_config = SynthesisConfig(
+        length_scale=cfg.TTS_LENGTH_SCALE if length_scale is None
+        else length_scale)
     chunks = []
     sr = voice.config.sample_rate
     for chunk in voice.synthesize(text, syn_config=syn_config):
@@ -165,7 +173,8 @@ class TTSEngine:
                     voice_model: str | None = None,
                     suppress_mic: bool = True,
                     on_play_start: Callable[[float], None] | None = None,
-                    caption: bool = True):
+                    caption: bool = True,
+                    length_scale: float | None = None):
         """Synthesize text and queue raw PCM for playback. Non-blocking.
 
         force=True bypasses the mouth-mute (tts_muted) — used by the supervisor
@@ -197,7 +206,8 @@ class TTSEngine:
         if not text.strip():
             return
         audio, sr = await asyncio.to_thread(
-            _synthesize_raw, text, voice_model or self.model_path)
+            _synthesize_raw, text, voice_model or self.model_path,
+            length_scale)
         if len(audio) > 0:
             await self._playback_queue.put(PlaybackItem(
                 audio=audio, sr=sr, cooldown_s=0.5, suppress_mic=suppress_mic,

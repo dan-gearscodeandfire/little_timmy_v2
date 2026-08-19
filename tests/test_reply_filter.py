@@ -472,3 +472,40 @@ class TestQuotedTerminators:
         s = 'I said "no". Then I left.'
         ends = [i for i, c in enumerate(s) if c in ".!?" and _is_real_terminator(s, i)]
         assert 11 in ends
+
+
+# --- Interjection cap-exemption (2026-08-19) ---
+# "!" / "?" after a <=2-word fragment is a beat, not a sentence end. Dan:
+# "I do not want 'Ha!' when it could be 'Ha! <other text>'."
+
+def test_interjection_bang_does_not_count():
+    from conversation.reply_filter import _count_real_terminators as count
+    assert count("Ha! The kettle is empty.") == 1
+    assert count("Oh man! That is wild.") == 1
+    assert count("Really? I lied.") == 1
+
+
+def test_interjection_trim_keeps_full_answer():
+    from conversation.reply_filter import _trim_at_nth_terminator as trim
+    s = "Ha! The kettle is empty. And your tea is a lie."
+    assert trim(s, 1) == "Ha! The kettle is empty."
+
+
+def test_three_word_exclamation_still_counts():
+    from conversation.reply_filter import _count_real_terminators as count
+    assert count("You did what? That is insane.") == 2
+    assert count("The kettle is empty! Deal with it.") == 2
+
+
+def test_doubled_terminator_counts_once():
+    from conversation.reply_filter import _is_real_terminator
+    s = "The kettle is finally empty?!"
+    # the "!" of "?!" has a zero-word fragment -> exempt (no solo "!" clip)
+    assert not _is_real_terminator(s, len(s) - 1)
+
+
+def test_no_period_still_terminates():
+    # the 8-13 "No." semantics must survive the interjection rule (it is
+    # scoped to !/? only)
+    from conversation.reply_filter import _count_real_terminators as count
+    assert count("No. He is bragging.") == 2
