@@ -76,12 +76,14 @@ def test_negative(text):
 
 def test_pick_line_no_immediate_repeat():
     lines = subscriber_hype._load_lines()
-    assert len(lines) >= 2, "lines file missing or too short"
+    assert lines, "lines file missing or empty"
     parsed = {subscriber_hype.parse_line(ln)[0] for ln in lines}
+    single = len(lines) == 1  # roster may be pinned to one line (8-19)
     prev, _ = subscriber_hype.pick_line()
     for _ in range(50):
         cur, segments = subscriber_hype.pick_line()
-        assert cur != prev
+        if not single:
+            assert cur != prev
         assert cur in parsed
         assert segments and all(t and (sc is None or sc > 0)
                                 for t, sc in segments)
