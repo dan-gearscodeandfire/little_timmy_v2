@@ -41,6 +41,12 @@ _DEFAULTS: dict = {
     # lexical — no classifier dependency, no writes — so default ON. Read live
     # per-turn in tool_router.maybe_handle_tool_call.
     "subscriber_hype_enabled": True,
+    # Flame sync for subscriber-hype (2026-08-19, Dan). When True, a hype hit
+    # ALSO fires the streamerpi skullfire sequence (gas 0-4s, spark 2-4s) in
+    # parallel with the spoken line. THIS IS REAL FIRE HARDWARE -- this toggle
+    # is the software kill switch; flip OFF when the rig is fueled but the
+    # trigger should stay speech-only. Read live per-hit.
+    "subscriber_hype_fire_enabled": True,
     # Proactive (unprompted) speech (2026-06-03). Live kill/enable switch for
     # Timmy reacting verbally to high-urgency visual events without being
     # addressed first. Gated jointly with config.PROACTIVE_SPEECH_ENABLED (the

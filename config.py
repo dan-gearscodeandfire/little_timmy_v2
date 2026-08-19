@@ -586,6 +586,16 @@ STREAMERPI_BEHAVIOR_MODE_URL = os.getenv(
 # success (Wombat alive on the bus, per-pin servo config gone). These drive the
 # `servo_check` router intent: selftest is camera-verified and MOVES the head;
 # reattach is the in-place fix when the chip is alive.
+# Subscriber-hype flame sync (2026-08-19, Dan): gas t=0, spark t=2, both off
+# t=4, fired on the Pi's race-guarded skullfire sequence endpoint.
+STREAMERPI_SKULLFIRE_SEQUENCE_URL = os.getenv(
+    "TIMMY_SKULLFIRE_SEQUENCE_URL",
+    "https://192.168.1.110:8080/skullfire/sequence"
+)
+SUBSCRIBER_HYPE_FIRE_TIMINGS = {
+    "solenoid_start": 0.0, "solenoid_end": 4.0,
+    "spark_start": 2.0, "spark_end": 4.0,
+}
 STREAMERPI_SERVO_SELFTEST_URL = os.getenv(
     "TIMMY_SERVO_SELFTEST_URL", "https://192.168.1.110:8080/servo/selftest"
 )

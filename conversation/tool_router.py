@@ -596,6 +596,27 @@ async def maybe_handle_tool_call(
     if (runtime_toggles.get("subscriber_hype_enabled")
             and subscriber_hype.detect(user_text)):
         line, segments = subscriber_hype.pick_line()
+        # Flame sync (2026-08-19, Dan): fire the skullfire sequence AT TOOL
+        # START (t=0 gas, t=2 spark, t=4 both off — timings live on the Pi
+        # call, race-guarded there) so the poof lands mid-line. Fire-and-
+        # forget: a Pi outage must never delay or eat the spoken line.
+        # Kill switch: runtime toggle subscriber_hype_fire_enabled.
+        if runtime_toggles.get("subscriber_hype_fire_enabled"):
+            async def _fire():
+                import httpx
+                try:
+                    async with httpx.AsyncClient(verify=False,
+                                                 timeout=8.0) as c:
+                        r = await c.post(
+                            config.STREAMERPI_SKULLFIRE_SEQUENCE_URL,
+                            json=config.SUBSCRIBER_HYPE_FIRE_TIMINGS)
+                        log.info("[TOOL subscriber_hype] flame: %s %s",
+                                 r.status_code, r.text[:120])
+                except Exception:
+                    log.exception("[TOOL subscriber_hype] flame call failed "
+                                  "(line still speaks)")
+            import asyncio as _aio
+            _aio.create_task(_fire())
         await conversation.add_assistant_turn(line)
         await tts.speak_segments(segments)
         try:
